@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Server now hard-fails on startup when the `verifier` slot resolves to the
+  same provider model id as `main` (story 1.8 / architecture.md §2.4.3 —
+  prevents L4 meta-cognition from silently collapsing into self-consistency
+  bias).
 - Initial repository scaffold
 - `AGENTS.md` as universal source of truth for AI coding agents
 - `CLAUDE.md` import wrapper for Claude Code

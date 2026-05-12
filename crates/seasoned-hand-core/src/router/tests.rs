@@ -152,3 +152,137 @@ fn default_for_bifrost_resolves_all_slots() {
         assert_eq!(res.base_url, "http://localhost:4000/v1");
     }
 }
+
+// ============================================================================
+// Story 1.8 — verifier ≠ main resolved-model-ID startup gate.
+// Tests build a synthetic `capability::ResolveAllReport` (skipping the real
+// Bifrost HTTP path) and exercise `SlotRouter::with_resolver`'s gate.
+// ============================================================================
+
+use crate::router::capability::{CapabilityFlags, ResolveAllReport, Resolver};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+fn resolved_for(slot: SlotName, alias: &str, provider_model_id: &str) -> capability::ResolvedSlot {
+    capability::ResolvedSlot {
+        slot,
+        alias: alias.to_string(),
+        provider_model_id: provider_model_id.to_string(),
+        capabilities: CapabilityFlags::unknown(),
+    }
+}
+
+fn build_resolver_with_aliases(aliases: &[(SlotName, &str)]) -> Arc<Resolver> {
+    let mut map = HashMap::new();
+    for (slot, alias) in aliases {
+        map.insert(*slot, alias.to_string());
+    }
+    Arc::new(Resolver::new("http://unused.example/v1", map))
+}
+
+#[test]
+fn verifier_gate_passes_when_models_differ() {
+    let router = SlotRouter::default_for_bifrost();
+    let resolver = build_resolver_with_aliases(&[
+        (SlotName::Main, "agent-primary"),
+        (SlotName::Verifier, "verifier-primary"),
+    ]);
+    let mut report = ResolveAllReport::default();
+    report.resolved.insert(
+        SlotName::Main,
+        resolved_for(SlotName::Main, "agent-primary", "claude-sonnet-4-6"),
+    );
+    report.resolved.insert(
+        SlotName::Verifier,
+        resolved_for(SlotName::Verifier, "verifier-primary", "gpt-5.1"),
+    );
+    let router = router
+        .with_resolver(resolver, report)
+        .expect("differ → gate passes");
+    assert!(router.verifier_enabled());
+    let v = router
+        .resolve_optional(SlotName::Verifier)
+        .expect("verifier resolved");
+    assert_eq!(v.provider_model_id, "gpt-5.1");
+}
+
+#[test]
+fn verifier_gate_fails_when_models_equal() {
+    let router = SlotRouter::default_for_bifrost();
+    let resolver = build_resolver_with_aliases(&[
+        (SlotName::Main, "agent-primary"),
+        (SlotName::Verifier, "verifier-primary"),
+    ]);
+    let mut report = ResolveAllReport::default();
+    report.resolved.insert(
+        SlotName::Main,
+        resolved_for(SlotName::Main, "agent-primary", "claude-sonnet-4-6"),
+    );
+    report.resolved.insert(
+        SlotName::Verifier,
+        resolved_for(SlotName::Verifier, "verifier-primary", "claude-sonnet-4-6"),
+    );
+    let err = router
+        .with_resolver(resolver, report)
+        .expect_err("same model id → gate fails");
+    match err {
+        RouterError::VerifierSameAsMain { model_id } => {
+            assert_eq!(model_id, "claude-sonnet-4-6");
+        }
+        other => panic!("expected VerifierSameAsMain, got {other:?}"),
+    }
+}
+
+#[test]
+fn verifier_gate_fails_when_aliases_differ_but_models_equal() {
+    let router = SlotRouter::default_for_bifrost();
+    // agent-primary and agent-fallback are distinct aliases, but Bifrost
+    // resolves both to the same upstream model — gate must still fail.
+    let resolver = build_resolver_with_aliases(&[
+        (SlotName::Main, "agent-primary"),
+        (SlotName::Verifier, "agent-fallback"),
+    ]);
+    let mut report = ResolveAllReport::default();
+    report.resolved.insert(
+        SlotName::Main,
+        resolved_for(SlotName::Main, "agent-primary", "claude-sonnet-4-6"),
+    );
+    report.resolved.insert(
+        SlotName::Verifier,
+        resolved_for(SlotName::Verifier, "agent-fallback", "claude-sonnet-4-6"),
+    );
+    let err = router
+        .with_resolver(resolver, report)
+        .expect_err("alias-distinct but model-same → gate fails");
+    assert!(matches!(err, RouterError::VerifierSameAsMain { .. }));
+}
+
+#[test]
+fn verifier_gate_skipped_when_verifier_not_configured() {
+    let router = SlotRouter::default_for_bifrost();
+    let resolver = build_resolver_with_aliases(&[(SlotName::Main, "agent-primary")]);
+    let mut report = ResolveAllReport::default();
+    report.resolved.insert(
+        SlotName::Main,
+        resolved_for(SlotName::Main, "agent-primary", "claude-sonnet-4-6"),
+    );
+    let router = router
+        .with_resolver(resolver, report)
+        .expect("verifier absent → build succeeds");
+    assert!(
+        !router.verifier_enabled(),
+        "no verifier configured ⇒ verifier_enabled stays false"
+    );
+    assert!(router.resolve_optional(SlotName::Verifier).is_none());
+}
+
+#[test]
+fn verifier_gate_error_message_names_both_models() {
+    let err = RouterError::VerifierSameAsMain {
+        model_id: "claude-sonnet-4-6".to_string(),
+    };
+    let s = err.to_string();
+    assert!(s.contains("claude-sonnet-4-6"), "msg was: {s}");
+    assert!(s.contains("verifier"), "msg was: {s}");
+    assert!(s.contains("main"), "msg was: {s}");
+}

@@ -42,6 +42,10 @@ pub struct AppState {
     pub cost: Arc<CostClient>,
     pub plan_manager: Arc<PlanManager>,
     pub runner: Arc<AgentRunner>,
+    /// Story 1.8: copy of `SlotRouter::verifier_enabled()` snapshotted at
+    /// `AppState::new` time. Story 1.9's Verifier Worker reads this to
+    /// decide whether to spawn.
+    pub verifier_enabled: bool,
 }
 
 impl AppState {
@@ -60,6 +64,7 @@ impl AppState {
             ToolDispatcher::new(register_builtin_tools())
                 .with_hook(Arc::new(EventEmittingHook::new(events.clone()))),
         );
+        let verifier_enabled = router.verifier_enabled();
         let router = Arc::new(router);
         let plan_manager = Arc::new(PlanManager::new(db.clone(), events.clone()));
         let main_slot = router.resolve(SlotName::Main);
@@ -88,6 +93,7 @@ impl AppState {
             cost,
             plan_manager,
             runner,
+            verifier_enabled,
         }
     }
 }

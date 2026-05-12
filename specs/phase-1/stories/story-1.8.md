@@ -1,6 +1,6 @@
 # Story 1.8 — Verifier slot startup gate (verifier ≠ main resolved-model-ID)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 1 hour
 > **Dependencies**: 1.7 (capability resolver provides
 > `ResolvedSlot::provider_model_id`)

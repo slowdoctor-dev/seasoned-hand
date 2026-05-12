@@ -100,6 +100,9 @@ pub enum RouterError {
     Resolution { slot: SlotName, message: String },
     #[error("main slot unavailable: {0}")]
     MainSlotUnavailable(Box<RouterError>),
+    // ---- Story 1.8: verifier ≠ main startup gate ----
+    #[error("verifier slot must use a different model than main; both resolved to: {model_id}")]
+    VerifierSameAsMain { model_id: String },
 }
 
 #[derive(Debug)]
@@ -119,6 +122,10 @@ pub struct SlotRouter {
     /// Story 1.7: capability-side resolutions keyed by slot. Empty when no
     /// resolver is attached; populated by [`SlotRouter::with_capability_resolutions`].
     capability_resolved: HashMap<SlotName, capability::ResolvedSlot>,
+    /// Story 1.8: `true` iff a verifier slot was configured AND resolved to
+    /// a provider model id distinct from main's. Server bootstrap reads
+    /// this to decide whether to spawn the Verifier Worker (story 1.9).
+    verifier_enabled: bool,
 }
 
 impl SlotRouter {
@@ -166,6 +173,7 @@ impl SlotRouter {
             main_fallback: main_resolved,
             resolver: None,
             capability_resolved: HashMap::new(),
+            verifier_enabled: false,
         })
     }
 
@@ -197,6 +205,7 @@ impl SlotRouter {
             main_fallback: main,
             resolver: None,
             capability_resolved: HashMap::new(),
+            verifier_enabled: false,
         }
     }
 
@@ -214,14 +223,51 @@ impl SlotRouter {
     /// Story 1.7: attach a capability resolver + its [`capability::ResolveAllReport`]
     /// to the router. Server startup calls this after a successful
     /// `Resolver::resolve_all_or_main()`.
+    ///
+    /// Story 1.8: also runs the **verifier ≠ main** startup gate. If both
+    /// `Main` and `Verifier` resolved AND their `provider_model_id` are
+    /// equal, returns [`RouterError::VerifierSameAsMain`] so the L4
+    /// meta-cognition path never silently collapses into self-consistency
+    /// bias. If `Verifier` is absent from `report.resolved` (slot not
+    /// configured or marked unavailable), the gate is skipped and
+    /// `verifier_enabled` stays `false`.
     pub fn with_resolver(
         mut self,
         resolver: Arc<capability::Resolver>,
         report: capability::ResolveAllReport,
-    ) -> Self {
+    ) -> Result<Self, RouterError> {
+        let main = report.resolved.get(&SlotName::Main);
+        let verifier = report.resolved.get(&SlotName::Verifier);
+        let verifier_enabled = match (main, verifier) {
+            (Some(m), Some(v)) => {
+                if v.provider_model_id == m.provider_model_id {
+                    return Err(RouterError::VerifierSameAsMain {
+                        model_id: v.provider_model_id.clone(),
+                    });
+                }
+                tracing::info!(
+                    main_model = %m.provider_model_id,
+                    verifier_model = %v.provider_model_id,
+                    "verifier slot validated; L4 meta-cognition enabled"
+                );
+                true
+            }
+            _ => {
+                tracing::info!("verifier slot not configured — L4 meta-cognition disabled");
+                false
+            }
+        };
         self.resolver = Some(resolver);
         self.capability_resolved = report.resolved;
-        self
+        self.verifier_enabled = verifier_enabled;
+        Ok(self)
+    }
+
+    /// Story 1.8: `true` iff a verifier slot was configured AND resolved
+    /// distinct from main. Server reads this to decide whether to spawn
+    /// the Verifier Worker (story 1.9).
+    pub fn verifier_enabled(&self) -> bool {
+        self.verifier_enabled
     }
 
     /// Story 1.7: expose the resolver so story 1.8 can re-resolve at
