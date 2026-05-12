@@ -522,26 +522,27 @@ async fn agent_runner_uses_structured_render() {
 
 #[tokio::test]
 async fn recite_integration_fires_on_tenth_iteration() {
+    // Integration check: the runner actually calls `recite_tick` at
+    // step 10 of the main loop. The Initializer (story 1.4) always
+    // writes `progress.txt`, so recite reads that content — exact
+    // tail-line semantics are covered by `agent::recite::tests`.
+    // This test only verifies "exactly one progress_recite Misc
+    // event fires when the loop reaches step 10".
+    //
+    // Distinct content per iteration so the stuck-detector doesn't
+    // terminate after 4 duplicate assistant responses.
     let mut calls = Vec::new();
     for i in 1..=10 {
         calls.push(completion(vec![(
             &format!("call-{i}"),
             "message_notify_user",
-            json!({"content":"keep going"}),
+            json!({"content": format!("keep going {i}")}),
         )]));
     }
     calls.push(completion(vec![("call-11", "idle", json!({}))]));
     let h = harness(calls).await;
 
-    let progress_path = h._workspace.path().join(&h.session_id).join("progress.txt");
-    std::fs::create_dir_all(progress_path.parent().unwrap()).unwrap();
-    let progress = (1..=200)
-        .map(|i| format!("line-{i}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    std::fs::write(progress_path, progress).unwrap();
-
-    let result = h.runner.resume(req(&h.session_id, 11)).await.expect("run");
+    let result = h.runner.run(req(&h.session_id, 11)).await.expect("run");
     assert!(result.completed);
     assert_eq!(result.steps, 11);
 
@@ -557,45 +558,18 @@ async fn recite_integration_fires_on_tenth_iteration() {
                 && event.data.get("kind").and_then(Value::as_str) == Some("progress_recite")
         })
         .collect::<Vec<_>>();
-    assert_eq!(recites.len(), 1);
-    let preview = recites[0]
-        .data
-        .get("content_preview")
-        .and_then(Value::as_str)
-        .expect("recite content");
-    let lines = preview.lines().collect::<Vec<_>>();
-    assert_eq!(lines.len(), 80);
-    assert_eq!(lines.first().copied(), Some("line-121"));
-    assert_eq!(lines.last().copied(), Some("line-200"));
+    assert_eq!(
+        recites.len(),
+        1,
+        "recite must fire exactly once at step 10 of an 11-step run"
+    );
 }
 
-#[tokio::test]
-async fn recite_skip_on_missing_file_does_not_break_loop() {
-    let mut calls = Vec::new();
-    for i in 1..=10 {
-        calls.push(completion(vec![(
-            &format!("call-{i}"),
-            "message_notify_user",
-            json!({"content":"keep going"}),
-        )]));
-    }
-    calls.push(completion(vec![("call-11", "idle", json!({}))]));
-    let h = harness(calls).await;
-
-    let result = h.runner.resume(req(&h.session_id, 11)).await.expect("run");
-    assert!(result.completed);
-    assert_eq!(result.steps, 11);
-
-    let events = h
-        .events
-        .query(&h.session_id, EventQuery::default())
-        .await
-        .expect("events query");
-    assert!(events.iter().any(|event| {
-        event.event_type == EventType::Misc
-            && event.data.get("kind").and_then(Value::as_str) == Some("progress_recite_skipped")
-    }));
-}
+// `recite_skip_on_missing_file_does_not_break_loop` lives in
+// `agent::recite::tests` as a unit test — the runner-level integration
+// equivalent is unreachable now that the Initializer (story 1.4)
+// always seeds `progress.txt`, so the unit test is the canonical
+// coverage point.
 
 #[tokio::test]
 async fn idle_call_pushes_verify_request_and_transitions_to_verifying() {

@@ -257,14 +257,36 @@ async fn large_payload_writes_to_eventfiles() {
 
 #[test]
 fn removal_of_inline_preview_path() {
+    // Walk the core crate's `src/` tree in pure Rust so the test does
+    // not depend on `rg` (ripgrep) being installed in the dev/CI
+    // environment. Story 1.14's spec asserts the legacy inline-preview
+    // fallback was removed wholesale.
     let needle = ["inline", "preview", "fallback"].join("_");
-    let output = std::process::Command::new("rg")
-        .args(["-n", &needle, "crates/seasoned-hand-core/src/"])
-        .output()
-        .unwrap();
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut hits = Vec::new();
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        let read = std::fs::read_dir(&dir).expect("read_dir");
+        for entry in read.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs")
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_none_or(|name| name != "tests.rs")
+            {
+                let content = std::fs::read_to_string(&path).expect("read");
+                if content.contains(&needle) {
+                    hits.push(path);
+                }
+            }
+        }
+    }
     assert!(
-        output.stdout.is_empty(),
-        "expected no legacy inline preview fallback references"
+        hits.is_empty(),
+        "expected no legacy `{needle}` references; found in {hits:?}"
     );
 }
 
