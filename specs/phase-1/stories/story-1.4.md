@@ -1,6 +1,6 @@
 # Story 1.4 — Initializer + feature-list.json + progress.txt + 2 LLM tools
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 1.1 (Plan Manager), 1.3 (sandbox workspace git bootstrap)
 > **Phase**: 1
@@ -349,3 +349,16 @@ fresh context construction) will read this file as one of its inputs.
 
 Story 1.6 (Context Recitation) will tail `/workspace/progress.txt` every
 10 iterations and inject it as a Misc event.
+
+## Notes from execution
+
+- Added `agent::init::Initializer` pre-loop bootstrap with planner parse/fallback,
+  `PlanManager::create`, and workspace initialization for
+  `feature-list.json` + `progress.txt`.
+- Replaced baseline-plan seeding in `AgentRunner::run` with Initializer wiring.
+- Added LLM-visible tools `feature_mark_done` and `progress_update`.
+- Added HTTP routes:
+  - `GET /v1/sessions/:id/feature-list`
+  - `GET /v1/sessions/:id/progress`
+- Added feature/progress tool tests and server route tests in
+  `crates/seasoned-hand-server/tests/feature_list.rs`.

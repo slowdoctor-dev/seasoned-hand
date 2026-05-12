@@ -11,6 +11,8 @@ use async_trait::async_trait;
 use serde_json::{Map, Value, json};
 
 use super::{Tool, ToolContext, ToolError, ToolErrorPayload, ToolOutput};
+use crate::agent::init::feature_list::{FeatureList, FeatureStatus};
+use crate::agent::init::progress;
 use crate::events::{EventStore, EventType, NewEvent};
 use crate::plan::{Phase, PhaseStatus, PlanMutationSource};
 
@@ -891,6 +893,120 @@ impl Tool for PlanUpdate {
     }
 }
 
+pub struct FeatureMarkDone;
+
+#[async_trait]
+impl Tool for FeatureMarkDone {
+    fn name(&self) -> &'static str {
+        "feature_mark_done"
+    }
+    fn description(&self) -> &'static str {
+        "Mark one feature as done in /workspace/feature-list.json and emit an audit Misc event."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(json!({"feature_id":{"type":"string"}}), &["feature_id"])
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let feature_id = require_str(&args, "feature_id")?;
+        let mut list: FeatureList = ctx
+            .sandbox
+            .read_workspace_file_json(&ctx.session_id, "feature-list.json")
+            .await
+            .map_err(|e| ToolError::Backend(e.to_string()))?;
+
+        let now = progress::now_micros();
+        let Some(feature) = list.features.iter_mut().find(|f| f.id == feature_id) else {
+            return Err(ToolError::InvalidArgs(format!(
+                "unknown feature_id '{feature_id}'"
+            )));
+        };
+        feature.status = FeatureStatus::Done;
+        feature.completed_at = Some(now);
+        let title = feature.title.clone();
+        let phase_id = feature.plan_phase_id;
+
+        ctx.sandbox
+            .write_workspace_file_json(&ctx.session_id, "feature-list.json", &list)
+            .await
+            .map_err(|e| ToolError::Backend(e.to_string()))?;
+
+        ctx.events
+            .append(NewEvent {
+                session_id: ctx.session_id.clone(),
+                event_type: EventType::Misc,
+                source: format!("tool:{}", self.name()),
+                data: json!({"kind":"feature_done","feature_id":feature_id,"title":title}),
+            })
+            .await
+            .map_err(|e| ToolError::Backend(e.to_string()))?;
+
+        let active = ctx
+            .plan_manager
+            .snapshot(&ctx.session_id)
+            .await
+            .map_err(|e| ToolError::Backend(e.to_string()))?
+            .current_phase_id;
+        if active != Some(phase_id) {
+            ctx.events
+                .append(NewEvent {
+                    session_id: ctx.session_id.clone(),
+                    event_type: EventType::Misc,
+                    source: format!("tool:{}", self.name()),
+                    data: json!({
+                        "kind":"feature_done_out_of_phase",
+                        "feature_id":feature_id,
+                        "plan_phase_id":phase_id,
+                        "active_phase_id":active
+                    }),
+                })
+                .await
+                .map_err(|e| ToolError::Backend(e.to_string()))?;
+        }
+
+        Ok(ToolOutput {
+            ok: true,
+            output: json!({"feature_id": feature_id, "status": "done"}),
+            file_ref: None,
+            error: None,
+        })
+    }
+}
+
+pub struct ProgressUpdate;
+
+#[async_trait]
+impl Tool for ProgressUpdate {
+    fn name(&self) -> &'static str {
+        "progress_update"
+    }
+    fn description(&self) -> &'static str {
+        "Append one timestamped line to /workspace/progress.txt."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(json!({"line":{"type":"string"}}), &["line"])
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let line = require_str(&args, "line")?;
+        let existing = ctx
+            .sandbox
+            .read_workspace_file(&ctx.session_id, "progress.txt")
+            .await
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default();
+        let updated = progress::append_line(&existing, &line);
+        ctx.sandbox
+            .write_workspace_file(&ctx.session_id, "progress.txt", updated.as_bytes())
+            .await
+            .map_err(|e| ToolError::Backend(e.to_string()))?;
+        Ok(ToolOutput {
+            ok: true,
+            output: json!({"ok": true}),
+            file_ref: None,
+            error: None,
+        })
+    }
+}
+
 // ===== stub tool (story 0.7) =====
 //
 // Used for the 28 tools whose real backends land in stories 0.8 / 0.9 /
@@ -1035,6 +1151,8 @@ pub fn all() -> HashMap<&'static str, Arc<dyn Tool>> {
     // ===== Plan (2) — LLM-callable per ADR-010 =====
     map.insert("plan_advance", Arc::new(PlanAdvance));
     map.insert("plan_update", Arc::new(PlanUpdate));
+    map.insert("feature_mark_done", Arc::new(FeatureMarkDone));
+    map.insert("progress_update", Arc::new(ProgressUpdate));
 
     map
 }

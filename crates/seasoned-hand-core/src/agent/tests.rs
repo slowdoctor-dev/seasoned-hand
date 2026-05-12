@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use tempfile::tempdir;
-use wiremock::matchers::{body_partial_json, method, path};
+use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use super::*;
@@ -66,10 +66,18 @@ async fn harness_with_cost(
 ) -> Harness {
     let mock = MockServer::start().await;
     let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut scripted = Vec::with_capacity(responses.len() + 1);
+    scripted.push(json!({
+        "id":"cmpl-planner",
+        "object":"chat.completion",
+        "model":"planner",
+        "choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"{\"goal\":\"Find one thing and finish\",\"phases\":[{\"id\":1,\"title\":\"Plan\",\"capabilities\":[]},{\"id\":2,\"title\":\"Do\",\"capabilities\":[]},{\"id\":3,\"title\":\"Finish\",\"capabilities\":[]}]}","tool_calls":null}}],
+        "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+    }));
+    scripted.extend(responses);
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .and(body_partial_json(json!({"tool_choice": "required"})))
-        .respond_with(ScriptedResponder::new(responses, requests.clone()))
+        .respond_with(ScriptedResponder::new(scripted, requests.clone()))
         .mount(&mock)
         .await;
     if !cost_responses.is_empty() {
@@ -108,6 +116,16 @@ slots:
         SandboxClient::new("ghcr.io/agent-infra/sandbox:1.0.0.152", workspace.path())
             .expect("sandbox client constructs"),
     );
+    sandbox
+        .insert_handle_for_test(crate::sandbox::SandboxHandle {
+            session_id: session_id.clone(),
+            container_id: "c1".into(),
+            api_url: "http://127.0.0.1:1".into(),
+            novnc_url: "http://127.0.0.1:2".into(),
+            ttyd_url: "ws://127.0.0.1:3".into(),
+            workspace_host_path: workspace.path().join(&session_id),
+        })
+        .await;
     let search = Arc::new(SearchClient::new(SearchProvider::Brave { api_key: None }));
     let llm = LlmClient::new(mock.uri(), None);
     let cost = Arc::new(CostClient::new(mock.uri()));

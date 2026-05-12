@@ -14,12 +14,13 @@ use crate::db::{DbError, DbPool};
 use crate::dispatch::ToolDispatcher;
 use crate::events::{EventError, EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
 use crate::llm::{ChatCompletionRequest, LlmClient, LlmError, ToolChoice, ToolSpec};
-use crate::plan::{Phase, PhaseStatus, PlanManager};
+use crate::plan::PlanManager;
 use crate::router::{SlotName, SlotRouter};
 use crate::sandbox::SandboxClient;
 use crate::search::SearchClient;
 use crate::tools::ToolContext;
 
+pub mod init;
 mod prompt;
 pub mod stuck;
 
@@ -50,6 +51,8 @@ pub enum AgentError {
     Db(#[from] DbError),
     #[error("event error: {0}")]
     Event(#[from] EventError),
+    #[error("initializer error: {0}")]
+    Init(#[from] init::InitError),
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error("cancelled")]
@@ -110,8 +113,14 @@ impl AgentRunner {
     async fn run_loop(&self, req: RunRequest, seed_task: bool) -> Result<RunResult, AgentError> {
         self.set_session_state(&req.session_id, "RUNNING").await?;
         if seed_task {
-            self.create_baseline_plan(&req.session_id, &req.input)
-                .await?;
+            init::Initializer::new(
+                self.router.clone(),
+                self.plan_manager.clone(),
+                self.sandbox.clone(),
+                self.events.clone(),
+            )
+            .run(&req.session_id, &req.input)
+            .await?;
             self.append_user_message(&req.session_id, &req.input)
                 .await?;
         }
@@ -315,23 +324,6 @@ impl AgentRunner {
             .into_iter()
             .map(|tool| ToolSpec::function(tool.name(), tool.description(), tool.schema()))
             .collect()
-    }
-
-    async fn create_baseline_plan(&self, session_id: &str, input: &str) -> Result<(), AgentError> {
-        self.plan_manager
-            .create(
-                session_id,
-                input,
-                vec![Phase {
-                    id: 1,
-                    title: input.to_string(),
-                    capabilities: vec![],
-                    status: PhaseStatus::Pending,
-                }],
-            )
-            .await
-            .map_err(|e| AgentError::Internal(e.to_string()))?;
-        Ok(())
     }
 
     async fn append_user_message(&self, session_id: &str, input: &str) -> Result<(), AgentError> {

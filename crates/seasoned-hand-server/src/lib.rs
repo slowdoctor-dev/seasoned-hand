@@ -12,6 +12,8 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use seasoned_hand_core::agent::init::feature_list::FeatureList;
+use seasoned_hand_core::agent::init::progress;
 use seasoned_hand_core::agent::{AgentRunner, AgentRunnerDeps};
 use seasoned_hand_core::capability::ModelCapabilities;
 use seasoned_hand_core::cost::{CostClient, CostSnapshot};
@@ -140,6 +142,11 @@ pub struct EventsQueryParams {
 #[derive(Serialize)]
 struct ApiError {
     error: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ProgressQuery {
+    lines: Option<usize>,
 }
 
 async fn list_events(
@@ -483,6 +490,54 @@ async fn cost_snapshot(
     }
 }
 
+async fn get_feature_list(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> Result<Json<FeatureList>, (StatusCode, Json<ApiError>)> {
+    let bytes = state
+        .sandbox
+        .read_workspace_file(&session_id, "feature-list.json")
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "feature_list_not_found".into(),
+                }),
+            )
+        })?;
+    let parsed = serde_json::from_slice::<FeatureList>(&bytes).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: "feature_list_invalid".into(),
+            }),
+        )
+    })?;
+    Ok(Json(parsed))
+}
+
+async fn get_progress(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    Query(q): Query<ProgressQuery>,
+) -> Result<String, (StatusCode, Json<ApiError>)> {
+    let bytes = state
+        .sandbox
+        .read_workspace_file(&session_id, "progress.txt")
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "progress_not_found".into(),
+                }),
+            )
+        })?;
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(progress::tail_lines(&text, q.lines.unwrap_or(200)))
+}
+
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
@@ -491,6 +546,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/sessions", get(list_sessions))
         .route("/v1/sessions/:id", get(get_session))
         .route("/v1/sessions/:id/events", get(list_events))
+        .route("/v1/sessions/:id/feature-list", get(get_feature_list))
+        .route("/v1/sessions/:id/progress", get(get_progress))
         .route("/v1/workspace/:session_id/*sub_path", get(workspace_proxy))
         .route("/v1/workspace/:session_id", get(workspace_root))
         .route("/v1/workspace/:session_id/", get(workspace_root))

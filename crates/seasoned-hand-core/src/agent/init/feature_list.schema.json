@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FeatureList",
+  "type": "object",
+  "required": ["version", "goal", "features"],
+  "properties": {
+    "version": { "type": "integer", "const": 1 },
+    "goal": { "type": "string" },
+    "features": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "status", "plan_phase_id"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "status": { "type": "string", "enum": ["todo", "doing", "done"] },
+          "depends_on": { "type": "array", "items": { "type": "string" }, "default": [] },
+          "plan_phase_id": { "type": "integer", "minimum": 1 },
+          "completed_at": { "type": ["integer", "null"] },
+          "notes": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

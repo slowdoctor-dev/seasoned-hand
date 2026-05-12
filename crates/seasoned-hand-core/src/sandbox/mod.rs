@@ -94,6 +94,63 @@ impl SandboxClient {
         self.handles.read().await.get(session_id).cloned()
     }
 
+    pub async fn read_workspace_file(
+        &self,
+        session_id: &str,
+        relative_path: &str,
+    ) -> Result<Vec<u8>, SandboxError> {
+        let handle = self
+            .get(session_id)
+            .await
+            .ok_or_else(|| SandboxError::NotFound(session_id.to_string()))?;
+        let path = handle
+            .workspace_host_path
+            .join(relative_path.trim_start_matches('/'));
+        Ok(tokio::fs::read(path).await?)
+    }
+
+    pub async fn write_workspace_file(
+        &self,
+        session_id: &str,
+        relative_path: &str,
+        contents: &[u8],
+    ) -> Result<(), SandboxError> {
+        let handle = self
+            .get(session_id)
+            .await
+            .ok_or_else(|| SandboxError::NotFound(session_id.to_string()))?;
+        let path = handle
+            .workspace_host_path
+            .join(relative_path.trim_start_matches('/'));
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(path, contents).await?;
+        Ok(())
+    }
+
+    pub async fn read_workspace_file_json<T: serde::de::DeserializeOwned>(
+        &self,
+        session_id: &str,
+        relative_path: &str,
+    ) -> Result<T, SandboxError> {
+        let bytes = self.read_workspace_file(session_id, relative_path).await?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| SandboxError::WorkspaceBootstrap(format!("invalid json: {e}")))
+    }
+
+    pub async fn write_workspace_file_json<T: serde::Serialize>(
+        &self,
+        session_id: &str,
+        relative_path: &str,
+        value: &T,
+    ) -> Result<(), SandboxError> {
+        let bytes = serde_json::to_vec_pretty(value)
+            .map_err(|e| SandboxError::WorkspaceBootstrap(format!("serialize json: {e}")))?;
+        self.write_workspace_file(session_id, relative_path, &bytes)
+            .await
+    }
+
     pub async fn create(&self, session_id: &str) -> Result<SandboxHandle, SandboxError> {
         let workspace = self.workspace_root.join(session_id);
         std::fs::create_dir_all(&workspace)?;
@@ -389,6 +446,15 @@ impl SandboxClient {
             }) => Ok(()),
             Err(e) => Err(SandboxError::Docker(e)),
         }
+    }
+
+    /// Test/support utility: manually register a handle in the in-process cache.
+    /// Used by non-Docker unit tests that exercise workspace-file helpers.
+    pub async fn insert_handle_for_test(&self, handle: SandboxHandle) {
+        self.handles
+            .write()
+            .await
+            .insert(handle.session_id.clone(), handle);
     }
 }
 

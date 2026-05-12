@@ -89,6 +89,8 @@ const EXPECTED_TOOLS: &[&str] = &[
     // plan (2)
     "plan_advance",
     "plan_update",
+    "feature_mark_done",
+    "progress_update",
 ];
 
 #[test]
@@ -141,9 +143,10 @@ async fn stubs_return_not_implemented() {
         "browser_console_view",
         "info_search_web",
         // Story 1.1: plan tools now hit the real PlanManager.
-        "plan_create",
         "plan_advance",
         "plan_update",
+        "feature_mark_done",
+        "progress_update",
     ];
     for (name, tool) in reg.iter() {
         if real.contains(name) {
@@ -302,4 +305,159 @@ async fn browser_navigate_posts_url_action() {
     .await
     .unwrap();
     assert!(out.ok);
+}
+
+#[tokio::test]
+async fn feature_mark_done_flips_status_and_emits_event() {
+    let (cx, store) = ctx().await;
+    let ws = tempfile::tempdir().unwrap();
+    cx.sandbox
+        .insert_handle_for_test(crate::sandbox::SandboxHandle {
+            session_id: "s1".into(),
+            container_id: "c1".into(),
+            api_url: "http://127.0.0.1:1".into(),
+            novnc_url: "http://127.0.0.1:2".into(),
+            ttyd_url: "ws://127.0.0.1:3".into(),
+            workspace_host_path: ws.path().join("s1"),
+        })
+        .await;
+    cx.plan_manager
+        .create(
+            "s1",
+            "goal",
+            vec![crate::plan::Phase {
+                id: 1,
+                title: "phase".into(),
+                capabilities: vec![],
+                status: crate::plan::PhaseStatus::Pending,
+            }],
+        )
+        .await
+        .unwrap();
+    cx.sandbox
+        .write_workspace_file(
+            "s1",
+            "feature-list.json",
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "goal": "goal",
+                "features": [{"id":"f-1","title":"phase","status":"todo","plan_phase_id":1}]
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .await
+        .unwrap();
+
+    let out = register_builtin_tools()
+        .get("feature_mark_done")
+        .unwrap()
+        .invoke(json!({"feature_id":"f-1"}), &cx)
+        .await
+        .unwrap();
+    assert!(out.ok);
+
+    let feature_list = cx
+        .sandbox
+        .read_workspace_file("s1", "feature-list.json")
+        .await
+        .unwrap();
+    let feature_list: Value = serde_json::from_slice(&feature_list).unwrap();
+    assert_eq!(feature_list["features"][0]["status"], "done");
+    let events = store.query("s1", EventQuery::default()).await.unwrap();
+    assert!(events.iter().any(|e| {
+        e.event_type == crate::events::EventType::Misc
+            && e.data.get("kind").and_then(Value::as_str) == Some("feature_done")
+    }));
+}
+
+#[tokio::test]
+async fn feature_mark_done_out_of_phase_emits_extra_misc() {
+    let (cx, store) = ctx().await;
+    let ws = tempfile::tempdir().unwrap();
+    cx.sandbox
+        .insert_handle_for_test(crate::sandbox::SandboxHandle {
+            session_id: "s1".into(),
+            container_id: "c1".into(),
+            api_url: "http://127.0.0.1:1".into(),
+            novnc_url: "http://127.0.0.1:2".into(),
+            ttyd_url: "ws://127.0.0.1:3".into(),
+            workspace_host_path: ws.path().join("s1"),
+        })
+        .await;
+    cx.plan_manager
+        .create(
+            "s1",
+            "goal",
+            vec![crate::plan::Phase {
+                id: 1,
+                title: "phase".into(),
+                capabilities: vec![],
+                status: crate::plan::PhaseStatus::Pending,
+            }],
+        )
+        .await
+        .unwrap();
+    cx.sandbox
+        .write_workspace_file(
+            "s1",
+            "feature-list.json",
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "goal": "goal",
+                "features": [{"id":"f-2","title":"other","status":"todo","plan_phase_id":2}]
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .await
+        .unwrap();
+
+    register_builtin_tools()
+        .get("feature_mark_done")
+        .unwrap()
+        .invoke(json!({"feature_id":"f-2"}), &cx)
+        .await
+        .unwrap();
+
+    let events = store.query("s1", EventQuery::default()).await.unwrap();
+    assert!(events.iter().any(|e| {
+        e.data.get("kind").and_then(Value::as_str) == Some("feature_done_out_of_phase")
+    }));
+}
+
+#[tokio::test]
+async fn progress_update_truncates_long_lines() {
+    let (cx, _store) = ctx().await;
+    let ws = tempfile::tempdir().unwrap();
+    cx.sandbox
+        .insert_handle_for_test(crate::sandbox::SandboxHandle {
+            session_id: "s1".into(),
+            container_id: "c1".into(),
+            api_url: "http://127.0.0.1:1".into(),
+            novnc_url: "http://127.0.0.1:2".into(),
+            ttyd_url: "ws://127.0.0.1:3".into(),
+            workspace_host_path: ws.path().join("s1"),
+        })
+        .await;
+    cx.sandbox
+        .write_workspace_file("s1", "progress.txt", b"seed\n")
+        .await
+        .unwrap();
+    let line = "x".repeat(500);
+    register_builtin_tools()
+        .get("progress_update")
+        .unwrap()
+        .invoke(json!({"line": line}), &cx)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(
+        &cx.sandbox
+            .read_workspace_file("s1", "progress.txt")
+            .await
+            .unwrap(),
+    )
+    .into_owned();
+    let last = text.lines().last().unwrap();
+    assert!(last.ends_with('…'));
 }
