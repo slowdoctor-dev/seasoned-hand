@@ -72,7 +72,7 @@ jobs:
       redis:
         image: redis:7-alpine
         ports:
-          - 6379:6379
+          - "6379:6379"
     env:
       REDIS_TEST_URL: redis://127.0.0.1:6379
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -88,7 +88,7 @@ jobs:
       - name: Run ignored live sandbox lifecycle test
         run: cargo test --workspace -- --ignored sandbox::tests::live_create_inspect_destroy
       - name: Start Bifrost (only when provider keys are set)
-        if: env.ANTHROPIC_API_KEY != '' || env.OPENAI_API_KEY != ''
+        if: ${{ env.ANTHROPIC_API_KEY != '' || env.OPENAI_API_KEY != '' }}
         run: |
           docker run -d --name seasoned-hand-bifrost-ci \
             -p 4000:8080 \
@@ -107,7 +107,7 @@ jobs:
             --add-host host.docker.internal:host-gateway \
             maximhq/bifrost:v1.5.0
       - name: Wait for Bifrost health
-        if: env.ANTHROPIC_API_KEY != '' || env.OPENAI_API_KEY != ''
+        if: ${{ env.ANTHROPIC_API_KEY != '' || env.OPENAI_API_KEY != '' }}
         run: |
           for i in {1..30}; do
             if curl -fsS http://127.0.0.1:4000/health >/dev/null; then
@@ -118,7 +118,7 @@ jobs:
           echo "Bifrost did not become healthy in time" >&2
           exit 1
       - name: Run ignored Bifrost smoke test
-        if: env.ANTHROPIC_API_KEY != '' || env.OPENAI_API_KEY != ''
+        if: ${{ env.ANTHROPIC_API_KEY != '' || env.OPENAI_API_KEY != '' }}
         run: cargo test --workspace -- --ignored llm::tests::live_bifrost_chat_completion_smoke
 
   markdown-lint:
