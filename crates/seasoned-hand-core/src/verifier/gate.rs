@@ -20,13 +20,36 @@ impl VerifierGate {
     }
 
     pub async fn run(&self, shutdown: tokio_util::sync::CancellationToken) {
-        let mut cursor = 0_i64;
+        // Seed cursor from the highest already-acked verdict so a restart
+        // does not re-replay history (which would double-resume
+        // sessions that fell into the fail+suggested_plan_update path).
+        // refs: story 1.10 self-review — security report informational note
+        let mut cursor = self.seed_cursor().await.unwrap_or(0);
         while !shutdown.is_cancelled() {
             if let Ok(next) = self.poll_once(cursor).await {
                 cursor = next;
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
+    }
+
+    /// Read the highest event id of an already-acked verdict so we can
+    /// skip re-processing it on startup. Returns `Ok(0)` when no acks
+    /// exist (fresh DB / never run before). `MAX(id)` over the empty
+    /// set is `NULL`, which deserializes as `None`.
+    pub async fn seed_cursor(&self) -> Result<i64, rusqlite::Error> {
+        self.db
+            .with_conn(|conn| {
+                let id: Option<i64> = conn.query_row(
+                    "SELECT MAX(id) FROM events \
+                     WHERE type = 'Misc' \
+                       AND json_extract(data,'$.kind') = 'verifier_gate_ack'",
+                    [],
+                    |row| row.get::<_, Option<i64>>(0),
+                )?;
+                Ok(id.unwrap_or(0))
+            })
+            .await
     }
 
     pub async fn poll_once(&self, after_id: i64) -> Result<i64, rusqlite::Error> {
@@ -68,7 +91,8 @@ impl VerifierGate {
             return;
         }
 
-        match verdict {
+        let verification_id = data.get("verification_id").cloned().unwrap_or(Value::Null);
+        let outcome: &str = match verdict {
             "pass" => {
                 let _ = self.set_state(session_id, "FINISHED").await;
                 let _ = self
@@ -80,6 +104,7 @@ impl VerifierGate {
                         data: serde_json::json!({"kind":"task_complete"}),
                     })
                     .await;
+                "finished"
             }
             "fail" => {
                 if data.get("suggested_plan_update").is_some()
@@ -89,6 +114,7 @@ impl VerifierGate {
                 {
                     let _ = self.set_state(session_id, "RUNNING").await;
                     let _ = self.runner.resume_session(session_id).await;
+                    "resumed"
                 } else {
                     let _ = self.set_state(session_id, "SUSPENDED").await;
                     let _ = self
@@ -103,10 +129,27 @@ impl VerifierGate {
                             }),
                         })
                         .await;
+                    "suspended"
                 }
             }
-            _ => {}
-        }
+            _ => return,
+        };
+
+        // Universal ack so the cursor seed at restart skips this row.
+        // refs: story 1.10 self-review — security report informational note
+        let _ = self
+            .events
+            .append(NewEvent {
+                session_id: session_id.to_string(),
+                event_type: EventType::Misc,
+                source: "verifier_gate".into(),
+                data: serde_json::json!({
+                    "kind": "verifier_gate_ack",
+                    "verification_id": verification_id,
+                    "outcome": outcome,
+                }),
+            })
+            .await;
     }
 
     async fn set_state(&self, session_id: &str, state: &str) -> Result<(), rusqlite::Error> {
@@ -265,5 +308,98 @@ mod tests {
         .await;
         let _ = gate.poll_once(0).await.unwrap();
         assert_eq!(state(&db, &session_id).await, "RUNNING");
+    }
+
+    #[tokio::test]
+    async fn each_processed_verdict_emits_verifier_gate_ack() {
+        let (gate, events, _db, session_id) = fixture().await;
+        insert_verdict_event(&events, &session_id, "pass", None).await;
+        let _ = gate.poll_once(0).await.unwrap();
+        let rows = events
+            .query(&session_id, EventQuery::default())
+            .await
+            .unwrap();
+        let acks: Vec<_> = rows
+            .iter()
+            .filter(|e| {
+                e.event_type == EventType::Misc
+                    && e.data.get("kind").and_then(serde_json::Value::as_str)
+                        == Some("verifier_gate_ack")
+            })
+            .collect();
+        assert_eq!(acks.len(), 1, "expected exactly one verifier_gate_ack");
+        assert_eq!(
+            acks[0]
+                .data
+                .get("outcome")
+                .and_then(serde_json::Value::as_str),
+            Some("finished")
+        );
+        assert_eq!(
+            acks[0]
+                .data
+                .get("verification_id")
+                .and_then(serde_json::Value::as_str),
+            Some("v1"),
+            "ack must carry the verification_id from the verdict"
+        );
+    }
+
+    #[tokio::test]
+    async fn seed_cursor_returns_zero_when_no_acks_exist() {
+        let (gate, _events, _db, _session_id) = fixture().await;
+        assert_eq!(gate.seed_cursor().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn restart_does_not_replay_already_acked_verdicts() {
+        // Story 1.10 follow-up (security review informational note):
+        // a fresh gate started after a previous gate processed verdicts
+        // must NOT re-process them — otherwise restart would
+        // double-resume sessions that fell into fail+suggested_plan_update.
+        let (gate, events, db, session_id) = fixture().await;
+        insert_verdict_event(
+            &events,
+            &session_id,
+            "fail",
+            Some(json!({"phases":[{"id":1,"title":"x"}]})),
+        )
+        .await;
+
+        // First gate processes the verdict and emits an ack.
+        let cursor_after_first = gate.poll_once(0).await.unwrap();
+        assert!(cursor_after_first > 0);
+        assert_eq!(state(&db, &session_id).await, "RUNNING");
+
+        // Simulate restart: a fresh VerifierGate against the SAME db.
+        let fresh_gate = VerifierGate::new(db.clone(), events.clone(), gate.runner.clone());
+        let seeded = fresh_gate.seed_cursor().await.unwrap();
+        assert!(
+            seeded >= cursor_after_first,
+            "seed must cover the previously-processed verdict, got {seeded} < {cursor_after_first}"
+        );
+
+        // Manually set the session back to VERIFYING so we can detect any
+        // unwanted re-replay (the test gate is correct iff it leaves the
+        // state alone after restart).
+        db.with_conn({
+            let sid = session_id.clone();
+            move |conn| {
+                conn.execute(
+                    "UPDATE sessions SET state='VERIFYING' WHERE id = ?",
+                    rusqlite::params![sid],
+                )
+                .unwrap();
+            }
+        })
+        .await;
+
+        // Polling from the seeded cursor must NOT re-process the verdict.
+        let _ = fresh_gate.poll_once(seeded).await.unwrap();
+        assert_eq!(
+            state(&db, &session_id).await,
+            "VERIFYING",
+            "post-restart poll must not re-transition the session"
+        );
     }
 }

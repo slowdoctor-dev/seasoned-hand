@@ -149,8 +149,12 @@ async fn ws_session(socket: WebSocket, state: AppState) {
                     Ok(Message::Text(text)) => {
                         match serde_json::from_str::<ClientEnvelope>(&text) {
                             Ok(ClientEnvelope::Pong { .. }) => {
+                                // Client pong is a heartbeat reply, NOT a request — refresh the
+                                // last-pong timer and do not echo. Echoing a `{type:"pong"}`
+                                // envelope back made reads race with command replies (the
+                                // `bad_json_does_not_close_connection` test caught this as
+                                // intermittent `expected:"ack", got:"pong"`).
                                 last_pong = Instant::now();
-                                let _ = tx.send(ServerEnvelope::Pong { ts: now_unix() });
                             }
                             Ok(ClientEnvelope::Command { id, payload, .. }) => {
                                 handle_command(&state, &tx, &mut subscriptions, id, payload).await;

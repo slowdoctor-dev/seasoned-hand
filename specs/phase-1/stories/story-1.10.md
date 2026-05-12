@@ -366,3 +366,23 @@ shim is correct semantically — it observes every persisted
 `verifier_verdict` row and applies the §2.4.5 transition table — just
 inefficient. Replace with a real subscription channel when the bus
 exists.
+
+**Follow-up resolved post-security-review: cursor persists across
+restarts via `verifier_gate_ack` Misc markers.** The first cut of the
+gate reset `cursor = 0` on every startup, which would re-replay all
+historical `verifier_verdict` rows on restart and double-resume
+sessions that fell into the `fail+suggested_plan_update` path. Fixed:
+after every gate-processed verdict (pass / fail+suggestion /
+fail-no-suggestion), the gate now appends a `verifier_gate_ack`
+Misc event carrying `{verification_id, outcome}`. On startup,
+`seed_cursor()` reads `MAX(events.id) WHERE kind='verifier_gate_ack'`
+and starts polling from there, so already-handled verdicts are
+skipped. Three new tests cover the ack-emission and restart
+idempotency paths.
+
+**Follow-up resolved post-self-review: WS server no longer echoes
+`{type:"pong"}` envelopes on receiving a client pong.** The Phase 0
+heartbeat path had a stray `tx.send(ServerEnvelope::Pong)` on the
+client-pong branch (ws.rs:153 before fix). The echo had no consumer
+and made `bad_json_does_not_close_connection` flaky (intermittent
+`expected:"ack", got:"pong"`). Removed; 5/5 stable.
