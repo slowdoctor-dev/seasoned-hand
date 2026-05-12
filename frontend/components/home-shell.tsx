@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { AgentComputer } from "@/components/agent-computer";
 import { Chat } from "@/components/chat";
-import { AgentComputerPlaceholder } from "@/components/panels";
 import { TaskList } from "@/components/task-list";
 import { ThreePanelLayout } from "@/components/three-panel-layout";
 
@@ -15,7 +15,7 @@ export function HomeShell() {
       center={
         <Chat sessionId={sessionId} onSessionCreated={setSessionId} />
       }
-      right={<AgentComputerPlaceholder />}
+      right={<AgentComputer sessionId={sessionId} />}
     />
   );
 }

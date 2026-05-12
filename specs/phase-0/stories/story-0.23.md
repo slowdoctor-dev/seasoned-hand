@@ -1,6 +1,6 @@
 # Story 0.23 — AgentComputer tabs scaffold
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 0.19 (layout)
 > **Phase**: 0
