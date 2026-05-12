@@ -208,19 +208,13 @@
 - ~~Resolved by story 0.10: `EventEmittingHook` writes Action + Observation
   events for every dispatch; AppState::new registers it automatically.~~
 
-### 21. Hook output-truncation path falls back to inline preview
-- **Origin**: story 0.10
-- **Severity**: **Low**
-- **What**: When a tool output's JSON exceeds `INLINE_OUTPUT_LIMIT`
-  (16 KB), `downsize_output()` replaces it with a `{preview, truncated:true}`
-  marker. Architecture §3.4 specifies writing the full body to
-  `/workspace/.observations/<call_id>.txt` via the sandbox and storing
-  only a `file_ref` in the event.
-- **Why**: The sandbox-file-write path needed the broader sandbox-tool
-  wiring plus a write helper; story 0.9b closed endpoint coverage, but
-  this hook-level file persistence path is still deferred.
-- **Pay down**: Add a `write_observation_file(call_id, content)` helper to
-  the hook and replace the inline truncation with the file_ref path.
+### ~~21. Hook output-truncation path falls back to inline preview~~ ✅ resolved 2026-05-13 (story 1.14, commit: this commit)
+- ~~Origin: story 0.10~~
+- ~~Resolved by story 1.14: `events::truncation::write_large_or_inline`
+  now writes payloads larger than 16 KB to `.eventfiles/<event_id>.<ext>`
+  in sandbox workspace storage and records `EventPayloadBody::FileRef`
+  metadata (path/content_type/sha256/size); the inline preview fallback path
+  was removed from `EventEmittingHook`.~~
 
 ### ~~22. Capability table assumes Bifrost cloud aliases support tool calling~~ ✅ resolved 2026-05-13 (story 1.7)
 - ~~Origin: story 0.13~~

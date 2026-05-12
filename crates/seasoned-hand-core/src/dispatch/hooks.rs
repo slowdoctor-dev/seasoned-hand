@@ -7,14 +7,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+use crate::events::payload::EventPayloadBody;
+use crate::events::truncation::write_large_or_inline;
 use crate::events::{EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
 use crate::tools::{ToolContext, ToolError, ToolOutput};
-
-/// Inline output cap before the hook falls back to a truncation marker.
-/// Architecture §3.4 says 16 KB; we serialize JSON, so 16 * 1024 bytes
-/// of the JSON-encoded output triggers the truncation path.
-pub const INLINE_OUTPUT_LIMIT: usize = 16 * 1024;
-pub const TRUNCATION_PREVIEW: usize = 1024;
 
 #[async_trait]
 pub trait Hook: Send + Sync {
@@ -69,11 +65,35 @@ impl EventEmittingHook {
             tracing::warn!(error = %e, hook = label, "hook event append failed");
         }
     }
+
+    async fn payload_for(
+        &self,
+        ctx: &ToolContext,
+        body: &[u8],
+        content_type: &str,
+    ) -> Result<EventPayloadBody, crate::events::EventError> {
+        let next_id = self.events.reserve_next_id().await?;
+        write_large_or_inline(&ctx.sandbox, &ctx.session_id, next_id, body, content_type).await
+    }
 }
 
 #[async_trait]
 impl Hook for EventEmittingHook {
     async fn pre(&self, call_id: &str, name: &str, args: &Value, ctx: &ToolContext) {
+        let body = match serde_json::to_vec(args) {
+            Ok(body) => body,
+            Err(e) => {
+                tracing::warn!(error = %e, "hook args serialization failed");
+                return;
+            }
+        };
+        let payload = match self.payload_for(ctx, &body, "application/json").await {
+            Ok(payload) => payload,
+            Err(e) => {
+                tracing::warn!(error = %e, "hook action payload capture failed");
+                return;
+            }
+        };
         self.append_logged(
             NewEvent {
                 session_id: ctx.session_id.clone(),
@@ -81,7 +101,8 @@ impl Hook for EventEmittingHook {
                 source: format!("tool:{name}"),
                 data: json!({
                     "tool": name,
-                    "args": args,
+                    "body": payload,
+                    "content_type": "application/json",
                     "call_id": call_id,
                 }),
             },
@@ -98,20 +119,32 @@ impl Hook for EventEmittingHook {
         output: &ToolOutput,
         ctx: &ToolContext,
     ) {
-        let (recorded_output, file_ref, truncated) = downsize_output(&output.output);
+        let output_bytes = match serde_json::to_vec(&output.output) {
+            Ok(body) => body,
+            Err(e) => {
+                tracing::warn!(error = %e, "hook output serialization failed");
+                return;
+            }
+        };
+        let payload = match self
+            .payload_for(ctx, &output_bytes, "application/json")
+            .await
+        {
+            Ok(payload) => payload,
+            Err(e) => {
+                tracing::warn!(error = %e, "hook observation payload capture failed");
+                return;
+            }
+        };
 
         let mut data = json!({
             "call_id": call_id,
             "ok": output.ok,
-            "output": recorded_output,
+            "body": payload,
+            "content_type": "application/json",
         });
         if let Some(fr) = output.file_ref.as_deref() {
             data["file_ref"] = Value::String(fr.into());
-        } else if let Some(fr) = file_ref {
-            data["file_ref"] = Value::String(fr);
-        }
-        if truncated {
-            data["truncated"] = Value::Bool(true);
         }
         if let Some(err) = &output.error {
             data["error"] = json!({ "kind": err.kind, "message": err.message });
@@ -161,25 +194,4 @@ fn tool_error_kind(err: &ToolError) -> &'static str {
         ToolError::NotImplemented(_) => "not_implemented",
         ToolError::Internal(_) => "internal",
     }
-}
-
-/// Architecture §3.4 oversize handling. Phase 0 stores the truncated
-/// preview inline with a `truncated:true` marker rather than writing
-/// to sandbox `/workspace/.observations/<call_id>.txt` — the sandbox
-/// upload path lands when the broader sandbox-tool wiring (DEBT #19)
-/// completes. Tracked as DEBT.md item #21.
-fn downsize_output(output: &Value) -> (Value, Option<String>, bool) {
-    let serialized = serde_json::to_string(output).unwrap_or_default();
-    if serialized.len() <= INLINE_OUTPUT_LIMIT {
-        return (output.clone(), None, false);
-    }
-    let preview = serialized
-        .chars()
-        .take(TRUNCATION_PREVIEW)
-        .collect::<String>();
-    (
-        json!({ "preview": preview, "preview_chars": TRUNCATION_PREVIEW }),
-        None,
-        true,
-    )
 }

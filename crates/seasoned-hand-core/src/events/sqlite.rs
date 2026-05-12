@@ -26,6 +26,17 @@ impl SqliteEventStore {
             redis: Some(redis),
         }
     }
+
+    pub async fn reserve_next_id(&self) -> Result<i64, EventError> {
+        self.pool
+            .with_conn(|conn| {
+                conn.query_row("SELECT COALESCE(MAX(id), 0) + 1 FROM events", [], |row| {
+                    row.get(0)
+                })
+                .map_err(EventError::from)
+            })
+            .await
+    }
 }
 
 fn now_micros() -> Result<i64, EventError> {

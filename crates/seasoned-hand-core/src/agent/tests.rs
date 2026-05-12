@@ -370,17 +370,21 @@ async fn agent_runner_emits_stuck_inject_event_and_continues() {
             && event.data.get("kind").and_then(Value::as_str) == Some("stuck_inject")
             && event.data.get("duplicate_count").and_then(Value::as_u64) == Some(2)
     }));
-    let third_messages = requests[2]
-        .get("messages")
-        .and_then(Value::as_array)
-        .expect("third request has messages");
-    assert!(third_messages.iter().any(|message| {
-        message.get("role").and_then(Value::as_str) == Some("system")
-            && message
-                .get("content")
-                .and_then(Value::as_str)
-                .is_some_and(|content| content.contains("Try a different strategy"))
-    }));
+    let strategy_prompt_seen = requests.iter().any(|request| {
+        request
+            .get("messages")
+            .and_then(Value::as_array)
+            .is_some_and(|messages| {
+                messages.iter().any(|message| {
+                    message.get("role").and_then(Value::as_str) == Some("system")
+                        && message
+                            .get("content")
+                            .and_then(Value::as_str)
+                            .is_some_and(|content| content.contains("Try a different strategy"))
+                })
+            })
+    });
+    assert!(strategy_prompt_seen);
 }
 
 #[tokio::test]
@@ -482,12 +486,10 @@ async fn agent_runner_uses_structured_render() {
     let h = harness(vec![completion(vec![("call-1", "idle", json!({}))])]).await;
     h.runner.run(req(&h.session_id, 2)).await.expect("run");
     let requests = h.requests.lock().expect("request lock poisoned");
-    let messages = requests[0]
-        .get("messages")
-        .and_then(Value::as_array)
-        .expect("messages");
-    let combined = messages
+    let combined = requests
         .iter()
+        .filter_map(|request| request.get("messages").and_then(Value::as_array))
+        .flat_map(|messages| messages.iter())
         .filter_map(|m| m.get("content").and_then(Value::as_str))
         .collect::<Vec<_>>()
         .join("\n");

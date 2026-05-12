@@ -105,7 +105,7 @@ impl SandboxClient {
             .ok_or_else(|| SandboxError::NotFound(session_id.to_string()))?;
         let path = handle
             .workspace_host_path
-            .join(relative_path.trim_start_matches('/'));
+            .join(normalize_workspace_relative_path(relative_path));
         Ok(tokio::fs::read(path).await?)
     }
 
@@ -121,7 +121,7 @@ impl SandboxClient {
             .ok_or_else(|| SandboxError::NotFound(session_id.to_string()))?;
         let path = handle
             .workspace_host_path
-            .join(relative_path.trim_start_matches('/'));
+            .join(normalize_workspace_relative_path(relative_path));
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -456,6 +456,12 @@ impl SandboxClient {
             .await
             .insert(handle.session_id.clone(), handle);
     }
+}
+
+fn normalize_workspace_relative_path(path: &str) -> &str {
+    path.strip_prefix("/workspace/")
+        .or_else(|| path.strip_prefix("workspace/"))
+        .unwrap_or_else(|| path.trim_start_matches('/'))
 }
 
 pub fn container_name(session_id: &str) -> String {

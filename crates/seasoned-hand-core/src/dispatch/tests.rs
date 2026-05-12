@@ -1,15 +1,17 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use super::*;
 use crate::db;
+use crate::events::payload::EventPayloadBody;
 use crate::events::sqlite::SqliteEventStore;
 use crate::events::{EventQuery, EventStore, EventType};
 use crate::plan::PlanManager;
 use crate::sandbox::SandboxClient;
 use crate::search::{SearchClient, SearchProvider};
-use crate::tools::{ToolContext, register_builtin_tools};
+use crate::tools::{Tool, ToolContext, ToolError, ToolOutput, register_builtin_tools};
 
 async fn fixture() -> (ToolDispatcher, ToolContext) {
     let pool = db::open(":memory:").await.unwrap();
@@ -130,7 +132,11 @@ async fn hook_emits_action_then_observation_with_linked_call_id() {
     let obs_call_id = events[1].data["call_id"].as_str().unwrap();
     assert_eq!(action_call_id, obs_call_id, "call_id must link pre→post");
     assert_eq!(events[1].data["ok"], true);
-    assert_eq!(events[1].data["output"]["signal"], "task_complete");
+    let obs_body: EventPayloadBody =
+        serde_json::from_value(events[1].data["body"].clone()).unwrap();
+    let bytes = obs_body.body_bytes(&ctx.sandbox, "s1").await.unwrap();
+    let output_value: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(output_value["signal"], "task_complete");
 }
 
 #[tokio::test]
@@ -179,4 +185,72 @@ async fn hook_failure_does_not_break_dispatch() {
     // Tool succeeded even though the hook's append failed.
     assert!(out.ok);
     assert_eq!(out.output["signal"], "task_complete");
+}
+
+struct LargeOutputTool;
+
+#[async_trait]
+impl Tool for LargeOutputTool {
+    fn name(&self) -> &'static str {
+        "test_large_output"
+    }
+    fn description(&self) -> &'static str {
+        "test helper"
+    }
+    fn schema(&self) -> Value {
+        json!({"type":"object"})
+    }
+    async fn invoke(&self, _args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput {
+            ok: true,
+            output: json!({"blob": "x".repeat(100 * 1024)}),
+            file_ref: None,
+            error: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn large_payload_writes_to_eventfiles() {
+    let (mut d, ctx, store) = fixture_with_hook().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().join("s1");
+    std::fs::create_dir_all(&workspace).unwrap();
+    ctx.sandbox
+        .insert_handle_for_test(crate::sandbox::SandboxHandle {
+            session_id: "s1".into(),
+            container_id: "test".into(),
+            api_url: "http://127.0.0.1:1".into(),
+            novnc_url: "http://127.0.0.1:2".into(),
+            ttyd_url: "ws://127.0.0.1:3".into(),
+            workspace_host_path: workspace,
+        })
+        .await;
+    d.registry
+        .insert("test_large_output", Arc::new(LargeOutputTool));
+
+    let out = d.dispatch(&ctx, "test_large_output", Value::Null).await;
+    assert!(out.ok);
+
+    let events = store.query("s1", EventQuery::default()).await.unwrap();
+    assert_eq!(events.len(), 2);
+    let obs_body: EventPayloadBody =
+        serde_json::from_value(events[1].data["body"].clone()).unwrap();
+    let EventPayloadBody::FileRef { path, .. } = obs_body else {
+        panic!("expected file ref for large payload");
+    };
+    assert!(path.starts_with("/workspace/.eventfiles/"));
+}
+
+#[test]
+fn removal_of_inline_preview_path() {
+    let needle = ["inline", "preview", "fallback"].join("_");
+    let output = std::process::Command::new("rg")
+        .args(["-n", &needle, "crates/seasoned-hand-core/src/"])
+        .output()
+        .unwrap();
+    assert!(
+        output.stdout.is_empty(),
+        "expected no legacy inline preview fallback references"
+    );
 }

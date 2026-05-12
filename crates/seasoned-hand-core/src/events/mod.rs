@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::db::DbError;
+use crate::sandbox::SandboxError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventType {
@@ -106,6 +107,10 @@ pub enum EventError {
     Json(#[from] serde_json::Error),
     #[error("system clock error: {0}")]
     Clock(String),
+    #[error("sandbox error: {0}")]
+    Sandbox(#[from] SandboxError),
+    #[error("invalid file-ref path: {0}")]
+    InvalidFileRefPath(String),
 }
 
 /// Append-only event store.
@@ -119,7 +124,9 @@ pub trait EventStore: Send + Sync {
     async fn query(&self, session_id: &str, filter: EventQuery) -> Result<Vec<Event>, EventError>;
 }
 
+pub mod payload;
 pub mod sqlite;
+pub mod truncation;
 
 #[cfg(test)]
 mod tests;
