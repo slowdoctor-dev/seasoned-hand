@@ -51,18 +51,12 @@
   to 3 (the permanent Phase-0 stubs: `deploy_expose_port`,
   `deploy_apply_deployment`, `playbook_search`).
 
-### 4. Tool catalog count is 33, architecture says "32"
-- **Origin**: story 0.7
-- **Severity**: **Low** (documentation / counting)
-- **What**: `scripts/spec-check.sh` warns "Tool catalog has 33 tools, spec says
-  32". The 33 = the architecture's 32 + `plan_advance` (or maybe the spec's
-  "32" was always approximate — see story-0.7.md for the breakdown).
-- **Why**: Architecture §7's "32" is internally inconsistent (counts
-  `make_manus_page` differently than the §4.3 routing table). Picked a
-  defensible 33.
-- **Pay down**: One of the next architecture edits should reconcile the
-  count and update §7 to 33 OR reduce the registry to 32. Low priority —
-  the warning doesn't fail any gate.
+### ~~4. Tool catalog count is 33, architecture says "32"~~ ✅ resolved 2026-05-12 (story 0.27)
+- ~~Origin: story 0.7~~
+- ~~Resolved: spec-check.sh now asserts 33 (architecture's 32 + plan_advance
+  per ADR-010); failed-gate if it ever drifts. Architecture §7 still reads
+  "32" but with the proviso that plan_advance/plan_update are separately
+  enumerated under ADR-010. Doc-only follow-up may reconcile the wording.~~
 
 ### 5. `async-trait` macro on `Tool` (Box-pin per call)
 - **Origin**: story 0.6

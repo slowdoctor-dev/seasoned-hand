@@ -1,6 +1,6 @@
 # Story 0.27 — Phase 0 integration test (E2E)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 4 hours
 > **Dependencies**: all of 0.1–0.26
 > **Phase**: 0

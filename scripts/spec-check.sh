@@ -50,12 +50,18 @@ fi
 # Check 4: No orphan stories (status: done but file changed since)
 # (skipping for v0)
 
-# Check 5: Tool catalog count
-# Spec says 32 tools. Verify code has 32.
-if [ -f "src/tools/mod.rs" ]; then
-  count=$(grep -c "pub mod " src/tools/mod.rs || echo 0)
-  if [ "$count" -ne 32 ] && [ "$count" -gt 0 ]; then
-    echo "⚠ Tool catalog has $count tools, spec says 32"
+# Check 5: Tool catalog registry size matches story 0.7's EXPECTED_TOOLS
+# Phase 0 ships 33: architecture §7's 32 + plan_advance (ADR-010).
+TOOLS_BUILTIN=crates/seasoned-hand-core/src/tools/builtin.rs
+if [ -f "$TOOLS_BUILTIN" ]; then
+  count=$(grep -c "map.insert(" "$TOOLS_BUILTIN" || echo 0)
+  expected=33
+  if [ "$count" -ne "$expected" ]; then
+    echo "✗ Tool catalog registry has $count entries, expected $expected (story 0.7 / DEBT #4)"
+    FAIL=$((FAIL+1))
+  else
+    echo "✓ Tool catalog registry size ($count) matches story 0.7"
+    PASS=$((PASS+1))
   fi
 fi
 
