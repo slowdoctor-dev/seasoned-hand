@@ -5,12 +5,14 @@ use serde_json::json;
 use crate::agent::AgentError;
 use crate::events::{Event, EventQuery, EventStore, EventType, sqlite::SqliteEventStore};
 use crate::llm::{Message, Role};
+use crate::plan::{PlanManager, render::sticky_render};
 
 const SYSTEM_PROMPT: &str = "You are Seasoned Hand. Use exactly one tool call per iteration. \
 Return a tool call every turn; call idle when the task is complete.";
 
 pub async fn build_messages(
     events: &SqliteEventStore,
+    plan_manager: &PlanManager,
     session_id: &str,
 ) -> Result<Vec<Message>, AgentError> {
     let all_events = events
@@ -30,14 +32,10 @@ pub async fn build_messages(
         tool_call_id: None,
     }];
 
-    if let Some(plan) = all_events
-        .iter()
-        .rev()
-        .find(|event| event.event_type == EventType::Plan)
-    {
+    if let Ok(plan) = plan_manager.snapshot(session_id).await {
         messages.push(Message {
             role: Role::System,
-            content: Some(format!("PLAN: {}", plan.data)),
+            content: Some(sticky_render(&plan, 1000)),
             name: None,
             tool_calls: None,
             tool_call_id: None,

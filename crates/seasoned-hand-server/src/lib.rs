@@ -19,6 +19,7 @@ use seasoned_hand_core::db::DbPool;
 use seasoned_hand_core::dispatch::{ToolDispatcher, hooks::EventEmittingHook};
 use seasoned_hand_core::events::{EventQuery, EventStore, EventType, sqlite::SqliteEventStore};
 use seasoned_hand_core::llm::LlmClient;
+use seasoned_hand_core::plan::PlanManager;
 use seasoned_hand_core::pubsub::RedisPool;
 use seasoned_hand_core::router::{SlotName, SlotRouter};
 use seasoned_hand_core::sandbox::SandboxClient;
@@ -39,6 +40,7 @@ pub struct AppState {
     pub router: Arc<SlotRouter>,
     pub capabilities: Arc<HashMap<String, ModelCapabilities>>,
     pub cost: Arc<CostClient>,
+    pub plan_manager: Arc<PlanManager>,
     pub runner: Arc<AgentRunner>,
 }
 
@@ -59,6 +61,7 @@ impl AppState {
                 .with_hook(Arc::new(EventEmittingHook::new(events.clone()))),
         );
         let router = Arc::new(router);
+        let plan_manager = Arc::new(PlanManager::new(db.clone(), events.clone()));
         let main_slot = router.resolve(SlotName::Main);
         let llm = LlmClient::new(main_slot.base_url.clone(), main_slot.api_key.clone());
         let cost = Arc::new(CostClient::new(main_slot.base_url.clone()));
@@ -71,6 +74,7 @@ impl AppState {
             search: search.clone(),
             cost: cost.clone(),
             sessions: db.clone(),
+            plan_manager: plan_manager.clone(),
         }));
         Self {
             db,
@@ -82,6 +86,7 @@ impl AppState {
             router,
             capabilities: Arc::new(capabilities),
             cost,
+            plan_manager,
             runner,
         }
     }

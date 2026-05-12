@@ -14,6 +14,7 @@ use crate::db::{DbError, DbPool};
 use crate::dispatch::ToolDispatcher;
 use crate::events::{EventError, EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
 use crate::llm::{ChatCompletionRequest, LlmClient, LlmError, ToolChoice, ToolSpec};
+use crate::plan::{Phase, PhaseStatus, PlanManager};
 use crate::router::{SlotName, SlotRouter};
 use crate::sandbox::SandboxClient;
 use crate::search::SearchClient;
@@ -68,6 +69,7 @@ pub struct AgentRunner {
     search: Arc<SearchClient>,
     cost: Arc<CostClient>,
     sessions: DbPool,
+    plan_manager: Arc<PlanManager>,
 }
 
 pub struct AgentRunnerDeps {
@@ -79,6 +81,7 @@ pub struct AgentRunnerDeps {
     pub search: Arc<SearchClient>,
     pub cost: Arc<CostClient>,
     pub sessions: DbPool,
+    pub plan_manager: Arc<PlanManager>,
 }
 
 impl AgentRunner {
@@ -92,6 +95,7 @@ impl AgentRunner {
             search: deps.search,
             cost: deps.cost,
             sessions: deps.sessions,
+            plan_manager: deps.plan_manager,
         }
     }
 
@@ -128,7 +132,8 @@ impl AgentRunner {
 
         for step in 0..req.max_steps {
             steps_run = step + 1;
-            let mut messages = build_messages(&self.events, &req.session_id).await?;
+            let mut messages =
+                build_messages(&self.events, &self.plan_manager, &req.session_id).await?;
             if let Some(prompt) = strategy_prompt.take() {
                 messages.insert(
                     0,
@@ -237,6 +242,7 @@ impl AgentRunner {
                 events: self.events.clone(),
                 sandbox: self.sandbox.clone(),
                 search: self.search.clone(),
+                plan_manager: self.plan_manager.clone(),
             };
             let output = self
                 .dispatcher
@@ -312,29 +318,19 @@ impl AgentRunner {
     }
 
     async fn create_baseline_plan(&self, session_id: &str, input: &str) -> Result<(), AgentError> {
-        self.events
-            .append(NewEvent {
-                session_id: session_id.to_string(),
-                event_type: EventType::Plan,
-                source: "agent".into(),
-                data: json!({
-                    "op": "create",
-                    "plan_id": "baseline",
-                    "snapshot": {
-                        "id": "baseline",
-                        "session_id": session_id,
-                        "goal": input,
-                        "phases": [{
-                            "id": 1,
-                            "title": input,
-                            "capabilities": [],
-                            "status": "active",
-                        }],
-                        "current_phase_id": 1,
-                    },
-                }),
-            })
-            .await?;
+        self.plan_manager
+            .create(
+                session_id,
+                input,
+                vec![Phase {
+                    id: 1,
+                    title: input.to_string(),
+                    capabilities: vec![],
+                    status: PhaseStatus::Pending,
+                }],
+            )
+            .await
+            .map_err(|e| AgentError::Internal(e.to_string()))?;
         Ok(())
     }
 

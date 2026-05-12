@@ -20,6 +20,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 urlencoding = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 serde_yaml = "0.9"
+tiktoken-rs = "0.5"
 
 [dev-dependencies]
 tempfile = "3"

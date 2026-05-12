@@ -11,6 +11,7 @@ use crate::cost::CostClient;
 use crate::db;
 use crate::dispatch::hooks::EventEmittingHook;
 use crate::events::EventQuery;
+use crate::plan::PlanManager;
 use crate::pubsub::RedisPool;
 use crate::router::SlotRouter;
 use crate::search::SearchProvider;
@@ -88,6 +89,7 @@ async fn harness_with_cost(
         ToolDispatcher::new(register_builtin_tools())
             .with_hook(Arc::new(EventEmittingHook::new(events.clone()))),
     );
+    let plan_manager = Arc::new(PlanManager::new(db.clone(), events.clone()));
     let router = Arc::new(
         SlotRouter::from_yaml_str(&format!(
             r#"
@@ -118,6 +120,7 @@ slots:
         search,
         cost,
         sessions: db.clone(),
+        plan_manager,
     });
 
     Harness {
@@ -454,6 +457,25 @@ async fn agent_runner_continues_when_cost_poll_fails() {
     assert_eq!(result.steps, 1);
     assert_eq!(session_state(&h.db, &h.session_id).await, "FINISHED");
     assert_eq!(session_cost(&h.db, &h.session_id).await, 0);
+}
+
+#[tokio::test]
+async fn agent_runner_uses_structured_render() {
+    let h = harness(vec![completion(vec![("call-1", "idle", json!({}))])]).await;
+    h.runner.run(req(&h.session_id, 2)).await.expect("run");
+    let requests = h.requests.lock().expect("request lock poisoned");
+    let messages = requests[0]
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("messages");
+    let combined = messages
+        .iter()
+        .filter_map(|m| m.get("content").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(combined.contains("== PLAN =="));
+    assert!(combined.contains("== END PLAN =="));
+    assert!(combined.contains("[active]"));
 }
 
 async fn session_state(db: &DbPool, session_id: &str) -> String {

@@ -12,6 +12,7 @@ use serde_json::{Map, Value, json};
 
 use super::{Tool, ToolContext, ToolError, ToolErrorPayload, ToolOutput};
 use crate::events::{EventStore, EventType, NewEvent};
+use crate::plan::{Phase, PhaseStatus, PlanMutationSource};
 
 pub(super) async fn sandbox_post_raw(url: &str, body: Value) -> Result<ToolOutput, ToolError> {
     let client = reqwest::Client::new();
@@ -830,6 +831,66 @@ impl Tool for BrowserConsoleView {
     }
 }
 
+pub struct PlanAdvance;
+
+#[async_trait]
+impl Tool for PlanAdvance {
+    fn name(&self) -> &'static str {
+        "plan_advance"
+    }
+    fn description(&self) -> &'static str {
+        "Advance the current plan to the next phase. ADR-010."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(json!({}), &[])
+    }
+    async fn invoke(&self, _args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let plan = ctx
+            .plan_manager
+            .advance(&ctx.session_id)
+            .await
+            .map_err(|e| ToolError::Backend(e.to_string()))?;
+        Ok(ToolOutput {
+            ok: true,
+            output: json!({"ok": true, "plan": plan}),
+            file_ref: None,
+            error: None,
+        })
+    }
+}
+
+pub struct PlanUpdate;
+
+#[async_trait]
+impl Tool for PlanUpdate {
+    fn name(&self) -> &'static str {
+        "plan_update"
+    }
+    fn description(&self) -> &'static str {
+        "Replace the remaining phases of the plan with a new structured list. ADR-010."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(
+            json!({"phases":{"type":"array","items":{"type":"object","properties":{"id":{"type":"integer"},"title":{"type":"string"},"capabilities":{"type":"array","items":{"type":"string"}},"status":{"type":"string","enum":["pending","active","done"]}},"required":["id","title"]}}}),
+            &["phases"],
+        )
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let phases = parse_phases(&args)?;
+        let plan = ctx
+            .plan_manager
+            .update(&ctx.session_id, phases, PlanMutationSource::Agent)
+            .await
+            .map_err(|e| ToolError::Backend(e.to_string()))?;
+        Ok(ToolOutput {
+            ok: true,
+            output: json!({"ok": true, "plan": plan}),
+            file_ref: None,
+            error: None,
+        })
+    }
+}
+
 // ===== stub tool (story 0.7) =====
 //
 // Used for the 28 tools whose real backends land in stories 0.8 / 0.9 /
@@ -971,42 +1032,54 @@ pub fn all() -> HashMap<&'static str, Arc<dyn Tool>> {
         ),
     );
 
-    // ===== Plan (2) — LLM-callable per ADR-010; real impl story 0.14 =====
-    map.insert(
-        "plan_advance",
-        stub(
-            "plan_advance",
-            "Advance the current plan to the next phase. ADR-010.",
-            obj_schema(json!({}), &[]),
-            "story 0.14",
-        ),
-    );
-    map.insert(
-        "plan_update",
-        stub(
-            "plan_update",
-            "Replace the remaining phases of the plan with a new structured list. ADR-010.",
-            obj_schema(
-                json!({
-                    "phases": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "id": { "type": "integer" },
-                                "title": { "type": "string" },
-                                "capabilities": { "type": "array", "items": { "type": "string" } },
-                                "status": { "type": "string" }
-                            },
-                            "required": ["id", "title"]
-                        }
-                    }
-                }),
-                &["phases"],
-            ),
-            "story 0.14",
-        ),
-    );
+    // ===== Plan (2) — LLM-callable per ADR-010 =====
+    map.insert("plan_advance", Arc::new(PlanAdvance));
+    map.insert("plan_update", Arc::new(PlanUpdate));
 
     map
+}
+
+fn parse_phases(args: &Value) -> Result<Vec<Phase>, ToolError> {
+    let Some(items) = args.get("phases").and_then(Value::as_array) else {
+        return Err(ToolError::InvalidArgs("missing 'phases' array".into()));
+    };
+    let mut phases = Vec::with_capacity(items.len());
+    for item in items {
+        let id = item
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| ToolError::InvalidArgs("phase.id must be integer".into()))?
+            as u32;
+        let title = item
+            .get("title")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::InvalidArgs("phase.title must be string".into()))?
+            .to_string();
+        let capabilities = item
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .map(|caps| {
+                caps.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let status = match item
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("pending")
+        {
+            "active" => PhaseStatus::Active,
+            "done" => PhaseStatus::Done,
+            _ => PhaseStatus::Pending,
+        };
+        phases.push(Phase {
+            id,
+            title,
+            capabilities,
+            status,
+        });
+    }
+    Ok(phases)
 }

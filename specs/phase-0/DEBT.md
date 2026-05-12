@@ -257,18 +257,12 @@
   `sessions.cost_cents`, and suspends the session with `Misc{kind:"cost_cap"}`
   when the configured cap is reached.~~
 
-### 25. Plan tools remain callable stubs
-- **Origin**: story 0.14
-- **Severity**: **Medium**
-- **What**: The runner seeds a baseline Plan event and exposes the registered
-  plan tools to the LLM, but `plan_create`, `plan_advance`, and `plan_update`
-  still return `not_implemented` instead of mutating a structured plan table.
-- **Why**: ADR-010 full Plan Manager behavior is larger than the baseline
-  ReAct loop; story 0.14 only needed sticky plan context and callable tool
-  specs.
-- **Pay down**: Follow-up Plan Manager story — wire the plan tools to the
-  `plans` table, emit Plan events for each mutation, and make sticky context
-  render the latest structured plan instead of raw events.
+### ~~25. Plan tools remain callable stubs~~ ✅ resolved 2026-05-12 (story 1.1, commit: this commit)
+- ~~Origin: story 0.14~~
+- ~~Resolved by story 1.1: implemented `seasoned-hand-core::plan::PlanManager`
+  wired to `plans` (`create/advance/update`), replaced raw event sticky
+  rendering with structured `== PLAN ==` output, and wired `plan_advance` /
+  `plan_update` tools to real mutations with Plan event emission.~~
 
 ### 26. Cost deltas assume one active session per Bifrost instance
 - **Origin**: story 0.16

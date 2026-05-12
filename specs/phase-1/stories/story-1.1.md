@@ -1,6 +1,6 @@
 # Story 1.1 — Real Plan Manager (close DEBT #25)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: none (front-loaded per Phase 1 plan)
 > **Phase**: 1
@@ -297,3 +297,12 @@ PostPhaseAdvance event emitted from `PlanManager::advance`.
 
 Story 1.2 is independent (sandbox handle-cache rehydration) and can be
 worked in parallel by the Codex pair.
+
+## Notes from execution
+
+- Implemented `seasoned-hand-core::plan` with persisted `create/advance/update`
+  operations wired to `plans` + `Plan` event emission on each mutation.
+- Replaced raw `PLAN: {json}` sticky context with structured `== PLAN ==`
+  rendering, token-capped using `tiktoken-rs`.
+- Wired plan tools (`plan_advance`, `plan_update`) to real `PlanManager`
+  mutations and added tests for plan mutation behavior + structured render.

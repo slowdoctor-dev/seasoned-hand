@@ -12,6 +12,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::events::sqlite::SqliteEventStore;
+use crate::plan::PlanManager;
 use crate::sandbox::SandboxClient;
 use crate::search::SearchClient;
 
@@ -54,6 +55,7 @@ pub struct ToolContext {
     pub events: Arc<SqliteEventStore>,
     pub sandbox: Arc<SandboxClient>,
     pub search: Arc<SearchClient>,
+    pub plan_manager: Arc<PlanManager>,
 }
 
 #[async_trait]

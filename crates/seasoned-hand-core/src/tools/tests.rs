@@ -8,6 +8,7 @@ use super::{ToolContext, register_builtin_tools};
 use crate::db;
 use crate::events::sqlite::SqliteEventStore;
 use crate::events::{EventQuery, EventStore};
+use crate::plan::PlanManager;
 use crate::sandbox::SandboxClient;
 use crate::search::{SearchClient, SearchProvider};
 
@@ -22,7 +23,8 @@ async fn ctx() -> (super::ToolContext, Arc<SqliteEventStore>) {
         .unwrap();
     })
     .await;
-    let store = Arc::new(SqliteEventStore::new(pool));
+    let store = Arc::new(SqliteEventStore::new(pool.clone()));
+    let plan_manager = Arc::new(PlanManager::new(pool, store.clone()));
     // Tests don't reach into the sandbox or hit the network — these clients
     // are inert handles. SandboxClient::new requires Docker; if unavailable,
     // fall back to a placeholder.
@@ -37,6 +39,7 @@ async fn ctx() -> (super::ToolContext, Arc<SqliteEventStore>) {
         events: store.clone(),
         sandbox: Arc::new(sandbox),
         search: Arc::new(search),
+        plan_manager,
     };
     (ctx, store)
 }

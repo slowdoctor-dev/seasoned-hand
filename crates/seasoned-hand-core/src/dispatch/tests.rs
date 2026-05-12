@@ -6,6 +6,7 @@ use super::*;
 use crate::db;
 use crate::events::sqlite::SqliteEventStore;
 use crate::events::{EventQuery, EventStore, EventType};
+use crate::plan::PlanManager;
 use crate::sandbox::SandboxClient;
 use crate::search::{SearchClient, SearchProvider};
 use crate::tools::{ToolContext, register_builtin_tools};
@@ -21,7 +22,8 @@ async fn fixture() -> (ToolDispatcher, ToolContext) {
         .unwrap();
     })
     .await;
-    let store = Arc::new(SqliteEventStore::new(pool));
+    let store = Arc::new(SqliteEventStore::new(pool.clone()));
+    let plan_manager = Arc::new(PlanManager::new(pool, store.clone()));
     let sandbox = Arc::new(
         SandboxClient::new(
             "ghcr.io/agent-infra/sandbox:1.0.0.152",
@@ -35,6 +37,7 @@ async fn fixture() -> (ToolDispatcher, ToolContext) {
         events: store,
         sandbox,
         search,
+        plan_manager,
     };
     let dispatcher = ToolDispatcher::new(register_builtin_tools());
     (dispatcher, ctx)
@@ -89,7 +92,8 @@ async fn fixture_with_hook() -> (ToolDispatcher, ToolContext, Arc<SqliteEventSto
         .unwrap();
     })
     .await;
-    let store = Arc::new(SqliteEventStore::new(pool));
+    let store = Arc::new(SqliteEventStore::new(pool.clone()));
+    let plan_manager = Arc::new(PlanManager::new(pool, store.clone()));
     let sandbox = Arc::new(
         SandboxClient::new(
             "ghcr.io/agent-infra/sandbox:1.0.0.152",
@@ -103,6 +107,7 @@ async fn fixture_with_hook() -> (ToolDispatcher, ToolContext, Arc<SqliteEventSto
         events: store.clone(),
         sandbox,
         search,
+        plan_manager,
     };
     let dispatcher = ToolDispatcher::new(register_builtin_tools())
         .with_hook(Arc::new(hooks::EventEmittingHook::new(store.clone())));
