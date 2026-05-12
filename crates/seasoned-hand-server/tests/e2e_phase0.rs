@@ -21,8 +21,8 @@ use tokio_tungstenite::tungstenite::Message;
 #[tokio::test]
 #[ignore = "requires live Bifrost + Redis + Docker + provider key"]
 async fn e2e_phase0_acceptance() {
-    let ws_url = std::env::var("SH_E2E_WS_URL")
-        .unwrap_or_else(|_| "ws://127.0.0.1:3001/ws".to_string());
+    let ws_url =
+        std::env::var("SH_E2E_WS_URL").unwrap_or_else(|_| "ws://127.0.0.1:3001/ws".to_string());
 
     let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
         .await
@@ -46,14 +46,10 @@ async fn e2e_phase0_acceptance() {
     let mut tool_calls = 0u32;
     let mut answer: Option<String> = None;
 
-    let deadline =
-        std::time::Instant::now() + std::time::Duration::from_secs(180);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
     while std::time::Instant::now() < deadline {
-        let Ok(Some(Ok(msg))) = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            ws.next(),
-        )
-        .await
+        let Ok(Some(Ok(msg))) =
+            tokio::time::timeout(std::time::Duration::from_secs(30), ws.next()).await
         else {
             break;
         };
@@ -63,13 +59,11 @@ async fn e2e_phase0_acceptance() {
             Err(_) => continue,
         };
         match env.get("type").and_then(|v| v.as_str()) {
-            Some("ack") => {
-                if session_id.is_none() {
-                    session_id = env
-                        .get("session_id")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                }
+            Some("ack") if session_id.is_none() => {
+                session_id = env
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
             }
             Some("event") => {
                 let payload = env.get("payload").cloned().unwrap_or(Value::Null);
@@ -80,14 +74,13 @@ async fn e2e_phase0_acceptance() {
                 if kind == Some("Message") {
                     let role = payload.get("role").and_then(|v| v.as_str());
                     let ui = payload.get("ui").and_then(|v| v.as_str());
-                    if role == Some("assistant") && ui == Some("notify") {
-                        if let Some(c) = payload.get("content").and_then(|v| v.as_str())
-                        {
-                            if c.chars().any(|ch| ch.is_ascii_digit()) {
-                                answer = Some(c.to_string());
-                                break;
-                            }
-                        }
+                    if role == Some("assistant")
+                        && ui == Some("notify")
+                        && let Some(c) = payload.get("content").and_then(|v| v.as_str())
+                        && c.chars().any(|ch| ch.is_ascii_digit())
+                    {
+                        answer = Some(c.to_string());
+                        break;
                     }
                 }
             }
