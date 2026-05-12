@@ -111,6 +111,7 @@ impl AppState {
             plan_manager: plan_manager.clone(),
             mask_policy: Arc::new(DefaultMaskPolicy),
             checkpoint_labels: checkpoint_labels.clone(),
+            redis: Arc::new(redis.clone()),
         }));
         Self {
             db,

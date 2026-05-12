@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod context;
+pub mod gate;
 pub mod parse;
 pub mod persistence;
 pub mod routes;

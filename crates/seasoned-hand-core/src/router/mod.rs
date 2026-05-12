@@ -270,6 +270,16 @@ impl SlotRouter {
         self.verifier_enabled
     }
 
+    /// Test-only helper: flip `verifier_enabled` without running a real
+    /// capability resolution. Story 1.10 tests need this to exercise the
+    /// VERIFYING transition path without standing up a fake Bifrost
+    /// `/v1/models` mock.
+    #[cfg(test)]
+    pub fn force_verifier_enabled(mut self, enabled: bool) -> Self {
+        self.verifier_enabled = enabled;
+        self
+    }
+
     /// Story 1.7: expose the resolver so story 1.8 can re-resolve at
     /// runtime if a slot's alias changes.
     pub fn resolver(&self) -> Option<&Arc<capability::Resolver>> {

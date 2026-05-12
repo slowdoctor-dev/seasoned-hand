@@ -4,6 +4,7 @@
 //! refs: /specs/phase-0/stories/story-0.16.md
 //! refs: /specs/phase-0/architecture.md §1, §4.3
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -16,6 +17,7 @@ use crate::dispatch::mask::{AgentMode, MaskContext, ToolMaskPolicy, apply_mask};
 use crate::events::{EventError, EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
 use crate::llm::{ChatCompletionRequest, LlmClient, LlmError, ToolChoice, ToolSpec};
 use crate::plan::PlanManager;
+use crate::pubsub::RedisPool;
 use crate::router::{SlotName, SlotRouter};
 use crate::sandbox::SandboxClient;
 use crate::search::SearchClient;
@@ -78,6 +80,8 @@ pub struct AgentRunner {
     plan_manager: Arc<PlanManager>,
     mask_policy: Arc<dyn ToolMaskPolicy>,
     checkpoint_labels: Arc<crate::checkpoint::CheckpointLabelBuffer>,
+    redis: Arc<RedisPool>,
+    run_config: Arc<tokio::sync::Mutex<HashMap<String, RunRequest>>>,
 }
 
 pub struct AgentRunnerDeps {
@@ -92,6 +96,7 @@ pub struct AgentRunnerDeps {
     pub plan_manager: Arc<PlanManager>,
     pub mask_policy: Arc<dyn ToolMaskPolicy>,
     pub checkpoint_labels: Arc<crate::checkpoint::CheckpointLabelBuffer>,
+    pub redis: Arc<RedisPool>,
 }
 
 impl AgentRunner {
@@ -108,18 +113,51 @@ impl AgentRunner {
             plan_manager: deps.plan_manager,
             mask_policy: deps.mask_policy,
             checkpoint_labels: deps.checkpoint_labels,
+            redis: deps.redis,
+            run_config: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 
     pub async fn run(&self, req: RunRequest) -> Result<RunResult, AgentError> {
-        self.run_loop(req, true).await
+        self.run_config
+            .lock()
+            .await
+            .insert(req.session_id.clone(), req.clone());
+        self.run_loop(req, true, 0).await
     }
 
     pub async fn resume(&self, req: RunRequest) -> Result<RunResult, AgentError> {
-        self.run_loop(req, false).await
+        self.run_config
+            .lock()
+            .await
+            .entry(req.session_id.clone())
+            .or_insert_with(|| req.clone());
+        let start_step = self.action_count(&req.session_id).await?;
+        self.run_loop(req, false, start_step).await
     }
 
-    async fn run_loop(&self, req: RunRequest, seed_task: bool) -> Result<RunResult, AgentError> {
+    pub async fn resume_session(&self, session_id: &str) -> Result<RunResult, AgentError> {
+        let req = self
+            .run_config
+            .lock()
+            .await
+            .get(session_id)
+            .cloned()
+            .unwrap_or(RunRequest {
+                session_id: session_id.to_string(),
+                input: String::new(),
+                max_steps: 24,
+                cost_cap_cents: None,
+            });
+        self.resume(req).await
+    }
+
+    async fn run_loop(
+        &self,
+        req: RunRequest,
+        seed_task: bool,
+        start_step: u32,
+    ) -> Result<RunResult, AgentError> {
         self.set_session_state(&req.session_id, "RUNNING").await?;
         if seed_task {
             init::Initializer::new(
@@ -148,7 +186,7 @@ impl AgentRunner {
             }
         };
 
-        for step in 0..req.max_steps {
+        for step in start_step..req.max_steps {
             steps_run = step + 1;
             if ReciteScheduler::should_fire(step) {
                 recite_tick(&self.sandbox, &self.events, &req.session_id).await;
@@ -273,10 +311,27 @@ impl AgentRunner {
                 plan_manager: self.plan_manager.clone(),
                 checkpoint_labels: self.checkpoint_labels.clone(),
             };
+            let final_notify = call.function.name == "message_notify_user"
+                && args.get("final").and_then(Value::as_bool).unwrap_or(false);
+            // Story 1.10: only enter VERIFYING when a verifier slot is
+            // configured. Sessions running without a verifier (Phase 0
+            // single-slot configs, test harnesses) complete directly on
+            // idle / final-message without going through the gate.
+            let verifier_active = self.router.verifier_enabled();
             let output = self
                 .dispatcher
                 .dispatch(&ctx, &call.function.name, args)
                 .await;
+            let final_idle = call.function.name == "idle";
+            if output.ok && (final_idle || final_notify) && verifier_active {
+                self.mark_task_complete(&req.session_id, &call.id).await?;
+                return Ok(RunResult {
+                    session_id: req.session_id,
+                    completed: false,
+                    last_message,
+                    steps: step + 1,
+                });
+            }
 
             let current_cost = self
                 .record_step_cost(&req.session_id, &mut cost_baseline)
@@ -439,6 +494,50 @@ impl AgentRunner {
             })
             .await?;
         Ok(cost)
+    }
+
+    async fn action_count(&self, session_id: &str) -> Result<u32, AgentError> {
+        let session_id = session_id.to_string();
+        let count = self
+            .sessions
+            .with_conn(move |conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM events WHERE session_id = ? AND type = 'Action'",
+                    rusqlite::params![session_id],
+                    |row| row.get::<_, i64>(0),
+                )
+            })
+            .await?;
+        Ok(u32::try_from(count).unwrap_or(0))
+    }
+
+    async fn mark_task_complete(&self, session_id: &str, call_id: &str) -> Result<(), AgentError> {
+        self.set_session_state(session_id, "VERIFYING").await?;
+        let event = self
+            .events
+            .append(NewEvent {
+                session_id: session_id.to_string(),
+                event_type: EventType::Misc,
+                source: "agent".into(),
+                data: json!({
+                    "kind":"verifier_request",
+                    "trigger":"TaskComplete",
+                    "final_message_call_id": call_id,
+                }),
+            })
+            .await?;
+        let req = crate::verifier::VerifyRequest {
+            session_id: session_id.to_string(),
+            trigger: crate::verifier::VerifyTrigger::TaskComplete {
+                final_message_call_id: call_id.to_string(),
+            },
+            triggered_at_event_id: event.id as u64,
+            context_hint: Default::default(),
+        };
+        if let Err(error) = self.redis.xadd_json("verify_request", &req).await {
+            tracing::warn!(%error, "failed to enqueue verify_request");
+        }
+        Ok(())
     }
 
     async fn set_session_state(&self, session_id: &str, state: &str) -> Result<(), AgentError> {

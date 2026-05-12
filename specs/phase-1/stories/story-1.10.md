@@ -1,6 +1,6 @@
 # Story 1.10 — TaskComplete trigger + VERIFYING state + verdict handling
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 1.9b (Verifier Worker runtime; emits
 > `verifier_verdict` Misc), 1.1 (PlanManager accepts `Source::Verifier`

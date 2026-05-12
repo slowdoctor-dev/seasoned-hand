@@ -139,7 +139,8 @@ impl Tool for MessageNotifyUser {
         json!({
             "type": "object",
             "properties": {
-                "content": { "type": "string", "description": "Message body shown to the user." }
+                "content": { "type": "string", "description": "Message body shown to the user." },
+                "final": { "type": "boolean", "description": "When true, signal task completion and trigger verifier flow." }
             },
             "required": ["content"],
             "additionalProperties": false,
@@ -159,7 +160,7 @@ impl Tool for MessageNotifyUser {
             .map_err(|e| ToolError::Backend(e.to_string()))?;
         Ok(ToolOutput {
             ok: true,
-            output: json!({"event_id": event.id}),
+            output: json!({"event_id": event.id, "final": args.get("final").and_then(Value::as_bool).unwrap_or(false)}),
             file_ref: None,
             error: None,
         })
@@ -226,7 +227,9 @@ impl Tool for Idle {
     fn schema(&self) -> Value {
         json!({
             "type": "object",
-            "properties": {},
+            "properties": {
+                "final": { "type": "boolean", "description": "Ignored; idle always implies final task completion." }
+            },
             "additionalProperties": false,
         })
     }

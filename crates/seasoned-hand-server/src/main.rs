@@ -127,7 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keeps the runtime smaller when the verifier slot isn't configured.
     let verifier_shutdown = tokio_util::sync::CancellationToken::new();
     let verifier_handle = if state.verifier_enabled {
-        use seasoned_hand_core::verifier::{Worker, WorkerDeps};
+        use seasoned_hand_core::verifier::{Worker, WorkerDeps, gate::VerifierGate};
         let deps = WorkerDeps::from_router(
             &state.router,
             state.plan_manager.clone(),
@@ -138,12 +138,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             state.verifier_system_prompt.clone(),
         );
         let worker = Worker::new(deps);
+        let gate = VerifierGate::new(state.db.clone(), state.events.clone(), state.runner.clone());
         let redis = std::sync::Arc::new(state.redis.clone());
         let token = verifier_shutdown.clone();
+        let gate_token = verifier_shutdown.clone();
         Some(tokio::spawn(async move {
-            if let Err(error) = worker.run(true, redis, token).await {
-                tracing::error!(%error, "verifier worker exited with error");
-            }
+            let worker_task = tokio::spawn(async move {
+                if let Err(error) = worker.run(true, redis, token).await {
+                    tracing::error!(%error, "verifier worker exited with error");
+                }
+            });
+            let gate_task = tokio::spawn(async move {
+                gate.run(gate_token).await;
+            });
+            let _ = tokio::join!(worker_task, gate_task);
         }))
     } else {
         tracing::info!("verifier worker not spawned (verifier_enabled = false)");

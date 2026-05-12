@@ -50,6 +50,7 @@ impl Respond for ScriptedResponder {
 struct Harness {
     runner: AgentRunner,
     db: DbPool,
+    redis: RedisPool,
     events: Arc<SqliteEventStore>,
     session_id: String,
     requests: Arc<Mutex<Vec<Value>>>,
@@ -58,12 +59,27 @@ struct Harness {
 }
 
 async fn harness(responses: Vec<Value>) -> Harness {
-    harness_with_cost(responses, Vec::new()).await
+    harness_inner(responses, Vec::new(), false).await
 }
 
 async fn harness_with_cost(
     responses: Vec<Value>,
     cost_responses: Vec<ResponseTemplate>,
+) -> Harness {
+    harness_inner(responses, cost_responses, false).await
+}
+
+/// Story 1.10: variant that flips `router.verifier_enabled = true` so
+/// the TaskComplete trigger path activates (idle / final-message →
+/// VERIFYING). Tests for the new trigger semantics use this.
+async fn harness_with_verifier(responses: Vec<Value>) -> Harness {
+    harness_inner(responses, Vec::new(), true).await
+}
+
+async fn harness_inner(
+    responses: Vec<Value>,
+    cost_responses: Vec<ResponseTemplate>,
+    verifier_enabled: bool,
 ) -> Harness {
     let mock = MockServer::start().await;
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -93,7 +109,7 @@ async fn harness_with_cost(
     let session_id = "session-1".to_string();
     insert_session(&db, &session_id).await;
     let redis = RedisPool::new("redis://127.0.0.1:6379").expect("redis url parses");
-    let events = Arc::new(SqliteEventStore::with_redis(db.clone(), redis));
+    let events = Arc::new(SqliteEventStore::with_redis(db.clone(), redis.clone()));
     let dispatcher = Arc::new(
         ToolDispatcher::new(register_builtin_tools())
             .with_hook(Arc::new(EventEmittingHook::new(events.clone()))),
@@ -110,7 +126,8 @@ slots:
 "#,
             mock.uri()
         ))
-        .expect("router config parses"),
+        .expect("router config parses")
+        .force_verifier_enabled(verifier_enabled),
     );
     let workspace = tempdir().expect("tempdir");
     let sandbox = Arc::new(
@@ -142,11 +159,13 @@ slots:
         plan_manager,
         mask_policy: Arc::new(DefaultMaskPolicy),
         checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
+        redis: Arc::new(redis.clone()),
     });
 
     Harness {
         runner,
         db,
+        redis,
         events,
         session_id,
         requests,
@@ -576,6 +595,81 @@ async fn recite_skip_on_missing_file_does_not_break_loop() {
         event.event_type == EventType::Misc
             && event.data.get("kind").and_then(Value::as_str) == Some("progress_recite_skipped")
     }));
+}
+
+#[tokio::test]
+async fn idle_call_pushes_verify_request_and_transitions_to_verifying() {
+    let h = harness_with_verifier(vec![completion(vec![("call-1", "idle", json!({}))])]).await;
+    let result = h.runner.run(req(&h.session_id, 4)).await.expect("run");
+    assert!(!result.completed);
+    assert_eq!(session_state(&h.db, &h.session_id).await, "VERIFYING");
+    let events = h
+        .events
+        .query(&h.session_id, EventQuery::default())
+        .await
+        .expect("events query");
+    assert!(events.iter().any(|event| {
+        event.event_type == EventType::Misc
+            && event.data.get("kind").and_then(Value::as_str) == Some("verifier_request")
+            && event.data.get("trigger").and_then(Value::as_str) == Some("TaskComplete")
+    }));
+    if let Ok(len) = h.redis.xlen("verify_request").await {
+        assert!(len >= 1);
+    }
+}
+
+#[tokio::test]
+async fn message_notify_user_without_final_does_not_trigger() {
+    let h = harness(vec![completion(vec![(
+        "call-1",
+        "message_notify_user",
+        json!({"content":"not final"}),
+    )])])
+    .await;
+    let _ = h.runner.run(req(&h.session_id, 1)).await.expect("run");
+    let events = h
+        .events
+        .query(&h.session_id, EventQuery::default())
+        .await
+        .expect("events query");
+    assert!(!events.iter().any(|event| {
+        event.event_type == EventType::Misc
+            && event.data.get("kind").and_then(Value::as_str) == Some("verifier_request")
+    }));
+}
+
+#[tokio::test]
+async fn resume_continues_iteration_counter() {
+    let h = harness_with_verifier(vec![
+        completion(vec![("call-1", "idle", json!({}))]),
+        completion(vec![(
+            "call-2",
+            "message_notify_user",
+            json!({"content":"resume"}),
+        )]),
+    ])
+    .await;
+    let first = h.runner.run(req(&h.session_id, 4)).await.expect("run");
+    // The first run terminates at the idle → VERIFYING transition.
+    assert_eq!(first.steps, 1);
+    let resumed = h
+        .runner
+        .resume_session(&h.session_id)
+        .await
+        .expect("resume");
+    // Iteration counter continues past where it left off: the resumed
+    // run starts at action_count=1 (the prior idle dispatch), not 0.
+    // The exact final `steps` count depends on how the scripted LLM
+    // responder behaves once its queue is drained; the semantic guard
+    // is that the run did NOT restart from 0 (so the next step number
+    // is strictly > the prior run's last step).
+    assert!(!resumed.completed);
+    assert!(
+        resumed.steps > first.steps,
+        "resume must continue past first-run steps={}, got resumed.steps={}",
+        first.steps,
+        resumed.steps
+    );
 }
 
 async fn session_state(db: &DbPool, session_id: &str) -> String {

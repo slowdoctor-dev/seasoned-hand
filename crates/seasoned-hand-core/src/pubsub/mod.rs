@@ -3,6 +3,7 @@
 
 use deadpool_redis::redis::{self, AsyncCommands};
 use deadpool_redis::{Config, Connection, Pool, Runtime};
+use serde::Serialize;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -55,6 +56,33 @@ impl RedisPool {
         let mut pubsub = client.get_async_pubsub().await?;
         pubsub.subscribe(channel_for(session_id)).await?;
         Ok(EventSubscription { pubsub })
+    }
+
+    pub async fn xadd_json<T: Serialize>(
+        &self,
+        stream: &str,
+        payload: &T,
+    ) -> Result<String, RedisError> {
+        let mut conn = self.conn().await?;
+        let body = serde_json::to_string(payload)
+            .map_err(|e| RedisError::Config(format!("serialize xadd payload: {e}")))?;
+        let id: String = redis::cmd("XADD")
+            .arg(stream)
+            .arg("*")
+            .arg("payload")
+            .arg(body)
+            .query_async(&mut *conn)
+            .await?;
+        Ok(id)
+    }
+
+    pub async fn xlen(&self, stream: &str) -> Result<i64, RedisError> {
+        let mut conn = self.conn().await?;
+        let n: i64 = redis::cmd("XLEN")
+            .arg(stream)
+            .query_async(&mut *conn)
+            .await?;
+        Ok(n)
     }
 }
 
