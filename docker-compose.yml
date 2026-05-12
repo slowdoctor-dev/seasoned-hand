@@ -1,0 +1,73 @@
+services:
+  # ===== LLM Gateway =====
+  # Configured in Story 0.1
+  bifrost:
+    image: maximhq/bifrost:latest
+    container_name: seasoned-hand-bifrost
+    restart: unless-stopped
+    ports:
+      - "4000:8080"
+    volumes:
+      - ./bifrost/config.yaml:/app/config.yaml:ro
+      - ./bifrost/data:/app/data
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # ===== Redis (pub/sub + streams) =====
+  # Configured in Phase 0
+  redis:
+    image: redis:7-alpine
+    container_name: seasoned-hand-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/redis:/data
+    command: redis-server --appendonly yes
+
+  # ===== Control plane (Rust) =====
+  # Built in Phase 0, story 0.2+
+  # Uncomment when /src/Dockerfile exists
+  # control-plane:
+  #   build: .
+  #   container_name: seasoned-hand-control-plane
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3000:3000"
+  #   env_file: .env
+  #   depends_on:
+  #     - bifrost
+  #     - redis
+  #   volumes:
+  #     - ./data/db:/app/data
+  #     - ./data/workspaces:/workspaces
+
+  # ===== Frontend (Next.js) =====
+  # Built in Phase 0, story 0.18+
+  # frontend:
+  #   build: ./frontend
+  #   container_name: seasoned-hand-frontend
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3001:3000"
+  #   env_file: .env
+  #   depends_on:
+  #     - control-plane
+
+  # ===== AIO Sandbox (per-session) =====
+  # Created dynamically by control plane via bollard.
+  # Not defined as a long-running service.
+
+networks:
+  default:
+    name: seasoned-hand

@@ -1,0 +1,53 @@
+# Rust
+target/
+**/*.rs.bk
+# NOTE: Cargo.lock IS committed (this is an application, not a library)
+
+# Node
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+*.tsbuildinfo
+.pnpm-debug.log*
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Data
+data/
+bifrost/data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+
+# Test
+coverage/
+.nyc_output/
+
+# Misc
+.cache/
+tmp/
+*.tmp
+
+# Personal overrides
+.claude/CLAUDE.local.md
+.codex/AGENTS.local.md
+.codex/config.toml

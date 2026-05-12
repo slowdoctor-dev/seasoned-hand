@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  spec-check:
+    name: Spec compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run spec-check
+        run: ./scripts/spec-check.sh
+
+  rust:
+    name: Rust (clippy, fmt, test)
+    runs-on: ubuntu-latest
+    # Enable once /src exists (Phase 0+)
+    if: hashFiles('Cargo.toml') != ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets --workspace -- -D warnings
+      - name: Test
+        run: cargo test --workspace --all-features
+
+  frontend:
+    name: Frontend (typecheck, test)
+    runs-on: ubuntu-latest
+    # Enable once /frontend exists (Phase 0+)
+    if: hashFiles('frontend/package.json') != ''
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Lint
+        run: pnpm lint
+      - name: Test
+        run: pnpm test
+
+  markdown-lint:
+    name: Markdown (specs and docs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint markdown
+        uses: DavidAnson/markdownlint-cli2-action@v16
+        with:
+          globs: |
+            specs/**/*.md
+            docs/**/*.md
+            *.md
+        continue-on-error: true  # Don't block on style issues, just report

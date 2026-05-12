@@ -1,0 +1,43 @@
+# Codex CLI Configuration
+
+# This file is for Codex CLI specific behavior.
+# Project instructions are in AGENTS.md (auto-read by Codex).
+# Place this at: ~/.codex/config.toml (global) or .codex/config.toml (project)
+
+# === Default profile ===
+model = "gpt-5-codex"
+approval_policy = "untrusted"          # ask before destructive actions
+sandbox_mode = "workspace-write"        # can write workspace only
+
+# Codex respects AGENTS.md cascading hierarchy:
+# 1. ~/.codex/AGENTS.md (global defaults)
+# 2. project root /AGENTS.md
+# 3. current dir AGENTS.md
+# Closest file wins on conflict.
+# AGENTS.override.md takes priority over AGENTS.md in same dir.
+
+# === Fast iteration profile ===
+[profiles.fast]
+model = "gpt-5-codex"
+approval_policy = "on-request"          # less interruption
+sandbox_mode = "workspace-write"
+
+# === Read-only review profile ===
+[profiles.review]
+model = "gpt-5-codex"
+approval_policy = "untrusted"
+sandbox_mode = "read-only"              # safe code review
+
+# === Story execution profile ===
+[profiles.story]
+model = "gpt-5-codex"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+# Story execution: read AGENTS.md + specs, plan, execute, verify, commit
+
+# Fallback file names (when AGENTS.md absent in some directory)
+project_doc_fallback_filenames = ["CLAUDE.md"]
+
+# Max bytes for AGENTS.md ingestion
+# (Codex silently truncates beyond this — keep AGENTS.md under 300 lines)
+# project_doc_max_bytes = 32768  # default is usually fine
