@@ -10,6 +10,7 @@ use super::*;
 use crate::cost::CostClient;
 use crate::db;
 use crate::dispatch::hooks::EventEmittingHook;
+use crate::dispatch::mask::DefaultMaskPolicy;
 use crate::events::EventQuery;
 use crate::plan::PlanManager;
 use crate::pubsub::RedisPool;
@@ -139,6 +140,7 @@ slots:
         cost,
         sessions: db.clone(),
         plan_manager,
+        mask_policy: Arc::new(DefaultMaskPolicy),
     });
 
     Harness {

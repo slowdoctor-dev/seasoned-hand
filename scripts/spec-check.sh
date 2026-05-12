@@ -70,6 +70,10 @@ for f in CLAUDE.md AGENTS.md README.md specs/01-architecture/ARCHITECTURE.md doc
   check "$f exists" "[ -f '$f' ]"
 done
 
+# Check 7: Story 1.5 tool catalog stability test guard
+check "tool_catalog_order_is_stable test exists" \
+  "grep -q 'fn tool_catalog_order_is_stable' crates/seasoned-hand-core/src/dispatch/mask.rs"
+
 echo ""
 echo "=== Results ==="
 echo "Pass: $PASS"

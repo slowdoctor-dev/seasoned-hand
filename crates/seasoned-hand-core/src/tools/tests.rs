@@ -6,6 +6,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{ToolContext, register_builtin_tools};
 use crate::db;
+use crate::dispatch::mask::{AgentMode, MaskContext};
 use crate::events::sqlite::SqliteEventStore;
 use crate::events::{EventQuery, EventStore};
 use crate::plan::PlanManager;
@@ -36,6 +37,11 @@ async fn ctx() -> (super::ToolContext, Arc<SqliteEventStore>) {
     let search = SearchClient::new(SearchProvider::Brave { api_key: None });
     let ctx = ToolContext {
         session_id: "s1".into(),
+        mask_ctx: MaskContext {
+            session_id: "s1".into(),
+            iteration: 0,
+            mode: AgentMode::Worker,
+        },
         events: store.clone(),
         sandbox: Arc::new(sandbox),
         search: Arc::new(search),

@@ -18,6 +18,7 @@ use seasoned_hand_core::agent::{AgentRunner, AgentRunnerDeps};
 use seasoned_hand_core::capability::ModelCapabilities;
 use seasoned_hand_core::cost::{CostClient, CostSnapshot};
 use seasoned_hand_core::db::DbPool;
+use seasoned_hand_core::dispatch::mask::DefaultMaskPolicy;
 use seasoned_hand_core::dispatch::{ToolDispatcher, hooks::EventEmittingHook};
 use seasoned_hand_core::events::{EventQuery, EventStore, EventType, sqlite::SqliteEventStore};
 use seasoned_hand_core::llm::LlmClient;
@@ -97,6 +98,7 @@ impl AppState {
             cost: cost.clone(),
             sessions: db.clone(),
             plan_manager: plan_manager.clone(),
+            mask_policy: Arc::new(DefaultMaskPolicy),
         }));
         Self {
             db,

@@ -4,16 +4,20 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
+use crate::dispatch::mask::{DefaultMaskPolicy, ToolMaskPolicy};
+use crate::events::{EventStore, EventType, NewEvent};
 use crate::tools::{Tool, ToolContext, ToolError, ToolErrorPayload, ToolOutput};
 
 pub mod hooks;
+pub mod mask;
 
 pub struct ToolDispatcher {
     registry: HashMap<&'static str, Arc<dyn Tool>>,
     hooks: Vec<Arc<dyn hooks::Hook>>,
+    mask_policy: Arc<dyn ToolMaskPolicy>,
 }
 
 impl ToolDispatcher {
@@ -21,6 +25,7 @@ impl ToolDispatcher {
         Self {
             registry,
             hooks: Vec::new(),
+            mask_policy: Arc::new(DefaultMaskPolicy),
         }
     }
 
@@ -33,10 +38,50 @@ impl ToolDispatcher {
         &self.registry
     }
 
+    pub fn mask_policy(&self) -> Arc<dyn ToolMaskPolicy> {
+        self.mask_policy.clone()
+    }
+
+    pub fn with_mask_policy(mut self, mask_policy: Arc<dyn ToolMaskPolicy>) -> Self {
+        self.mask_policy = mask_policy;
+        self
+    }
+
     /// Dispatch a tool call. Always returns a `ToolOutput` — internal
     /// errors are translated into `ok:false + error{kind}` payloads so
     /// the agent loop never has to catch a Rust-level error.
     pub async fn dispatch(&self, ctx: &ToolContext, tool_name: &str, args: Value) -> ToolOutput {
+        if !self.mask_policy.is_available(tool_name, &ctx.mask_ctx) {
+            if let Err(error) = ctx
+                .events
+                .append(NewEvent {
+                    session_id: ctx.session_id.clone(),
+                    event_type: EventType::Misc,
+                    source: "dispatcher".into(),
+                    data: json!({
+                        "kind": "tool_mask_violation",
+                        "tool": tool_name,
+                        "mode": format!("{:?}", ctx.mask_ctx.mode),
+                    }),
+                })
+                .await
+            {
+                tracing::warn!(%error, "failed to emit tool_mask_violation event");
+            }
+            return ToolOutput {
+                ok: false,
+                output: Value::Null,
+                file_ref: None,
+                error: Some(ToolErrorPayload {
+                    kind: "tool_unavailable_in_iteration".into(),
+                    message: format!(
+                        "tool '{}' unavailable in mode {:?}",
+                        tool_name, ctx.mask_ctx.mode
+                    ),
+                }),
+            };
+        }
+
         let Some(tool) = self.registry.get(tool_name).cloned() else {
             return ToolOutput {
                 ok: false,

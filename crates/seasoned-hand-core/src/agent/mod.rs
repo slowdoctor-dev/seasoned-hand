@@ -12,6 +12,7 @@ use thiserror::Error;
 use crate::cost::{CostClient, CostSnapshot, delta_between};
 use crate::db::{DbError, DbPool};
 use crate::dispatch::ToolDispatcher;
+use crate::dispatch::mask::{AgentMode, MaskContext, ToolMaskPolicy, apply_mask};
 use crate::events::{EventError, EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
 use crate::llm::{ChatCompletionRequest, LlmClient, LlmError, ToolChoice, ToolSpec};
 use crate::plan::PlanManager;
@@ -73,6 +74,7 @@ pub struct AgentRunner {
     cost: Arc<CostClient>,
     sessions: DbPool,
     plan_manager: Arc<PlanManager>,
+    mask_policy: Arc<dyn ToolMaskPolicy>,
 }
 
 pub struct AgentRunnerDeps {
@@ -85,6 +87,7 @@ pub struct AgentRunnerDeps {
     pub cost: Arc<CostClient>,
     pub sessions: DbPool,
     pub plan_manager: Arc<PlanManager>,
+    pub mask_policy: Arc<dyn ToolMaskPolicy>,
 }
 
 impl AgentRunner {
@@ -99,6 +102,7 @@ impl AgentRunner {
             cost: deps.cost,
             sessions: deps.sessions,
             plan_manager: deps.plan_manager,
+            mask_policy: deps.mask_policy,
         }
     }
 
@@ -155,7 +159,13 @@ impl AgentRunner {
                     },
                 );
             }
-            let tools = self.tool_specs_from_registry();
+            let mut tools = self.tool_specs_from_registry();
+            let mask_ctx = MaskContext {
+                session_id: req.session_id.clone(),
+                iteration: step,
+                mode: AgentMode::Worker,
+            };
+            apply_mask(&mut tools, &*self.mask_policy, &mask_ctx);
             let main_slot = self.router.resolve(SlotName::Main);
             let response = match self
                 .llm
@@ -248,6 +258,7 @@ impl AgentRunner {
             let args = parse_args(&call.function.arguments);
             let ctx = ToolContext {
                 session_id: req.session_id.clone(),
+                mask_ctx,
                 events: self.events.clone(),
                 sandbox: self.sandbox.clone(),
                 search: self.search.clone(),

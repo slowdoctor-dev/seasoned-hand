@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::db;
+use crate::dispatch::mask::{AgentMode, MaskContext};
 use crate::events::payload::EventPayloadBody;
 use crate::events::sqlite::SqliteEventStore;
 use crate::events::{EventQuery, EventStore, EventType};
@@ -36,6 +37,11 @@ async fn fixture() -> (ToolDispatcher, ToolContext) {
     let search = Arc::new(SearchClient::new(SearchProvider::Brave { api_key: None }));
     let ctx = ToolContext {
         session_id: "s1".into(),
+        mask_ctx: MaskContext {
+            session_id: "s1".into(),
+            iteration: 0,
+            mode: AgentMode::Worker,
+        },
         events: store,
         sandbox,
         search,
@@ -106,6 +112,11 @@ async fn fixture_with_hook() -> (ToolDispatcher, ToolContext, Arc<SqliteEventSto
     let search = Arc::new(SearchClient::new(SearchProvider::Brave { api_key: None }));
     let ctx = ToolContext {
         session_id: "s1".into(),
+        mask_ctx: MaskContext {
+            session_id: "s1".into(),
+            iteration: 0,
+            mode: AgentMode::Worker,
+        },
         events: store.clone(),
         sandbox,
         search,
@@ -253,4 +264,63 @@ fn removal_of_inline_preview_path() {
         output.stdout.is_empty(),
         "expected no legacy inline preview fallback references"
     );
+}
+
+struct PlanCreateTool;
+
+#[async_trait]
+impl Tool for PlanCreateTool {
+    fn name(&self) -> &'static str {
+        "plan_create"
+    }
+    fn description(&self) -> &'static str {
+        "create a plan"
+    }
+    fn schema(&self) -> Value {
+        json!({"type":"object"})
+    }
+    async fn invoke(&self, _args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput {
+            ok: true,
+            output: json!({"ok": true}),
+            file_ref: None,
+            error: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn dispatcher_rejects_masked_tool() {
+    let (mut d, mut ctx, store) = fixture_with_hook().await;
+    d.registry.insert("plan_create", Arc::new(PlanCreateTool));
+    ctx.mask_ctx.mode = AgentMode::Worker;
+    let out = d
+        .dispatch(&ctx, "plan_create", json!({"goal":"x","phases":[]}))
+        .await;
+    assert!(!out.ok);
+    assert_eq!(
+        out.error.as_ref().map(|e| e.kind.as_str()),
+        Some("tool_unavailable_in_iteration")
+    );
+    let events = store.query("s1", EventQuery::default()).await.unwrap();
+    assert!(events.iter().any(|event| {
+        event.event_type == EventType::Misc
+            && event.data.get("kind").and_then(Value::as_str) == Some("tool_mask_violation")
+            && event.data.get("tool").and_then(Value::as_str) == Some("plan_create")
+    }));
+}
+
+#[tokio::test]
+async fn initializer_can_still_call_plan_create_directly() {
+    let (mut d, mut ctx, _store) = fixture_with_hook().await;
+    d.registry.insert("plan_create", Arc::new(PlanCreateTool));
+    ctx.mask_ctx.mode = AgentMode::Initializer;
+    let out = d
+        .dispatch(
+            &ctx,
+            "plan_create",
+            json!({"goal":"x","phases":[{"id":1,"title":"t"}]}),
+        )
+        .await;
+    assert!(out.ok);
 }
