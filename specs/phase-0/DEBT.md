@@ -211,17 +211,24 @@
   if the E2E test exercises browsing (which it does — "find GitHub stars
   of FoundationAgents/OpenManus").
 
-### 20. ToolDispatcher ships with no hooks registered
-- **Origin**: story 0.9
-- **Severity**: **Medium**
-- **What**: `ToolDispatcher::new(registry)` creates an empty hook vec.
-  `AppState::new` does not register `NoopHook` or any real hook. Events
-  for tool dispatches (Action / Observation) are NOT emitted to the event
-  stream right now — only message_notify_user / message_ask_user write to
-  it directly.
-- **Why**: Story 0.10's job is to add `EventEmittingHook`. The hook trait
-  + call sites exist; the body doesn't.
-- **Pay down**: Story 0.10.
+### ~~20. ToolDispatcher ships with no hooks registered~~ ✅ resolved 2026-05-12 (story 0.10)
+- ~~Origin: story 0.9~~
+- ~~Resolved by story 0.10: `EventEmittingHook` writes Action + Observation
+  events for every dispatch; AppState::new registers it automatically.~~
+
+### 21. Hook output-truncation path falls back to inline preview
+- **Origin**: story 0.10
+- **Severity**: **Low**
+- **What**: When a tool output's JSON exceeds `INLINE_OUTPUT_LIMIT`
+  (16 KB), `downsize_output()` replaces it with a `{preview, truncated:true}`
+  marker. Architecture §3.4 specifies writing the full body to
+  `/workspace/.observations/<call_id>.txt` via the sandbox and storing
+  only a `file_ref` in the event.
+- **Why**: The sandbox-file-write path needs the 18-of-22 sandbox tools
+  (DEBT #19) plus a write helper. Defer until that wiring lands.
+- **Pay down**: When DEBT #19 (story 0.9b) closes, add a
+  `write_observation_file(call_id, content)` helper to the hook and replace
+  the inline truncation with the file_ref path.
 
 ### 18. SandboxClient holds in-process handle cache — single-process assumption
 - **Origin**: story 0.8

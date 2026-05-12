@@ -1,10 +1,11 @@
-//! Tool dispatcher: registry-based name resolution + hook scaffold.
+//! Tool dispatcher: registry-based name resolution + hook fan-out.
 //! refs: /specs/phase-0/architecture.md §4.3
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::tools::{Tool, ToolContext, ToolError, ToolErrorPayload, ToolOutput};
 
@@ -48,8 +49,10 @@ impl ToolDispatcher {
             };
         };
 
+        let call_id = Uuid::new_v4().to_string();
+
         for hook in &self.hooks {
-            hook.pre(tool_name, &args, ctx).await;
+            hook.pre(&call_id, tool_name, &args, ctx).await;
         }
 
         let result = tool.invoke(args.clone(), ctx).await;
@@ -57,13 +60,13 @@ impl ToolDispatcher {
         match result {
             Ok(out) => {
                 for hook in &self.hooks {
-                    hook.post(tool_name, &args, &out, ctx).await;
+                    hook.post(&call_id, tool_name, &args, &out, ctx).await;
                 }
                 out
             }
             Err(err) => {
                 for hook in &self.hooks {
-                    hook.failure(tool_name, &args, &err, ctx).await;
+                    hook.failure(&call_id, tool_name, &args, &err, ctx).await;
                 }
                 ToolOutput {
                     ok: false,

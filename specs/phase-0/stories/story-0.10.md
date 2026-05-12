@@ -1,6 +1,6 @@
 # Story 0.10 — Hooks (PreToolUse + PostToolUse + PostToolUseFailure)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: story 0.4 (events), story 0.9 (dispatcher + hook scaffold)
 > **Phase**: 0

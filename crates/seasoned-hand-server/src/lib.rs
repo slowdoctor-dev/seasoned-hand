@@ -12,7 +12,7 @@ use axum::{
     routing::get,
 };
 use seasoned_hand_core::db::DbPool;
-use seasoned_hand_core::dispatch::ToolDispatcher;
+use seasoned_hand_core::dispatch::{ToolDispatcher, hooks::EventEmittingHook};
 use seasoned_hand_core::events::{EventQuery, EventStore, EventType, sqlite::SqliteEventStore};
 use seasoned_hand_core::pubsub::RedisPool;
 use seasoned_hand_core::sandbox::SandboxClient;
@@ -35,7 +35,10 @@ impl AppState {
         let events = Arc::new(SqliteEventStore::with_redis(db.clone(), redis.clone()));
         let sandbox = Arc::new(sandbox);
         let search = Arc::new(search);
-        let dispatcher = Arc::new(ToolDispatcher::new(register_builtin_tools()));
+        let dispatcher = Arc::new(
+            ToolDispatcher::new(register_builtin_tools())
+                .with_hook(Arc::new(EventEmittingHook::new(events.clone()))),
+        );
         Self {
             db,
             redis,
