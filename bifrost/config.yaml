@@ -1,0 +1,28 @@
+# Story 0.1 intent template.
+#
+# Bifrost v1.5.0 reads /app/data/config.json, not YAML. This file stays
+# checked in because the story names bifrost/config.yaml as the human-facing
+# alias contract. Keep it in sync with bifrost/data/config.json.
+
+providers:
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+    aliases:
+      agent-primary: ${BIFROST_MODEL_PRIMARY:-claude-sonnet-4-6}
+  openai:
+    api_key: ${OPENAI_API_KEY}
+    aliases:
+      agent-primary: ${BIFROST_MODEL_FALLBACK:-gpt-4o}
+      agent-fallback: ${BIFROST_MODEL_FALLBACK:-gpt-4o}
+  ollama:
+    base_url: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    aliases:
+      local-fast: ${BIFROST_MODEL_LOCAL_FAST:-llama3.2:3b}
+
+routing:
+  fallback_intent:
+    agent-primary: [agent-fallback, local-fast]
+
+observability:
+  cost_tracking: true
+  source: Bifrost logs API

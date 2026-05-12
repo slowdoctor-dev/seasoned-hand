@@ -1,6 +1,6 @@
 # Story 0.1 — Bifrost Docker Setup
 
-> **Status**: ready
+> **Status**: in-progress
 > **Version**: v1.1 (Codex pre-flight review issues closed; supersedes v1.0)
 > **Estimated**: 2 hours
 > **Dependencies**: none (this is the first story)

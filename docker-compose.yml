@@ -2,23 +2,30 @@ services:
   # ===== LLM Gateway =====
   # Configured in Story 0.1
   bifrost:
-    image: maximhq/bifrost:latest
+    image: maximhq/bifrost:v1.5.0
     container_name: seasoned-hand-bifrost
     restart: unless-stopped
     ports:
-      - "4000:8080"
+      - "127.0.0.1:4000:8080"
     volumes:
-      - ./bifrost/config.yaml:/app/config.yaml:ro
       - ./bifrost/data:/app/data
+      - ./bifrost/config.json:/app/data/config.json:ro
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - BIFROST_MODEL_PRIMARY=${BIFROST_MODEL_PRIMARY:-claude-sonnet-4-6}
+      - BIFROST_MODEL_FALLBACK=${BIFROST_MODEL_FALLBACK:-gpt-4o}
+      - BIFROST_MODEL_LOCAL_FAST=${BIFROST_MODEL_LOCAL_FAST:-llama3.2:3b}
+      - BIFROST_ENCRYPTION_KEY=${BIFROST_ENCRYPTION_KEY:-seasoned-hand-phase0-local-dev-key}
+      - APP_HOST=0.0.0.0
+      - APP_PORT=8080
+      - LOG_LEVEL=info
+      - LOG_STYLE=json
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 10s
       timeout: 3s
       retries: 3

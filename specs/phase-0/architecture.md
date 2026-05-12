@@ -534,7 +534,7 @@ update to ARCHITECTURE.md §11 and approval (per AGENTS.md §9 NEVER).
 
 | Service | Image / Version | Port | Phase 0 use |
 |---|---|---|---|
-| Bifrost | `maximhq/bifrost:<pin-tag>` — Story 0.1 implementer picks the latest stable tag from `https://hub.docker.com/r/maximhq/bifrost/tags`, commits the chosen tag here AND in `docker-compose.yml`. Never use `latest`. | 4000 (host) → 8080 (container) | LLM gateway |
+| Bifrost | `maximhq/bifrost:v1.5.0` — pinned from Docker Hub tags on 2026-05-12. Never use `latest`. | 4000 (host) → 8080 (container) | LLM gateway |
 | Redis | `redis:7-alpine` | 6379 | Pub/sub fanout |
 | AIO Sandbox | `<verify-image-name>:<pin-tag>` — Story 0.8 implementer verifies the actual image name (`agentinfra/aio-sandbox` or `ghcr.io/agent-infra/sandbox`) and pins a tag. `.env.example` currently says `ghcr.io/agent-infra/sandbox:latest`; pin it during story 0.8. | 6080 (noVNC), 7681 (ttyd), 8080 (sandbox API) | Per-session container, launched via bollard, NOT in docker-compose |
 | Ollama | **Optional** — host machine, not Docker | 11434 | Provides `local-fast` alias. If absent, story 0.1's `local-fast` smoke sub-test is **skipped, not failed**. Default model `llama3.2:3b` (light, ~2 GB). User installs Ollama and pulls the model per their OS — documented in `docs/getting-started.md`, not enforced by Phase 0 acceptance. |
