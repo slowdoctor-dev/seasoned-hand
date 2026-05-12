@@ -1,6 +1,8 @@
 # Story 0.8 — AIO Sandbox bollard integration
 
-> **Status**: ready
+> **Status**: done
+> **Image pin**: `ghcr.io/agent-infra/sandbox:1.0.0.152` (verified against agent-infra/sandbox GitHub releases as of 2026-05-12)
+> **Security**: requires `--security-opt seccomp=unconfined` for Chromium per upstream README
 > **Estimated**: 3 hours
 > **Dependencies**: story 0.3 (DB), 0.4 (events)
 > **Phase**: 0

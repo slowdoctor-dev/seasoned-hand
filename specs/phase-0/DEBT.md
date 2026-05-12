@@ -160,6 +160,50 @@
   updates to install cargo, run clippy + fmt + test + spec-check.
 - **Pay down**: Add a dedicated CI-fix story (or fold into story 0.27 E2E).
 
+### 15. Sandbox per-session container needs `seccomp=unconfined`
+- **Origin**: story 0.8
+- **Severity**: **Medium** (security-tradeoff)
+- **What**: AIO Sandbox requires `--security-opt seccomp=unconfined` for
+  Chromium to sandbox processes internally. The container therefore has
+  a wider host-level syscall surface than the default Docker policy.
+- **Why**: Upstream `agent-infra/sandbox` README mandates it. Phase 0 is
+  localhost-only single-user (architecture §9); the host-level risk is
+  bounded by Docker user-namespacing + 127.0.0.1 binding.
+- **Pay down**: Phase 1 hardening — consider a tailored seccomp profile
+  that allows the Chromium-needed syscalls but no more. Or migrate to
+  Firecracker microVMs (ADR-004 Alternative A) for enterprise tier.
+
+### 16. Sandbox workspace cleanup is manual (orphan dirs accumulate)
+- **Origin**: story 0.8
+- **Severity**: **Low**
+- **What**: `SandboxClient::destroy` removes the container but does NOT
+  delete `{workspace_root}/{session_id}/`. If a session ends, its workspace
+  dir lingers on disk indefinitely.
+- **Why**: Workspaces may contain artifacts the user wants to download
+  later. Deletion needs a retention policy.
+- **Pay down**: Phase 1 — add a configurable workspace TTL + a cleanup
+  job (cron or on-startup sweep).
+
+### 17. Live sandbox lifecycle test is `#[ignore]`'d and pulls ~1 GB
+- **Origin**: story 0.8
+- **Severity**: **Low** (CI-time cost only)
+- **What**: `live_create_inspect_destroy` requires Docker and pulls the
+  full AIO Sandbox image. Not run in default `cargo test`.
+- **Pay down**: CI workflow (item 14) should bring up Docker, prime the
+  image cache once per CI run, then `cargo test -- --ignored sandbox::`.
+
+### 18. SandboxClient holds in-process handle cache — single-process assumption
+- **Origin**: story 0.8
+- **Severity**: **Medium**
+- **What**: `Arc<RwLock<HashMap<String, SandboxHandle>>>`. If the control
+  plane crashes and restarts, the cache is empty but real containers from
+  prior runs may still exist. Currently relies on container *names* to
+  recover (we can re-create via `destroy` + `create`).
+- **Why**: Phase 0 has no persistence layer for runtime state beyond
+  events. A real "sandbox registry" in SQLite or Redis is a future story.
+- **Pay down**: Phase 1 — on startup, the SandboxClient could scan Docker
+  for `seasoned-hand-sandbox-*` containers and rehydrate the cache.
+
 ---
 
 ## Categories quick-reference
