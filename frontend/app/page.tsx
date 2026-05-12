@@ -1,16 +1,5 @@
-import {
-  AgentComputerPlaceholder,
-  ChatPlaceholder,
-  TaskListPlaceholder,
-} from "@/components/panels";
-import { ThreePanelLayout } from "@/components/three-panel-layout";
+import { HomeShell } from "@/components/home-shell";
 
 export default function Home() {
-  return (
-    <ThreePanelLayout
-      left={<TaskListPlaceholder />}
-      center={<ChatPlaceholder />}
-      right={<AgentComputerPlaceholder />}
-    />
-  );
+  return <HomeShell />;
 }

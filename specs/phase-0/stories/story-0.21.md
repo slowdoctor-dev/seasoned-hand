@@ -1,6 +1,6 @@
 # Story 0.21 — Chat component (notify rendering + input)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 0.19 (layout), 0.20 (WS client)
 > **Phase**: 0
