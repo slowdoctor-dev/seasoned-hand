@@ -197,6 +197,131 @@ async fn list_events(
     }
 }
 
+#[derive(Debug, Serialize)]
+struct SessionSummary {
+    id: String,
+    created_at: i64,
+    updated_at: i64,
+    state: String,
+    title: Option<String>,
+    cost_cents: i64,
+    tool_calls: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct SandboxInfo {
+    api_url: String,
+    novnc_url: String,
+    ttyd_url: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SessionDetail {
+    #[serde(flatten)]
+    summary: SessionSummary,
+    sandbox: Option<SandboxInfo>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct SessionsListParams {
+    pub limit: Option<usize>,
+}
+
+async fn list_sessions(
+    State(state): State<AppState>,
+    Query(params): Query<SessionsListParams>,
+) -> Result<Json<Vec<SessionSummary>>, (StatusCode, Json<ApiError>)> {
+    let limit = params.limit.unwrap_or(50).clamp(1, 500) as i64;
+    let sessions = state
+        .db
+        .with_conn(move |conn| -> rusqlite::Result<Vec<SessionSummary>> {
+            let mut stmt = conn.prepare(
+                "SELECT id, created_at, updated_at, state, title, cost_cents, tool_calls \
+                 FROM sessions ORDER BY updated_at DESC LIMIT ?",
+            )?;
+            let rows = stmt.query_map([limit], |row| {
+                Ok(SessionSummary {
+                    id: row.get(0)?,
+                    created_at: row.get(1)?,
+                    updated_at: row.get(2)?,
+                    state: row.get(3)?,
+                    title: row.get(4)?,
+                    cost_cents: row.get(5)?,
+                    tool_calls: row.get(6)?,
+                })
+            })?;
+            rows.collect()
+        })
+        .await
+        .map_err(|e| {
+            tracing::error!(%e, "list_sessions db error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "db_error".into(),
+                }),
+            )
+        })?;
+    Ok(Json(sessions))
+}
+
+async fn get_session(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> Result<Json<SessionDetail>, (StatusCode, Json<ApiError>)> {
+    let id_for_query = session_id.clone();
+    let summary = state
+        .db
+        .with_conn(move |conn| -> rusqlite::Result<Option<SessionSummary>> {
+            let mut stmt = conn.prepare(
+                "SELECT id, created_at, updated_at, state, title, cost_cents, tool_calls \
+                 FROM sessions WHERE id = ?",
+            )?;
+            let mut rows = stmt.query_map([id_for_query], |row| {
+                Ok(SessionSummary {
+                    id: row.get(0)?,
+                    created_at: row.get(1)?,
+                    updated_at: row.get(2)?,
+                    state: row.get(3)?,
+                    title: row.get(4)?,
+                    cost_cents: row.get(5)?,
+                    tool_calls: row.get(6)?,
+                })
+            })?;
+            match rows.next() {
+                Some(row) => Ok(Some(row?)),
+                None => Ok(None),
+            }
+        })
+        .await
+        .map_err(|e| {
+            tracing::error!(%e, "get_session db error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "db_error".into(),
+                }),
+            )
+        })?;
+
+    let summary = summary.ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "session_not_found".into(),
+            }),
+        )
+    })?;
+
+    let sandbox = state.sandbox.get(&session_id).await.map(|h| SandboxInfo {
+        api_url: h.api_url,
+        novnc_url: h.novnc_url,
+        ttyd_url: h.ttyd_url,
+    });
+
+    Ok(Json(SessionDetail { summary, sandbox }))
+}
+
 async fn cost_snapshot(
     State(state): State<AppState>,
 ) -> Result<Json<CostSnapshot>, (StatusCode, Json<ApiError>)> {
@@ -219,6 +344,8 @@ pub fn app(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/ws", get(ws::ws_upgrade))
         .route("/v1/cost", get(cost_snapshot))
+        .route("/v1/sessions", get(list_sessions))
+        .route("/v1/sessions/:id", get(get_session))
         .route("/v1/sessions/:id/events", get(list_events))
         .with_state(state)
 }

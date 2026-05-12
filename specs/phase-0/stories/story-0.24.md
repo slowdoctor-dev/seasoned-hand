@@ -1,6 +1,6 @@
 # Story 0.24 — noVNC iframe integration
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 0.8 (sandbox client), 0.17 (WS — to learn the active session's sandbox URL), 0.23 (AgentComputer tabs)
 > **Phase**: 0

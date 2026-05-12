@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { BrowserTab } from "@/components/agent-computer/browser-tab";
 
 type Tab = "browser" | "terminal" | "editor" | "files";
 
@@ -79,9 +80,7 @@ export function AgentComputer({ sessionId }: Props) {
         })}
       </nav>
       <div className="flex-1 overflow-auto p-4 text-sm text-gray-500">
-        {active === "browser" && (
-          <Placeholder sessionId={sessionId} story="0.24" label="Browser" />
-        )}
+        {active === "browser" && <BrowserTab sessionId={sessionId} />}
         {active === "terminal" && (
           <Placeholder sessionId={sessionId} story="0.25" label="Terminal" />
         )}
