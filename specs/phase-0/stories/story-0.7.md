@@ -1,6 +1,6 @@
 # Story 0.7 — Remaining 27 tools (as stubs)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 8 hours
 > **Dependencies**: story 0.6 (Tool trait + 5 tools)
 > **Phase**: 0

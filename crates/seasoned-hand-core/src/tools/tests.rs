@@ -26,18 +26,92 @@ async fn ctx() -> (super::ToolContext, Arc<SqliteEventStore>) {
     (ctx, store)
 }
 
+/// Catalog count is 33 per story 0.7: the 32 listed in architecture §7
+/// plus plan_advance (plan_update was already counted there). The
+/// spec-check.sh warning about "33 vs 32" is acceptable.
+const EXPECTED_TOOLS: &[&str] = &[
+    // story 0.6 (5)
+    "message_notify_user",
+    "message_ask_user",
+    "idle",
+    "sop_read",
+    "glossary_lookup",
+    // file (5)
+    "file_read",
+    "file_write",
+    "file_str_replace",
+    "file_find_in_content",
+    "file_find_by_name",
+    // shell (5)
+    "shell_exec",
+    "shell_view",
+    "shell_wait",
+    "shell_write_to_process",
+    "shell_kill_process",
+    // browser (12)
+    "browser_view",
+    "browser_navigate",
+    "browser_restart",
+    "browser_click",
+    "browser_input",
+    "browser_move_mouse",
+    "browser_press_key",
+    "browser_select_option",
+    "browser_scroll_up",
+    "browser_scroll_down",
+    "browser_console_exec",
+    "browser_console_view",
+    // search (1)
+    "info_search_web",
+    // deploy (2)
+    "deploy_expose_port",
+    "deploy_apply_deployment",
+    // internal (playbook_search; sop_read + glossary_lookup already above)
+    "playbook_search",
+    // plan (2)
+    "plan_advance",
+    "plan_update",
+];
+
 #[test]
-fn registry_has_five_entries() {
+fn registry_has_expected_tools() {
     let reg = register_builtin_tools();
-    assert_eq!(reg.len(), 5);
-    for name in [
+    assert_eq!(
+        reg.len(),
+        EXPECTED_TOOLS.len(),
+        "expected {} tools, got {}",
+        EXPECTED_TOOLS.len(),
+        reg.len()
+    );
+    for name in EXPECTED_TOOLS {
+        assert!(reg.contains_key(name), "missing tool: {name}");
+    }
+}
+
+#[tokio::test]
+async fn stubs_return_not_implemented() {
+    let (cx, _store) = ctx().await;
+    let reg = register_builtin_tools();
+    let real = [
         "message_notify_user",
         "message_ask_user",
         "idle",
         "sop_read",
         "glossary_lookup",
-    ] {
-        assert!(reg.contains_key(name), "missing {name}");
+    ];
+    for (name, tool) in reg.iter() {
+        if real.contains(name) {
+            continue;
+        }
+        // Schema may require fields, so we send an args object with reasonable
+        // dummies. Stub never validates args.
+        let out = tool.invoke(json!({}), &cx).await.expect("stub invoke ok");
+        assert!(!out.ok, "stub {name} unexpectedly returned ok=true");
+        assert_eq!(
+            out.error.as_ref().expect("stub must include error").kind,
+            "not_implemented",
+            "stub {name} wrong error kind"
+        );
     }
 }
 

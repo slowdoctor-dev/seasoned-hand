@@ -203,12 +203,441 @@ impl Tool for GlossaryLookup {
     }
 }
 
+// ===== stub tool (story 0.7) =====
+//
+// Used for the 28 tools whose real backends land in stories 0.8 / 0.9 /
+// 0.14. Every stub returns a stable shape so the agent runtime can
+// distinguish "tool not ready" from a hard failure.
+
+pub struct StubTool {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub schema: Value,
+    pub pending_story: &'static str,
+}
+
+#[async_trait]
+impl Tool for StubTool {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn description(&self) -> &'static str {
+        self.description
+    }
+    fn schema(&self) -> Value {
+        self.schema.clone()
+    }
+    async fn invoke(&self, _args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput {
+            ok: false,
+            output: Value::Null,
+            file_ref: None,
+            error: Some(ToolErrorPayload {
+                kind: "not_implemented".into(),
+                message: format!("backend pending (see {})", self.pending_story),
+            }),
+        })
+    }
+}
+
+fn stub(
+    name: &'static str,
+    description: &'static str,
+    schema: Value,
+    pending_story: &'static str,
+) -> Arc<dyn Tool> {
+    Arc::new(StubTool {
+        name,
+        description,
+        schema,
+        pending_story,
+    })
+}
+
+fn obj_schema(properties: Value, required: &[&str]) -> Value {
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false,
+    })
+}
+
 pub fn all() -> HashMap<&'static str, Arc<dyn Tool>> {
     let mut map: HashMap<&'static str, Arc<dyn Tool>> = HashMap::new();
+
+    // Real (5) — from story 0.6.
     map.insert("message_notify_user", Arc::new(MessageNotifyUser));
     map.insert("message_ask_user", Arc::new(MessageAskUser));
     map.insert("idle", Arc::new(Idle));
     map.insert("sop_read", Arc::new(SopRead));
     map.insert("glossary_lookup", Arc::new(GlossaryLookup));
+
+    // ===== File (5) — backend: Sandbox (story 0.8 + 0.9) =====
+    let path_only = obj_schema(json!({ "path": { "type": "string" } }), &["path"]);
+    map.insert(
+        "file_read",
+        stub(
+            "file_read",
+            "Read the contents of a file in the sandbox workspace.",
+            path_only.clone(),
+            "story 0.8/0.9",
+        ),
+    );
+    map.insert(
+        "file_write",
+        stub(
+            "file_write",
+            "Write content to a file in the sandbox workspace, overwriting if it exists.",
+            obj_schema(
+                json!({
+                    "path": { "type": "string" },
+                    "content": { "type": "string" }
+                }),
+                &["path", "content"],
+            ),
+            "story 0.8/0.9",
+        ),
+    );
+    map.insert(
+        "file_str_replace",
+        stub(
+            "file_str_replace",
+            "Replace one substring with another in a sandbox file.",
+            obj_schema(
+                json!({
+                    "path": { "type": "string" },
+                    "old_str": { "type": "string" },
+                    "new_str": { "type": "string" }
+                }),
+                &["path", "old_str", "new_str"],
+            ),
+            "story 0.8/0.9",
+        ),
+    );
+    map.insert(
+        "file_find_in_content",
+        stub(
+            "file_find_in_content",
+            "Find a regex pattern within a sandbox file's contents.",
+            obj_schema(
+                json!({
+                    "path": { "type": "string" },
+                    "pattern": { "type": "string" }
+                }),
+                &["path", "pattern"],
+            ),
+            "story 0.8/0.9",
+        ),
+    );
+    map.insert(
+        "file_find_by_name",
+        stub(
+            "file_find_by_name",
+            "Find files in the sandbox workspace whose names match a glob.",
+            obj_schema(
+                json!({
+                    "glob": { "type": "string" },
+                    "cwd": { "type": "string" }
+                }),
+                &["glob"],
+            ),
+            "story 0.8/0.9",
+        ),
+    );
+
+    // ===== Shell (5) — backend: Sandbox (story 0.8 + 0.9) =====
+    map.insert(
+        "shell_exec",
+        stub(
+            "shell_exec",
+            "Run a shell command in the sandbox and return its output.",
+            obj_schema(
+                json!({
+                    "cmd": { "type": "string" },
+                    "cwd": { "type": "string" }
+                }),
+                &["cmd"],
+            ),
+            "story 0.8/0.9",
+        ),
+    );
+    let process_id_only = obj_schema(
+        json!({ "process_id": { "type": "string" } }),
+        &["process_id"],
+    );
+    map.insert(
+        "shell_view",
+        stub(
+            "shell_view",
+            "Read accumulated stdout/stderr from a running sandbox process.",
+            process_id_only.clone(),
+            "story 0.8/0.9",
+        ),
+    );
+    map.insert(
+        "shell_wait",
+        stub(
+            "shell_wait",
+            "Block until a sandbox process exits, then return its exit code.",
+            obj_schema(
+                json!({
+                    "process_id": { "type": "string" },
+                    "timeout_secs": { "type": "integer", "minimum": 1 }
+                }),
+                &["process_id"],
+            ),
+            "story 0.8/0.9",
+        ),
+    );
+    map.insert(
+        "shell_write_to_process",
+        stub(
+            "shell_write_to_process",
+            "Write data to a running sandbox process's stdin.",
+            obj_schema(
+                json!({
+                    "process_id": { "type": "string" },
+                    "data": { "type": "string" }
+                }),
+                &["process_id", "data"],
+            ),
+            "story 0.8/0.9",
+        ),
+    );
+    map.insert(
+        "shell_kill_process",
+        stub(
+            "shell_kill_process",
+            "Send SIGTERM/SIGKILL to a running sandbox process.",
+            process_id_only.clone(),
+            "story 0.8/0.9",
+        ),
+    );
+
+    // ===== Browser (12) — backend: Sandbox Chromium (story 0.8 + 0.9) =====
+    let empty_obj = obj_schema(json!({}), &[]);
+    map.insert(
+        "browser_view",
+        stub(
+            "browser_view",
+            "Take a screenshot + DOM dump of the current browser page.",
+            empty_obj.clone(),
+            "story 0.8/0.9",
+        ),
+    );
+    map.insert(
+        "browser_navigate",
+        stub(
+            "browser_navigate",
+            "Navigate the sandbox browser to a URL.",
+            obj_schema(
+                json!({ "url": { "type": "string", "format": "uri" } }),
+                &["url"],
+            ),
+            "story 0.8/0.9",
+        ),
+    );
+    map.insert(
+        "browser_restart",
+        stub(
+            "browser_restart",
+            "Restart the sandbox browser session.",
+            empty_obj.clone(),
+            "story 0.8/0.9",
+        ),
+    );
+    let selector_only = obj_schema(json!({ "selector": { "type": "string" } }), &["selector"]);
+    map.insert(
+        "browser_click",
+        stub(
+            "browser_click",
+            "Click an element matching a CSS selector.",
+            selector_only.clone(),
+            "story 0.8/0.9",
+        ),
+    );
+    map.insert(
+        "browser_input",
+        stub(
+            "browser_input",
+            "Type text into an input matching a CSS selector.",
+            obj_schema(
+                json!({
+                    "selector": { "type": "string" },
+                    "text": { "type": "string" }
+                }),
+                &["selector", "text"],
+            ),
+            "story 0.8/0.9",
+        ),
+    );
+    map.insert(
+        "browser_move_mouse",
+        stub(
+            "browser_move_mouse",
+            "Move the mouse to viewport coordinates.",
+            obj_schema(
+                json!({ "x": { "type": "integer" }, "y": { "type": "integer" } }),
+                &["x", "y"],
+            ),
+            "story 0.8/0.9",
+        ),
+    );
+    map.insert(
+        "browser_press_key",
+        stub(
+            "browser_press_key",
+            "Press a single key (e.g. Enter, Tab, ArrowDown).",
+            obj_schema(json!({ "key": { "type": "string" } }), &["key"]),
+            "story 0.8/0.9",
+        ),
+    );
+    map.insert(
+        "browser_select_option",
+        stub(
+            "browser_select_option",
+            "Select an option in a <select> by value.",
+            obj_schema(
+                json!({
+                    "selector": { "type": "string" },
+                    "value": { "type": "string" }
+                }),
+                &["selector", "value"],
+            ),
+            "story 0.8/0.9",
+        ),
+    );
+    map.insert(
+        "browser_scroll_up",
+        stub(
+            "browser_scroll_up",
+            "Scroll the browser viewport up by one page.",
+            empty_obj.clone(),
+            "story 0.8/0.9",
+        ),
+    );
+    map.insert(
+        "browser_scroll_down",
+        stub(
+            "browser_scroll_down",
+            "Scroll the browser viewport down by one page.",
+            empty_obj.clone(),
+            "story 0.8/0.9",
+        ),
+    );
+    map.insert(
+        "browser_console_exec",
+        stub(
+            "browser_console_exec",
+            "Run a JavaScript expression in the browser dev console.",
+            obj_schema(json!({ "code": { "type": "string" } }), &["code"]),
+            "story 0.8/0.9",
+        ),
+    );
+    map.insert(
+        "browser_console_view",
+        stub(
+            "browser_console_view",
+            "Read the most recent dev console log lines.",
+            empty_obj.clone(),
+            "story 0.8/0.9",
+        ),
+    );
+
+    // ===== Search (1) — backend: Search client (story 0.9) =====
+    map.insert(
+        "info_search_web",
+        stub(
+            "info_search_web",
+            "Web search via the configured provider (Brave or Tavily).",
+            obj_schema(
+                json!({
+                    "query": { "type": "string" },
+                    "max_results": { "type": "integer", "minimum": 1, "maximum": 20 }
+                }),
+                &["query"],
+            ),
+            "story 0.9",
+        ),
+    );
+
+    // ===== Deploy (2) — Phase 0 stubs (architecture §4.3 — real impl Phase 1+) =====
+    map.insert(
+        "deploy_expose_port",
+        stub(
+            "deploy_expose_port",
+            "Expose a sandbox port over Tailscale Funnel (deferred beyond Phase 0).",
+            obj_schema(
+                json!({ "port": { "type": "integer", "minimum": 1, "maximum": 65535 } }),
+                &["port"],
+            ),
+            "Phase 1+",
+        ),
+    );
+    map.insert(
+        "deploy_apply_deployment",
+        stub(
+            "deploy_apply_deployment",
+            "Publish the workspace as a public deployment (deferred beyond Phase 0).",
+            obj_schema(
+                json!({
+                    "name": { "type": "string" },
+                    "subdir": { "type": "string" }
+                }),
+                &["name"],
+            ),
+            "Phase 1+",
+        ),
+    );
+
+    // ===== Internal (playbook_search) — Phase 3+ =====
+    map.insert(
+        "playbook_search",
+        stub(
+            "playbook_search",
+            "Full-text search over learned playbooks (deferred to Phase 3+).",
+            obj_schema(json!({ "query": { "type": "string" } }), &["query"]),
+            "Phase 3+",
+        ),
+    );
+
+    // ===== Plan (2) — LLM-callable per ADR-010; real impl story 0.14 =====
+    map.insert(
+        "plan_advance",
+        stub(
+            "plan_advance",
+            "Advance the current plan to the next phase. ADR-010.",
+            empty_obj.clone(),
+            "story 0.14",
+        ),
+    );
+    map.insert(
+        "plan_update",
+        stub(
+            "plan_update",
+            "Replace the remaining phases of the plan with a new structured list. ADR-010.",
+            obj_schema(
+                json!({
+                    "phases": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "integer" },
+                                "title": { "type": "string" },
+                                "capabilities": { "type": "array", "items": { "type": "string" } },
+                                "status": { "type": "string" }
+                            },
+                            "required": ["id", "title"]
+                        }
+                    }
+                }),
+                &["phases"],
+            ),
+            "story 0.14",
+        ),
+    );
+
     map
 }
