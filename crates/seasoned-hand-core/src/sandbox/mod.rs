@@ -17,7 +17,9 @@ use tokio::sync::RwLock;
 
 use crate::db::DbPool;
 
+pub mod bootstrap;
 pub mod cache;
+pub mod identity;
 pub use cache::RehydrateReport;
 
 /// AIO Sandbox internal ports (per upstream README).
@@ -43,6 +45,8 @@ pub enum SandboxError {
     PortMissing(u16),
     #[error("invalid workspace path: {0}")]
     InvalidWorkspace(String),
+    #[error("workspace bootstrap: {0}")]
+    WorkspaceBootstrap(String),
 }
 
 #[derive(Clone, Debug)]
@@ -170,6 +174,41 @@ impl SandboxClient {
             ttyd_url: format!("ws://127.0.0.1:{ttyd_host}"),
             workspace_host_path: workspace_abs,
         };
+
+        // Story 1.3: every new workspace is a git working tree from session
+        // start (architecture §2.6). Wait briefly for the sandbox HTTP API
+        // to come up, then run the bootstrap sequence. On failure, tear the
+        // container down so no half-bootstrapped sandbox leaks.
+        if let Err(err) = wait_for_api_ready(&handle.api_url).await {
+            let _ = self
+                .docker
+                .remove_container(
+                    &name,
+                    Some(RemoveContainerOptions {
+                        force: true,
+                        v: false,
+                        link: false,
+                    }),
+                )
+                .await;
+            return Err(err);
+        }
+        let bootstrap_client = reqwest::Client::new();
+        if let Err(err) = bootstrap::run_bootstrap(&bootstrap_client, &handle.api_url).await {
+            let _ = self
+                .docker
+                .remove_container(
+                    &name,
+                    Some(RemoveContainerOptions {
+                        force: true,
+                        v: false,
+                        link: false,
+                    }),
+                )
+                .await;
+            return Err(err);
+        }
+
         self.handles
             .write()
             .await
@@ -257,6 +296,11 @@ impl SandboxClient {
             };
 
             if cache::is_live_state(state.as_deref()) {
+                // Story 1.3 note: rehydration does NOT re-run
+                // `workspace_bootstrap_commands` — the container's
+                // /workspace volume is persistent across restarts, so its
+                // git tree + identity are still intact from the original
+                // create().
                 match self.register_existing(&session_id).await {
                     Ok(()) => report.restored += 1,
                     Err(e) => {
@@ -350,6 +394,22 @@ impl SandboxClient {
 
 pub fn container_name(session_id: &str) -> String {
     format!("seasoned-hand-sandbox-{session_id}")
+}
+
+/// Block until the sandbox HTTP API accepts a TCP connection or the budget
+/// runs out. Used by `SandboxClient::create` before running the workspace
+/// bootstrap. ~15 s budget matches Phase 0's live-test wait (story 0.8).
+async fn wait_for_api_ready(api_url: &str) -> Result<(), SandboxError> {
+    let addr = api_url.trim_start_matches("http://").to_string();
+    for _ in 0..30 {
+        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    Err(SandboxError::WorkspaceBootstrap(format!(
+        "sandbox API never became reachable at {addr}"
+    )))
 }
 
 async fn lookup_session_state(

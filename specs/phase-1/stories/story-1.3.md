@@ -1,6 +1,6 @@
 # Story 1.3 — Sandbox workspace bootstrap (`git init` + identity)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 1.2 (handle-cache rehydration in place; rehydrate path
 > assumes `git init` already happened on first create)

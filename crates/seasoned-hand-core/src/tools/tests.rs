@@ -140,6 +140,10 @@ async fn stubs_return_not_implemented() {
         "browser_console_exec",
         "browser_console_view",
         "info_search_web",
+        // Story 1.1: plan tools now hit the real PlanManager.
+        "plan_create",
+        "plan_advance",
+        "plan_update",
     ];
     for (name, tool) in reg.iter() {
         if real.contains(name) {
