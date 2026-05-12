@@ -116,3 +116,25 @@ hooks, and a 3-panel Next.js UI.
   @monaco-editor/react, @xterm/xterm
 - 33-tool catalog (5 real + 28 stubs)
 - 4 verification gates (clippy / fmt / test / spec-check)
+
+## Corrections (post-close review)
+
+Codex reviewed the closed phase at `fbb562f` (2026-05-12) and surfaced 4
+MAJOR items. They were all fixed in the immediate follow-up:
+
+- **Clippy not actually green at `fbb562f`** — local cache hid 3
+  `collapsible_if` violations in `tests/e2e_phase0.rs`. Fixed at
+  `3426780`. **First clippy-green Phase 0 commit is `3426780`, not
+  `fbb562f`.** "4 verification gates" above is honest from `3426780`
+  forward.
+- **`tests/ws.rs::subscribe_replays_then_streams`** asserted
+  `subscribe_failed` (intentionally-broken Redis URL), not actual
+  streaming. Renamed to `subscribe_replays_then_redis_subscribe_failure`
+  to match what it tests. Live-Redis streaming happy path joins the
+  Phase 1 CI follow-up (DEBT #14).
+- **WS heartbeat close code** — spec said 1011 on pong timeout, impl
+  silently broke the loop. Now sends `Close(CloseFrame{code:1011,
+  reason:"pong_timeout"})` via a dedicated close channel before exit.
+- **`SlotRouter::resolve` had a production `expect()`** — replaced with
+  a `main_fallback` field so the lookup is panic-free even if the
+  construction invariant ever breaks.

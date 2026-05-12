@@ -204,8 +204,12 @@ async fn user_response_resumes_suspended_session() {
     assert_eq!(state_now, "RUNNING");
 }
 
+/// Replay-from-DB is fully exercised; the live streaming path is only
+/// smoke-tested against an intentionally-broken Redis URL so we observe the
+/// `subscribe_failed` error envelope. A real streaming happy-path test
+/// would require live Redis — wired in the Phase 1 CI workflow (DEBT #14).
 #[tokio::test]
-async fn subscribe_replays_then_streams() {
+async fn subscribe_replays_then_redis_subscribe_failure() {
     let (url, state) = boot().await;
     state
         .events

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::State;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use seasoned_hand_core::agent::RunRequest;
@@ -105,21 +105,36 @@ pub async fn ws_upgrade(State(state): State<AppState>, ws: WebSocketUpgrade) -> 
 async fn ws_session(socket: WebSocket, state: AppState) {
     let (mut writer, mut reader) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerEnvelope>();
+    let (close_tx, mut close_rx) = mpsc::unbounded_channel::<(u16, &'static str)>();
     let mut subscriptions: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(HEARTBEAT_SECONDS));
     let mut last_pong = Instant::now();
 
     let writer_handle = tokio::spawn(async move {
-        while let Some(envelope) = rx.recv().await {
-            match serde_json::to_string(&envelope) {
-                Ok(text) => {
-                    if writer.send(Message::Text(text)).await.is_err() {
-                        break;
+        loop {
+            tokio::select! {
+                Some(envelope) = rx.recv() => {
+                    match serde_json::to_string(&envelope) {
+                        Ok(text) => {
+                            if writer.send(Message::Text(text)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "failed to encode ws envelope");
+                        }
                     }
                 }
-                Err(error) => {
-                    tracing::warn!(%error, "failed to encode ws envelope");
+                Some((code, reason)) = close_rx.recv() => {
+                    let _ = writer
+                        .send(Message::Close(Some(CloseFrame {
+                            code,
+                            reason: reason.into(),
+                        })))
+                        .await;
+                    break;
                 }
+                else => break,
             }
         }
     });
@@ -163,6 +178,8 @@ async fn ws_session(socket: WebSocket, state: AppState) {
             _ = heartbeat.tick() => {
                 let _ = tx.send(ServerEnvelope::Ping { ts: now_unix() });
                 if last_pong.elapsed() > Duration::from_secs(HEARTBEAT_SECONDS + PONG_TIMEOUT_SECONDS) {
+                    // architecture §4.2 / story 0.17: close with 1011 on pong timeout
+                    let _ = close_tx.send((1011, "pong_timeout"));
                     break;
                 }
             }

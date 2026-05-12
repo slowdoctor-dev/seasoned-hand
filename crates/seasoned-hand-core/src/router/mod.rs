@@ -89,6 +89,11 @@ pub enum RouterError {
 #[derive(Debug)]
 pub struct SlotRouter {
     resolved: HashMap<SlotName, ResolvedSlot>,
+    /// Returned by `resolve` if a slot is missing from `resolved`. Both
+    /// `from_config` and `default_for_bifrost` populate every SlotName::ALL,
+    /// so this should be unreachable — keeping it lets `resolve` stay
+    /// panic-free per AGENTS.md §7.
+    main_fallback: ResolvedSlot,
 }
 
 impl SlotRouter {
@@ -131,7 +136,10 @@ impl SlotRouter {
             }
         }
 
-        Ok(Self { resolved })
+        Ok(Self {
+            resolved,
+            main_fallback: main_resolved,
+        })
     }
 
     pub fn from_yaml_str(yaml: &str) -> Result<Self, RouterError> {
@@ -157,13 +165,14 @@ impl SlotRouter {
         for slot in SlotName::ALL {
             resolved.insert(*slot, main.clone());
         }
-        Self { resolved }
+        Self {
+            resolved,
+            main_fallback: main,
+        }
     }
 
     pub fn resolve(&self, slot: SlotName) -> &ResolvedSlot {
-        self.resolved
-            .get(&slot)
-            .expect("all 12 slots resolved at construction")
+        self.resolved.get(&slot).unwrap_or(&self.main_fallback)
     }
 }
 
