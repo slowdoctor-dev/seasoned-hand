@@ -22,8 +22,6 @@ jobs:
   rust:
     name: Rust (clippy, fmt, test)
     runs-on: ubuntu-latest
-    # Enable once /src exists (Phase 0+)
-    if: hashFiles('Cargo.toml') != ''
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -40,8 +38,6 @@ jobs:
   frontend:
     name: Frontend (typecheck, lint, build, test)
     runs-on: ubuntu-latest
-    # Enable once /frontend exists (Phase 0+)
-    if: hashFiles('frontend/package.json') != ''
     defaults:
       run:
         working-directory: frontend
