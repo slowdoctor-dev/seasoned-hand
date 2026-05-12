@@ -41,11 +41,7 @@ impl RedisPool {
         Ok(())
     }
 
-    pub async fn publish_event(
-        &self,
-        session_id: &str,
-        payload: &str,
-    ) -> Result<i64, RedisError> {
+    pub async fn publish_event(&self, session_id: &str, payload: &str) -> Result<i64, RedisError> {
         let mut conn = self.conn().await?;
         let channel = channel_for(session_id);
         let n: i64 = conn.publish(channel, payload).await?;

@@ -1,6 +1,6 @@
 # Story 0.6 — Tool trait + 5 simplest tools
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: story 0.4 (Event Stream API), story 0.5 (Redis pub/sub)
 > **Phase**: 0
