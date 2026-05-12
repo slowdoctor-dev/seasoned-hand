@@ -138,3 +138,9 @@ MAJOR items. They were all fixed in the immediate follow-up:
 - **`SlotRouter::resolve` had a production `expect()`** — replaced with
   a `main_fallback` field so the lookup is panic-free even if the
   construction invariant ever breaks.
+- **CI now enforces gate claims from cold cache** — `.github/workflows/ci.yml`
+  was audited against the real workspace: Rust runs fmt/clippy/test without
+  misleading `--all-features`, frontend adds `pnpm build`, and a
+  `workflow_dispatch` ignored-tests job covers Redis + live sandbox (plus
+  Bifrost smoke when secrets are present). From this commit forward, the
+  "all gates green" claim is CI-enforced, not cache-dependent.

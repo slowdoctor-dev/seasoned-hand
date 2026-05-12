@@ -146,13 +146,12 @@
   considers org migration), update this.
 - **Pay down**: Phase 6 if/when repo moves.
 
-### 14. CI workflow not validated against new structure
-- **Origin**: inherited from initial scaffold commit `a4b819f`
-- **Severity**: **Medium**
-- **What**: `.github/workflows/ci.yml` exists from day 0 but hasn't been
-  exercised against the now-real Rust workspace + tests. Likely needs
-  updates to install cargo, run clippy + fmt + test + spec-check.
-- **Pay down**: Add a dedicated CI-fix story (or fold into story 0.27 E2E).
+### ~~14. CI workflow not validated against new structure~~ ✅ resolved 2026-05-12 (story-ci)
+- ~~Origin: inherited from initial scaffold commit `a4b819f`~~
+- ~~Resolved by story-ci: CI now runs spec-check + rust fmt/clippy/test +
+  frontend typecheck/lint/build/test from cold GitHub runners, and adds a
+  workflow_dispatch ignored-tests job with Redis service + pinned AIO sandbox pull
+  + optional Bifrost smoke when provider secrets exist.~~
 
 ### 15. Sandbox per-session container needs `seccomp=unconfined`
 - **Origin**: story 0.8
