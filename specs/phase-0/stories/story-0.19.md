@@ -1,6 +1,15 @@
 # Story 0.19 — 3-panel resizable layout
 
-> **Status**: ready
+> **Status**: done
+
+> **Notes from implementation**:
+> - `react-resizable-panels` v4 renamed `PanelGroup→Group` and
+>   `PanelResizeHandle→Separator`, and dropped `autoSaveId` —
+>   localStorage wiring is now manual via `defaultLayout` +
+>   `onLayoutChange`. The component does that.
+> - ESLint rule `react-hooks/set-state-in-effect` forced lazy-init
+>   `useState(fn)` for both mobile and layout state; the effect now
+>   only adds the mediaquery listener.
 > **Estimated**: 2 hours
 > **Dependencies**: story 0.18 (Next.js init)
 > **Phase**: 0
