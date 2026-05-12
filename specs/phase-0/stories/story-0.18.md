@@ -1,0 +1,218 @@
+# Story 0.18 — Next.js project init + Tailwind v4
+
+> **Status**: ready
+> **Estimated**: 1 hour
+> **Dependencies**: story 0.17 (WebSocket server) — only soft; frontend can scaffold without WS up
+> **Phase**: 0
+> **Type**: frontend
+> **Reads first**: `/specs/phase-0/architecture.md` §5.3 (frontend deps), §1 (3-panel layout), `/specs/01-architecture/decisions/ADR-002-rust-typescript-hybrid.md`
+
+---
+
+## Goal
+
+Bootstrap the `/frontend/` Next.js 15 app with React 19 + Tailwind v4
++ TypeScript strict. Lands the project skeleton and a single
+placeholder page so subsequent stories (0.19+) have a home for the
+3-panel UI, WebSocket client, Monaco, xterm, etc.
+
+## Acceptance criteria
+
+- [ ] `frontend/` directory created via `pnpm create next-app@latest frontend`
+      with these answers: TypeScript=Yes, ESLint=Yes, Tailwind=Yes,
+      App Router=Yes, src/=No (keep flat for clarity in Phase 0),
+      Turbopack=No (default to webpack in Phase 0 until story 0.27 says otherwise),
+      import alias=`@/*`
+- [ ] Tailwind upgraded/configured for v4 if `create-next-app` defaults
+      to v3 (architecture §5.3 mandates v4)
+- [ ] `frontend/package.json` `engines.node >= "20"`, pnpm 9+ assumed
+- [ ] `frontend/tsconfig.json` has `"strict": true` (Phase 0 NEVER uses
+      `any` — `unknown` instead, per AGENTS.md §7)
+- [ ] `frontend/app/page.tsx` shows "Seasoned Hand — Phase 0" placeholder
+      with version + a clear "this UI lands in 0.19+" note
+- [ ] `frontend/app/layout.tsx` carries the basic HTML scaffold
+- [ ] `frontend/.gitignore` includes `node_modules/`, `.next/`,
+      `out/`, `next-env.d.ts`
+- [ ] Root `.gitignore` already covers `frontend/node_modules/` and
+      `frontend/.next/`; verify and add if missing
+- [ ] `cd frontend && pnpm install` runs cleanly on this WSL shell
+      (might need `pnpm` install if missing — DEBT entry if so)
+- [ ] `pnpm typecheck` (alias for `tsc --noEmit`) passes
+- [ ] `pnpm lint` passes
+- [ ] `pnpm build` succeeds (verifies the toolchain end-to-end)
+- [ ] Backend `justfile` `dev-frontend` target works:
+      `cd frontend && pnpm dev` — manual smoke check, server reachable
+      on `http://localhost:3001` (PORT=3001 since 3000 has Gitea per
+      `specs/phase-0/DEBT.md` item 10 / `reference_local_dev_env.md`)
+- [ ] `scripts/spec-check.sh` continues to pass
+
+## Non-goals
+
+- 3-panel layout (story 0.19)
+- WebSocket client (story 0.20)
+- Any real UI components (stories 0.21–0.26)
+- `ts-rs` codegen for shared types (deferred to Phase 1 per architecture §2)
+- Authentication UI (Phase 5)
+- Server-side rendering of agent data (Phase 1+ — Phase 0 is all
+  client-side via WebSocket)
+
+---
+
+## Implementation steps
+
+### 1. Init
+
+```bash
+cd /mnt/c/Users/user/Cowork/repos/slowdoctor-dev/seasoned-hand
+pnpm create next-app@latest frontend \
+  --typescript --eslint --tailwind --app --no-src-dir \
+  --import-alias "@/*" --no-turbo
+```
+
+If `pnpm` isn't on PATH:
+
+```bash
+corepack enable
+corepack prepare pnpm@9 --activate
+```
+
+(Implementer may need to install pnpm; log a DEBT entry if so.)
+
+### 2. Tailwind v4 verification
+
+```bash
+cd frontend
+grep '"tailwindcss"' package.json
+# If 3.x:
+pnpm remove tailwindcss postcss autoprefixer
+pnpm add -D tailwindcss@^4 @tailwindcss/postcss
+```
+
+Update `postcss.config.js` / `postcss.config.mjs` to use
+`@tailwindcss/postcss` plugin per Tailwind v4 migration docs.
+
+Update `app/globals.css`:
+
+```css
+@import "tailwindcss";
+```
+
+(v4 single-line import replaces the v3 `@tailwind base/components/utilities`.)
+
+### 3. Placeholder page
+
+`frontend/app/page.tsx`:
+
+```tsx
+export default function Home() {
+  return (
+    <main className="min-h-screen flex flex-col items-center justify-center gap-4 p-8">
+      <h1 className="text-3xl font-semibold">Seasoned Hand — Phase 0</h1>
+      <p className="text-gray-600">
+        UI scaffolding lands in story 0.19 (3-panel layout).
+      </p>
+      <p className="text-sm text-gray-400">
+        Build: {process.env.NEXT_PUBLIC_BUILD || "dev"}
+      </p>
+    </main>
+  );
+}
+```
+
+### 4. `package.json` scripts
+
+Ensure these exist (Next 15 default includes most):
+
+```json
+{
+  "scripts": {
+    "dev": "next dev --port ${PORT:-3001}",
+    "build": "next build",
+    "start": "next start --port ${PORT:-3001}",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"no tests yet\" && exit 0"
+  },
+  "engines": { "node": ">=20" }
+}
+```
+
+Note `PORT:-3001` because Gitea owns 3000 on this dev box. Phase 0
+default for the Next dev server is 3001 to avoid the collision.
+
+### 5. tsconfig strict mode
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "isolatedModules": true,
+    "allowJs": false,
+    "resolveJsonModule": true,
+    "paths": { "@/*": ["./*"] }
+  }
+}
+```
+
+### 6. Justfile update
+
+`/justfile` already has `dev-frontend` — verify it still works after
+this story.
+
+### 7. DEBT entries (if any)
+
+- pnpm install required → log entry
+- Turbopack disabled → log entry (decision rationale)
+- Webpack vs Turbopack in Phase 1 → reconsider
+
+---
+
+## Files changed
+
+- `frontend/` (new directory, many auto-generated files; commit verbatim)
+- `frontend/package.json` (Tailwind v4, scripts)
+- `frontend/tsconfig.json` (strict)
+- `frontend/app/page.tsx` (placeholder)
+- `frontend/app/globals.css` (v4 import)
+- `frontend/postcss.config.{js,mjs}` (v4 plugin)
+- `frontend/.gitignore` (auto-generated; verify)
+- `.gitignore` (verify frontend exclusions; add if missing)
+- `specs/phase-0/DEBT.md` (any new entries)
+
+---
+
+## Spec references
+
+- `/specs/phase-0/architecture.md` §5.3 (frontend deps)
+- `/specs/phase-0/architecture.md` §1 (3-panel layout target)
+- `/specs/01-architecture/decisions/ADR-002-rust-typescript-hybrid.md`
+- `/AGENTS.md` §7 (TypeScript strict, no `any`)
+
+---
+
+## Commit message
+
+```
+feat(phase-0): story 0.18 - Next.js 15 + Tailwind v4 + TS strict
+
+- frontend/ initialized via create-next-app: TS strict, ESLint,
+  Tailwind, App Router, import alias @/*, no src/ dir, no Turbopack
+- Tailwind upgraded to v4 if create-next-app shipped v3
+- Placeholder app/page.tsx + minimal layout
+- tsconfig strict, noUncheckedIndexedAccess on
+- engines.node >= 20
+- Dev port defaults to 3001 (port 3000 is Gitea on local box)
+- pnpm install / lint / typecheck / build all pass
+- spec-check still passes
+
+refs: /specs/phase-0/stories/story-0.18.md
+```
