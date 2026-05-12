@@ -5,9 +5,12 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+pub mod capability;
 
 /// Bifrost default (used when neither the main slot nor the slot itself
 /// supplies a base_url).
@@ -84,6 +87,19 @@ pub enum RouterError {
         "auxiliary slot {slot:?} uses provider 'auto'/'main' but has no model and main has none either"
     )]
     UnresolvableInheritance { slot: SlotName },
+    // ---- Story 1.7: Bifrost alias resolution (capability submodule) ----
+    #[error("slot {0:?} not configured for capability resolution")]
+    SlotNotConfigured(SlotName),
+    #[error("slot {slot:?} alias {alias} not found at Bifrost (HTTP {status})")]
+    AliasNotFound {
+        slot: SlotName,
+        alias: String,
+        status: reqwest::StatusCode,
+    },
+    #[error("slot {slot:?} resolution: {message}")]
+    Resolution { slot: SlotName, message: String },
+    #[error("main slot unavailable: {0}")]
+    MainSlotUnavailable(Box<RouterError>),
 }
 
 #[derive(Debug)]
@@ -94,6 +110,15 @@ pub struct SlotRouter {
     /// so this should be unreachable — keeping it lets `resolve` stay
     /// panic-free per AGENTS.md §7.
     main_fallback: ResolvedSlot,
+    /// Story 1.7: optional Bifrost alias resolver. Populated by
+    /// [`SlotRouter::with_resolver`] at server startup; consumed by story
+    /// 1.8 (`verifier ≠ main` gate) and the runtime for resolved-provider
+    /// logging. None when the server boots without a real Bifrost
+    /// (default-for-bifrost ergonomics).
+    resolver: Option<Arc<capability::Resolver>>,
+    /// Story 1.7: capability-side resolutions keyed by slot. Empty when no
+    /// resolver is attached; populated by [`SlotRouter::with_capability_resolutions`].
+    capability_resolved: HashMap<SlotName, capability::ResolvedSlot>,
 }
 
 impl SlotRouter {
@@ -139,6 +164,8 @@ impl SlotRouter {
         Ok(Self {
             resolved,
             main_fallback: main_resolved,
+            resolver: None,
+            capability_resolved: HashMap::new(),
         })
     }
 
@@ -168,11 +195,47 @@ impl SlotRouter {
         Self {
             resolved,
             main_fallback: main,
+            resolver: None,
+            capability_resolved: HashMap::new(),
         }
     }
 
     pub fn resolve(&self, slot: SlotName) -> &ResolvedSlot {
         self.resolved.get(&slot).unwrap_or(&self.main_fallback)
+    }
+
+    /// Story 1.7: Phase-0 `resolve(Main)` alias; kept around so story 1.8
+    /// and other Phase 1 callers can reach for "the main slot routing
+    /// target" without re-typing `SlotName::Main`.
+    pub fn resolve_main(&self) -> &ResolvedSlot {
+        self.resolve(SlotName::Main)
+    }
+
+    /// Story 1.7: attach a capability resolver + its [`capability::ResolveAllReport`]
+    /// to the router. Server startup calls this after a successful
+    /// `Resolver::resolve_all_or_main()`.
+    pub fn with_resolver(
+        mut self,
+        resolver: Arc<capability::Resolver>,
+        report: capability::ResolveAllReport,
+    ) -> Self {
+        self.resolver = Some(resolver);
+        self.capability_resolved = report.resolved;
+        self
+    }
+
+    /// Story 1.7: expose the resolver so story 1.8 can re-resolve at
+    /// runtime if a slot's alias changes.
+    pub fn resolver(&self) -> Option<&Arc<capability::Resolver>> {
+        self.resolver.as_ref()
+    }
+
+    /// Story 1.7: returns the capability-side resolution for a slot if it
+    /// was successfully resolved at startup. `None` when the slot was
+    /// recorded as `unavailable` (non-main slots only) or no resolver was
+    /// attached.
+    pub fn resolve_optional(&self, slot: SlotName) -> Option<&capability::ResolvedSlot> {
+        self.capability_resolved.get(&slot)
     }
 }
 

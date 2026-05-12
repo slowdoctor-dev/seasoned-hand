@@ -1,6 +1,6 @@
 # Story 1.7 — Bifrost alias → provider model-ID resolution + capability fallback (close DEBT #22)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: none
 > **Phase**: 1

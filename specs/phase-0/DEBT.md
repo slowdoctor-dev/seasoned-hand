@@ -222,19 +222,16 @@
 - **Pay down**: Add a `write_observation_file(call_id, content)` helper to
   the hook and replace the inline truncation with the file_ref path.
 
-### 22. Capability table assumes Bifrost cloud aliases support tool calling
-- **Origin**: story 0.13
-- **Severity**: **Low**
-- **What**: `built_in_capabilities()` treats `agent-primary` and
-  `agent-fallback` as ToolCalling + Vision + LongContext aliases so the
-  Phase 0 default router (`main -> agent-primary`) can pass startup
-  validation even when Bifrost `/v1/models` returns aliases instead of
-  provider model IDs.
-- **Why**: Story 0.13 is a static startup gate only; real probing with a
-  dummy tool call is explicitly out of scope because it costs money.
-- **Pay down**: Phase 1 — resolve Bifrost aliases to their configured
-  provider model IDs before checking capabilities, or perform a cheap
-  provider-supported metadata probe if Bifrost exposes capability flags.
+### ~~22. Capability table assumes Bifrost cloud aliases support tool calling~~ ✅ resolved 2026-05-13 (story 1.7)
+- ~~Origin: story 0.13~~
+- ~~Resolved by story 1.7: `router::capability::Resolver` queries Bifrost
+  `GET /v1/models/<alias>` at startup, learns the upstream provider model
+  id, and looks up tool-calling / json-mode / vision flags in a static
+  tri-state `capabilities_for` table (Claude 4.x, GPT-5.x, llama3.2:3b).
+  `SlotRouter::resolver()` / `resolve_optional()` expose the resolutions
+  for story 1.8's `verifier ≠ main` gate. Non-main slots that fail to
+  resolve log a warning and are recorded as unavailable; main remains
+  hard-required.~~
 
 ### ~~18. SandboxClient holds in-process handle cache — single-process assumption~~ ✅ resolved 2026-05-13 (story 1.2)
 - ~~Origin: story 0.8~~
