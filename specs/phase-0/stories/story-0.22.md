@@ -1,6 +1,6 @@
 # Story 0.22 — TaskList component
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 0.19 (layout), 0.20 (WS client)
 > **Phase**: 0

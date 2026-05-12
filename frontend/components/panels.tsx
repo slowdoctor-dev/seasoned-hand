@@ -1,12 +1,3 @@
-export function TaskListPlaceholder() {
-  return (
-    <aside className="h-full overflow-auto border-r p-4">
-      <h2 className="mb-2 font-semibold">Tasks</h2>
-      <p className="text-sm text-gray-500">Story 0.22 wires the real list.</p>
-    </aside>
-  );
-}
-
 export function AgentComputerPlaceholder() {
   return (
     <aside className="h-full overflow-auto border-l p-4">

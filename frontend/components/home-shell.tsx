@@ -2,10 +2,8 @@
 
 import { useState } from "react";
 import { Chat } from "@/components/chat";
-import {
-  AgentComputerPlaceholder,
-  TaskListPlaceholder,
-} from "@/components/panels";
+import { AgentComputerPlaceholder } from "@/components/panels";
+import { TaskList } from "@/components/task-list";
 import { ThreePanelLayout } from "@/components/three-panel-layout";
 
 export function HomeShell() {
@@ -13,7 +11,7 @@ export function HomeShell() {
 
   return (
     <ThreePanelLayout
-      left={<TaskListPlaceholder />}
+      left={<TaskList activeSessionId={sessionId} onSelect={setSessionId} />}
       center={
         <Chat sessionId={sessionId} onSessionCreated={setSessionId} />
       }
