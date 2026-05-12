@@ -2,6 +2,7 @@
 //! refs: /specs/phase-0/architecture.md §2
 
 pub mod db;
+pub mod events;
 
 /// Returns the core crate version.
 pub fn version() -> &'static str {

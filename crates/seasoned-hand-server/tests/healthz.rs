@@ -8,7 +8,7 @@ use tokio::net::TcpListener;
 #[tokio::test]
 async fn healthz_returns_ok_with_db() {
     let pool = db::open(":memory:").await.expect("open in-memory db");
-    let state = AppState { db: pool };
+    let state = AppState::new(pool);
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await

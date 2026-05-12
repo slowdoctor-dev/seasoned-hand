@@ -1,6 +1,6 @@
 # Story 0.4 — Event Stream API (append + query)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: story 0.3 (SQLite schema + migrations)
 > **Phase**: 0
