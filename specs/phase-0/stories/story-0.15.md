@@ -1,6 +1,6 @@
 # Story 0.15 — Stuck detection (real pump)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 1 hour
 > **Dependencies**: story 0.14 (agent runner)
 > **Phase**: 0

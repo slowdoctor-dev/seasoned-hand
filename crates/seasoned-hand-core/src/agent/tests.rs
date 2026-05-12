@@ -18,18 +18,24 @@ use crate::tools::register_builtin_tools;
 #[derive(Clone)]
 struct ScriptedResponder {
     responses: Arc<Mutex<VecDeque<Value>>>,
+    requests: Arc<Mutex<Vec<Value>>>,
 }
 
 impl ScriptedResponder {
-    fn new(responses: Vec<Value>) -> Self {
+    fn new(responses: Vec<Value>, requests: Arc<Mutex<Vec<Value>>>) -> Self {
         Self {
             responses: Arc::new(Mutex::new(VecDeque::from(responses))),
+            requests,
         }
     }
 }
 
 impl Respond for ScriptedResponder {
-    fn respond(&self, _request: &Request) -> ResponseTemplate {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        if let Ok(body) = serde_json::from_slice(&request.body) {
+            let mut requests = self.requests.lock().expect("request lock poisoned");
+            requests.push(body);
+        }
         let mut guard = self.responses.lock().expect("script lock poisoned");
         match guard.pop_front() {
             Some(body) => ResponseTemplate::new(200).set_body_json(body),
@@ -43,16 +49,18 @@ struct Harness {
     db: DbPool,
     events: Arc<SqliteEventStore>,
     session_id: String,
+    requests: Arc<Mutex<Vec<Value>>>,
     _mock: MockServer,
     _workspace: tempfile::TempDir,
 }
 
 async fn harness(responses: Vec<Value>) -> Harness {
     let mock = MockServer::start().await;
+    let requests = Arc::new(Mutex::new(Vec::new()));
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .and(body_partial_json(json!({"tool_choice": "required"})))
-        .respond_with(ScriptedResponder::new(responses))
+        .respond_with(ScriptedResponder::new(responses, requests.clone()))
         .mount(&mock)
         .await;
 
@@ -100,6 +108,7 @@ slots:
         db,
         events,
         session_id,
+        requests,
         _mock: mock,
         _workspace: workspace,
     }
@@ -270,6 +279,83 @@ async fn message_ask_user_suspends_run() {
     assert!(!result.completed);
     assert_eq!(result.steps, 1);
     assert_eq!(session_state(&h.db, &h.session_id).await, "SUSPENDED");
+}
+
+#[tokio::test]
+async fn agent_runner_emits_stuck_inject_event_and_continues() {
+    let repeated = completion(vec![(
+        "call-1",
+        "message_notify_user",
+        json!({"content": "same"}),
+    )]);
+    let h = harness(vec![
+        repeated.clone(),
+        repeated,
+        completion(vec![("call-3", "idle", json!({}))]),
+    ])
+    .await;
+
+    let result = h.runner.run(req(&h.session_id, 4)).await.expect("run");
+    let events = h
+        .events
+        .query(&h.session_id, EventQuery::default())
+        .await
+        .expect("events query");
+    let requests = h.requests.lock().expect("request lock poisoned");
+
+    assert!(result.completed);
+    assert_eq!(result.steps, 3);
+    assert!(events.iter().any(|event| {
+        event.event_type == EventType::Misc
+            && event.data.get("kind").and_then(Value::as_str) == Some("stuck_inject")
+            && event.data.get("duplicate_count").and_then(Value::as_u64) == Some(2)
+    }));
+    let third_messages = requests[2]
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("third request has messages");
+    assert!(third_messages.iter().any(|message| {
+        message.get("role").and_then(Value::as_str) == Some("system")
+            && message
+                .get("content")
+                .and_then(Value::as_str)
+                .is_some_and(|content| content.contains("Try a different strategy"))
+    }));
+}
+
+#[tokio::test]
+async fn agent_runner_terminates_on_four_duplicates() {
+    let repeated = completion(vec![(
+        "call-1",
+        "message_notify_user",
+        json!({"content": "same"}),
+    )]);
+    let h = harness(vec![
+        repeated.clone(),
+        repeated.clone(),
+        repeated.clone(),
+        repeated,
+    ])
+    .await;
+
+    let error = h
+        .runner
+        .run(req(&h.session_id, 6))
+        .await
+        .expect_err("run should terminate as stuck");
+    let events = h
+        .events
+        .query(&h.session_id, EventQuery::default())
+        .await
+        .expect("events query");
+
+    assert!(matches!(error, AgentError::StuckTerminated { count: 4 }));
+    assert_eq!(session_state(&h.db, &h.session_id).await, "ERROR");
+    assert!(events.iter().any(|event| {
+        event.event_type == EventType::Misc
+            && event.data.get("kind").and_then(Value::as_str) == Some("stuck_terminate")
+            && event.data.get("duplicate_count").and_then(Value::as_u64) == Some(4)
+    }));
 }
 
 async fn session_state(db: &DbPool, session_id: &str) -> String {

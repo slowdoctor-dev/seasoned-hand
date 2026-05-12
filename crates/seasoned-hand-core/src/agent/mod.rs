@@ -1,9 +1,8 @@
 //! Agent ReAct runner.
 //! refs: /specs/phase-0/stories/story-0.14.md
+//! refs: /specs/phase-0/stories/story-0.15.md
 //! refs: /specs/phase-0/architecture.md §1, §4.3
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -12,17 +11,17 @@ use thiserror::Error;
 use crate::db::{DbError, DbPool};
 use crate::dispatch::ToolDispatcher;
 use crate::events::{EventError, EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
-use crate::llm::{
-    AssistantMessage, ChatCompletionRequest, LlmClient, LlmError, ToolChoice, ToolSpec,
-};
+use crate::llm::{ChatCompletionRequest, LlmClient, LlmError, ToolChoice, ToolSpec};
 use crate::router::{SlotName, SlotRouter};
 use crate::sandbox::SandboxClient;
 use crate::search::SearchClient;
 use crate::tools::ToolContext;
 
 mod prompt;
+pub mod stuck;
 
 pub use prompt::build_messages;
+use stuck::{StuckAction, StuckTracker};
 
 #[derive(Debug, Clone)]
 pub struct RunRequest {
@@ -52,6 +51,8 @@ pub enum AgentError {
     Sqlite(#[from] rusqlite::Error),
     #[error("cancelled")]
     Cancelled,
+    #[error("stuck detection terminated after {count} repeated responses")]
+    StuckTerminated { count: u32 },
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -94,8 +95,8 @@ impl AgentRunner {
         self.append_user_message(&req.session_id, &req.input)
             .await?;
 
-        let mut last_assistant_hash = None;
-        let mut duplicate_count = 0u32;
+        let mut stuck = StuckTracker::default();
+        let mut strategy_prompt = None;
         let mut last_message = None;
         let mut status_errors = 0u32;
         let mut steps_run = 0u32;
@@ -104,7 +105,19 @@ impl AgentRunner {
 
         for step in 0..req.max_steps {
             steps_run = step + 1;
-            let messages = build_messages(&self.events, &req.session_id).await?;
+            let mut messages = build_messages(&self.events, &req.session_id).await?;
+            if let Some(prompt) = strategy_prompt.take() {
+                messages.insert(
+                    0,
+                    crate::llm::Message {
+                        role: crate::llm::Role::System,
+                        content: Some(prompt),
+                        name: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    },
+                );
+            }
             let tools = self.tool_specs_from_registry();
             let main_slot = self.router.resolve(SlotName::Main);
             let response = match self
@@ -147,21 +160,28 @@ impl AgentRunner {
                 .map(|choice| &choice.message)
                 .ok_or(LlmError::MissingChoice)?;
             last_message = assistant.content.clone();
-            let assistant_hash = hash_message(assistant);
-            if Some(assistant_hash) == last_assistant_hash {
-                duplicate_count += 1;
-                if duplicate_count >= 2 {
+            match stuck.observe(assistant) {
+                StuckAction::Continue => {}
+                StuckAction::InjectStrategyPrompt { count } => {
                     self.emit_misc(
                         &req.session_id,
-                        "stuck_detected",
-                        json!({"step": step + 1, "duplicate_count": duplicate_count}),
+                        "stuck_inject",
+                        json!({"step": step + 1, "duplicate_count": count}),
                     )
                     .await?;
+                    strategy_prompt = Some(strategy_change_prompt(count));
                 }
-            } else {
-                duplicate_count = 0;
+                StuckAction::Terminate { count } => {
+                    self.emit_misc(
+                        &req.session_id,
+                        "stuck_terminate",
+                        json!({"step": step + 1, "duplicate_count": count}),
+                    )
+                    .await?;
+                    self.set_session_state(&req.session_id, "ERROR").await?;
+                    return Err(AgentError::StuckTerminated { count });
+                }
             }
-            last_assistant_hash = Some(assistant_hash);
 
             let Some(calls) = assistant.tool_calls.as_ref() else {
                 self.emit_misc(&req.session_id, "no_tool_call", json!({"step": step + 1}))
@@ -332,17 +352,18 @@ impl AgentRunner {
     }
 }
 
-fn hash_message(message: &AssistantMessage) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    format!("{message:?}").hash(&mut hasher);
-    hasher.finish()
-}
-
 fn parse_args(raw: &str) -> Value {
     match serde_json::from_str(raw) {
         Ok(value) => value,
         Err(_) => Value::Null,
     }
+}
+
+fn strategy_change_prompt(count: u32) -> String {
+    format!(
+        "You have repeated the same response {count} times. Try a different strategy: consider \
+         a different tool, re-read recent observations, or call message_ask_user to clarify."
+    )
 }
 
 #[cfg(test)]

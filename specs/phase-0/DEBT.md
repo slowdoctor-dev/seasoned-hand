@@ -256,16 +256,11 @@
 - **Pay down**: Phase 1 — on startup, the SandboxClient could scan Docker
   for `seasoned-hand-sandbox-*` containers and rehydrate the cache.
 
-### 23. Stuck detection only emits an audit marker
-- **Origin**: story 0.14
-- **Severity**: **Low**
-- **What**: The runner hashes assistant responses and emits
-  `{kind:"stuck_detected"}` after repeated identical responses, but it does
-  not yet inject a real strategy-change prompt with revised behavior.
-- **Why**: Story 0.14 needed the ReAct loop skeleton; real stuck recovery is
-  explicitly split to story 0.15.
-- **Pay down**: Story 0.15 — replace the marker-only scaffold with strategy
-  prompt injection and tests for changed model behavior.
+### ~~23. Stuck detection only emits an audit marker~~ ✅ resolved 2026-05-12 (story 0.15)
+- ~~Origin: story 0.14~~
+- ~~Resolved by story 0.15: `agent::stuck::StuckTracker` injects a
+  strategy-change prompt at 2 repeated responses and terminates the session
+  as ERROR at 4 repeated responses.~~
 
 ### 24. Runner accepts cost caps but does not enforce them
 - **Origin**: story 0.14
