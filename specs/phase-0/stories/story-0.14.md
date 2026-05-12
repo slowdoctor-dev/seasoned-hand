@@ -1,6 +1,6 @@
 # Story 0.14 — Agent runner (ReAct loop, one-tool-per-iteration)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 4 hours
 > **Dependencies**: story 0.4 (events), 0.6 (Tool trait), 0.9 (dispatcher), 0.10 (hooks), 0.11 (LLM client), 0.12 (slot router), 0.13 (capabilities)
 > **Phase**: 0

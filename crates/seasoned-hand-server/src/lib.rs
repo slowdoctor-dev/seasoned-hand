@@ -12,12 +12,14 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use seasoned_hand_core::agent::AgentRunner;
 use seasoned_hand_core::capability::ModelCapabilities;
 use seasoned_hand_core::db::DbPool;
 use seasoned_hand_core::dispatch::{ToolDispatcher, hooks::EventEmittingHook};
 use seasoned_hand_core::events::{EventQuery, EventStore, EventType, sqlite::SqliteEventStore};
+use seasoned_hand_core::llm::LlmClient;
 use seasoned_hand_core::pubsub::RedisPool;
-use seasoned_hand_core::router::SlotRouter;
+use seasoned_hand_core::router::{SlotName, SlotRouter};
 use seasoned_hand_core::sandbox::SandboxClient;
 use seasoned_hand_core::search::SearchClient;
 use seasoned_hand_core::tools::register_builtin_tools;
@@ -33,6 +35,7 @@ pub struct AppState {
     pub dispatcher: Arc<ToolDispatcher>,
     pub router: Arc<SlotRouter>,
     pub capabilities: Arc<HashMap<String, ModelCapabilities>>,
+    pub runner: Arc<AgentRunner>,
 }
 
 impl AppState {
@@ -51,6 +54,18 @@ impl AppState {
             ToolDispatcher::new(register_builtin_tools())
                 .with_hook(Arc::new(EventEmittingHook::new(events.clone()))),
         );
+        let router = Arc::new(router);
+        let main_slot = router.resolve(SlotName::Main);
+        let llm = LlmClient::new(main_slot.base_url.clone(), main_slot.api_key.clone());
+        let runner = Arc::new(AgentRunner::new(
+            llm,
+            dispatcher.clone(),
+            events.clone(),
+            router.clone(),
+            sandbox.clone(),
+            search.clone(),
+            db.clone(),
+        ));
         Self {
             db,
             redis,
@@ -58,8 +73,9 @@ impl AppState {
             sandbox,
             search,
             dispatcher,
-            router: Arc::new(router),
+            router,
             capabilities: Arc::new(capabilities),
+            runner,
         }
     }
 }

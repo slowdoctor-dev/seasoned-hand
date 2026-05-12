@@ -256,6 +256,41 @@
 - **Pay down**: Phase 1 — on startup, the SandboxClient could scan Docker
   for `seasoned-hand-sandbox-*` containers and rehydrate the cache.
 
+### 23. Stuck detection only emits an audit marker
+- **Origin**: story 0.14
+- **Severity**: **Low**
+- **What**: The runner hashes assistant responses and emits
+  `{kind:"stuck_detected"}` after repeated identical responses, but it does
+  not yet inject a real strategy-change prompt with revised behavior.
+- **Why**: Story 0.14 needed the ReAct loop skeleton; real stuck recovery is
+  explicitly split to story 0.15.
+- **Pay down**: Story 0.15 — replace the marker-only scaffold with strategy
+  prompt injection and tests for changed model behavior.
+
+### 24. Runner accepts cost caps but does not enforce them
+- **Origin**: story 0.14
+- **Severity**: **Medium**
+- **What**: `RunRequest.cost_cap_cents` is accepted and carried through the
+  runner API, but the loop does not query Bifrost cost data or terminate on
+  `{kind:"cost_cap"}` yet.
+- **Why**: Cost lookup ownership belongs to story 0.16; story 0.14 keeps the
+  API shape forward-compatible without adding a fake accounting path.
+- **Pay down**: Story 0.16 — poll Bifrost cost data after each iteration,
+  update `sessions.cost_cents`, and terminate when the cap is exceeded.
+
+### 25. Plan tools remain callable stubs
+- **Origin**: story 0.14
+- **Severity**: **Medium**
+- **What**: The runner seeds a baseline Plan event and exposes the registered
+  plan tools to the LLM, but `plan_create`, `plan_advance`, and `plan_update`
+  still return `not_implemented` instead of mutating a structured plan table.
+- **Why**: ADR-010 full Plan Manager behavior is larger than the baseline
+  ReAct loop; story 0.14 only needed sticky plan context and callable tool
+  specs.
+- **Pay down**: Follow-up Plan Manager story — wire the plan tools to the
+  `plans` table, emit Plan events for each mutation, and make sticky context
+  render the latest structured plan instead of raw events.
+
 ---
 
 ## Categories quick-reference

@@ -1,0 +1,286 @@
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
+use serde_json::{Value, json};
+use tempfile::tempdir;
+use wiremock::matchers::{body_partial_json, method, path};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+use super::*;
+use crate::db;
+use crate::dispatch::hooks::EventEmittingHook;
+use crate::events::EventQuery;
+use crate::pubsub::RedisPool;
+use crate::router::SlotRouter;
+use crate::search::SearchProvider;
+use crate::tools::register_builtin_tools;
+
+#[derive(Clone)]
+struct ScriptedResponder {
+    responses: Arc<Mutex<VecDeque<Value>>>,
+}
+
+impl ScriptedResponder {
+    fn new(responses: Vec<Value>) -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(VecDeque::from(responses))),
+        }
+    }
+}
+
+impl Respond for ScriptedResponder {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        let mut guard = self.responses.lock().expect("script lock poisoned");
+        match guard.pop_front() {
+            Some(body) => ResponseTemplate::new(200).set_body_json(body),
+            None => ResponseTemplate::new(500).set_body_string("script exhausted"),
+        }
+    }
+}
+
+struct Harness {
+    runner: AgentRunner,
+    db: DbPool,
+    events: Arc<SqliteEventStore>,
+    session_id: String,
+    _mock: MockServer,
+    _workspace: tempfile::TempDir,
+}
+
+async fn harness(responses: Vec<Value>) -> Harness {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(body_partial_json(json!({"tool_choice": "required"})))
+        .respond_with(ScriptedResponder::new(responses))
+        .mount(&mock)
+        .await;
+
+    let db = db::open(":memory:").await.expect("in-memory db opens");
+    let session_id = "session-1".to_string();
+    insert_session(&db, &session_id).await;
+    let redis = RedisPool::new("redis://127.0.0.1:6379").expect("redis url parses");
+    let events = Arc::new(SqliteEventStore::with_redis(db.clone(), redis));
+    let dispatcher = Arc::new(
+        ToolDispatcher::new(register_builtin_tools())
+            .with_hook(Arc::new(EventEmittingHook::new(events.clone()))),
+    );
+    let router = Arc::new(
+        SlotRouter::from_yaml_str(&format!(
+            r#"
+slots:
+  main:
+    provider: bifrost
+    model: agent-primary
+    base_url: {}
+"#,
+            mock.uri()
+        ))
+        .expect("router config parses"),
+    );
+    let workspace = tempdir().expect("tempdir");
+    let sandbox = Arc::new(
+        SandboxClient::new("ghcr.io/agent-infra/sandbox:1.0.0.152", workspace.path())
+            .expect("sandbox client constructs"),
+    );
+    let search = Arc::new(SearchClient::new(SearchProvider::Brave { api_key: None }));
+    let llm = LlmClient::new(mock.uri(), None);
+    let runner = AgentRunner::new(
+        llm,
+        dispatcher,
+        events.clone(),
+        router,
+        sandbox,
+        search,
+        db.clone(),
+    );
+
+    Harness {
+        runner,
+        db,
+        events,
+        session_id,
+        _mock: mock,
+        _workspace: workspace,
+    }
+}
+
+async fn insert_session(db: &DbPool, session_id: &str) {
+    let session_id = session_id.to_string();
+    db.with_conn(move |conn| {
+        conn.execute(
+            "INSERT INTO sessions (id, created_at, updated_at, state) VALUES (?, 0, 0, 'IDLE')",
+            rusqlite::params![session_id],
+        )
+    })
+    .await
+    .expect("session insert succeeds");
+}
+
+fn req(session_id: &str, max_steps: u32) -> RunRequest {
+    RunRequest {
+        session_id: session_id.to_string(),
+        input: "Find one thing and finish".into(),
+        max_steps,
+        cost_cap_cents: Some(100),
+    }
+}
+
+fn completion(calls: Vec<(&str, &str, Value)>) -> Value {
+    json!({
+        "id": "cmpl-test",
+        "object": "chat.completion",
+        "model": "agent-primary",
+        "choices": [{
+            "index": 0,
+            "finish_reason": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": calls
+                    .into_iter()
+                    .map(|(id, name, args)| json!({
+                        "id": id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": args.to_string(),
+                        },
+                    }))
+                    .collect::<Vec<_>>()
+            }
+        }],
+        "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+    })
+}
+
+#[tokio::test]
+async fn single_turn_idle_completes() {
+    let h = harness(vec![completion(vec![("call-1", "idle", json!({}))])]).await;
+
+    let result = h.runner.run(req(&h.session_id, 4)).await.expect("run");
+
+    assert!(result.completed);
+    assert_eq!(result.steps, 1);
+    assert_eq!(session_state(&h.db, &h.session_id).await, "FINISHED");
+}
+
+#[tokio::test]
+async fn multi_turn_search_then_idle() {
+    let h = harness(vec![
+        completion(vec![(
+            "call-1",
+            "info_search_web",
+            json!({"query": "rust"}),
+        )]),
+        completion(vec![
+            (
+                "call-2",
+                "message_notify_user",
+                json!({"content": "search failed without key"}),
+            ),
+            ("call-ignored", "idle", json!({})),
+        ]),
+        completion(vec![("call-3", "idle", json!({}))]),
+    ])
+    .await;
+
+    let result = h.runner.run(req(&h.session_id, 5)).await.expect("run");
+
+    assert!(result.completed);
+    assert_eq!(result.steps, 3);
+    assert_eq!(session_state(&h.db, &h.session_id).await, "FINISHED");
+}
+
+#[tokio::test]
+async fn one_tool_per_iteration_enforced() {
+    let h = harness(vec![completion(vec![
+        (
+            "call-1",
+            "message_notify_user",
+            json!({"content": "first only"}),
+        ),
+        ("call-2", "idle", json!({})),
+    ])])
+    .await;
+
+    let result = h.runner.run(req(&h.session_id, 1)).await.expect("run");
+    let events = h
+        .events
+        .query(&h.session_id, EventQuery::default())
+        .await
+        .expect("events query");
+
+    assert!(!result.completed);
+    assert_eq!(result.steps, 1);
+    assert!(events.iter().any(|event| {
+        event.event_type == EventType::Misc
+            && event.data.get("kind").and_then(Value::as_str) == Some("multi_tool_warning")
+    }));
+    let action_tools = events
+        .iter()
+        .filter(|event| event.event_type == EventType::Action)
+        .map(|event| event.data.get("tool").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(action_tools, vec![Some("message_notify_user")]);
+}
+
+#[tokio::test]
+async fn max_steps_terminates() {
+    let h = harness(vec![
+        completion(vec![(
+            "call-1",
+            "message_notify_user",
+            json!({"content": "still working"}),
+        )]),
+        completion(vec![(
+            "call-2",
+            "message_notify_user",
+            json!({"content": "still working"}),
+        )]),
+    ])
+    .await;
+
+    let result = h.runner.run(req(&h.session_id, 2)).await.expect("run");
+    let events = h
+        .events
+        .query(&h.session_id, EventQuery::default())
+        .await
+        .expect("events query");
+
+    assert!(!result.completed);
+    assert_eq!(result.steps, 2);
+    assert!(events.iter().any(|event| {
+        event.event_type == EventType::Misc
+            && event.data.get("kind").and_then(Value::as_str) == Some("max_steps_reached")
+    }));
+}
+
+#[tokio::test]
+async fn message_ask_user_suspends_run() {
+    let h = harness(vec![completion(vec![(
+        "call-1",
+        "message_ask_user",
+        json!({"content": "Need input"}),
+    )])])
+    .await;
+
+    let result = h.runner.run(req(&h.session_id, 4)).await.expect("run");
+
+    assert!(!result.completed);
+    assert_eq!(result.steps, 1);
+    assert_eq!(session_state(&h.db, &h.session_id).await, "SUSPENDED");
+}
+
+async fn session_state(db: &DbPool, session_id: &str) -> String {
+    let session_id = session_id.to_string();
+    db.with_conn(move |conn| {
+        conn.query_row(
+            "SELECT state FROM sessions WHERE id = ?",
+            rusqlite::params![session_id],
+            |row| row.get::<_, String>(0),
+        )
+    })
+    .await
+    .expect("state query")
+}
