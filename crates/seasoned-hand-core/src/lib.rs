@@ -1,6 +1,8 @@
 //! Seasoned Hand core library.
 //! refs: /specs/phase-0/architecture.md §2
 
+pub mod db;
+
 /// Returns the core crate version.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

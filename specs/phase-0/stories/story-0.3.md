@@ -1,6 +1,11 @@
 # Story 0.3 — SQLite schema + migrations (sessions, events, plans)
 
-> **Status**: ready
+> **Status**: done
+
+> **Note on filename convention**: refinery's `embed_migrations!` macro
+> requires `V<n>__<name>.sql` (capital V, **two** underscores after the
+> version number). Plain `001_sessions.sql` etc. silently embeds zero
+> migrations and creates only the `refinery_schema_history` table.
 > **Estimated**: 2 hours
 > **Dependencies**: story 0.2 (Rust workspace + Axum healthz)
 > **Phase**: 0
@@ -22,7 +27,7 @@ After this story, `/healthz` is extended to verify the DB is reachable
 ## Acceptance criteria
 
 - [ ] `/migrations/` directory with three numbered files:
-      `001_sessions.sql`, `002_events.sql`, `003_plans.sql` —
+      `V001__sessions.sql`, `V002__events.sql`, `V003__plans.sql` —
       schemas **byte-identical** to architecture.md §3.1–§3.3
 - [ ] `seasoned-hand-core::db` module exposing:
       - `pub async fn open(database_url: &str) -> Result<DbPool, DbError>`
@@ -71,7 +76,7 @@ After this story, `/healthz` is extended to verify the DB is reachable
 
 ### 1. Migrations
 
-`/migrations/001_sessions.sql` — verbatim from architecture §3.1:
+`/migrations/V001__sessions.sql` — verbatim from architecture §3.1:
 
 ```sql
 CREATE TABLE sessions (
@@ -90,7 +95,7 @@ CREATE TABLE sessions (
 CREATE INDEX idx_sessions_state ON sessions(state);
 ```
 
-`/migrations/002_events.sql` — verbatim from architecture §3.2:
+`/migrations/V002__events.sql` — verbatim from architecture §3.2:
 
 ```sql
 CREATE TABLE events (
@@ -107,7 +112,7 @@ CREATE INDEX idx_events_session_time ON events(session_id, timestamp);
 CREATE INDEX idx_events_type ON events(type);
 ```
 
-`/migrations/003_plans.sql` — verbatim from architecture §3.3:
+`/migrations/V003__plans.sql` — verbatim from architecture §3.3:
 
 ```sql
 CREATE TABLE plans (
@@ -436,9 +441,9 @@ Expected: all green.
 - `crates/seasoned-hand-server/src/lib.rs` (modify — AppState, /healthz with DB)
 - `crates/seasoned-hand-server/src/main.rs` (modify — open DB, pass state)
 - `crates/seasoned-hand-server/tests/healthz.rs` (modify — in-memory DB)
-- `migrations/001_sessions.sql` (new)
-- `migrations/002_events.sql` (new)
-- `migrations/003_plans.sql` (new)
+- `migrations/V001__sessions.sql` (new)
+- `migrations/V002__events.sql` (new)
+- `migrations/V003__plans.sql` (new)
 - `.gitignore` (modify — add `data/`)
 
 ---

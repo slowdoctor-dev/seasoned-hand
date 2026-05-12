@@ -3,17 +3,24 @@
 
 use std::net::SocketAddr;
 
+use seasoned_hand_core::db;
+use seasoned_hand_server::{AppState, app};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing();
 
-    let addr = bind_addr()?;
-    tracing::info!(%addr, "seasoned-hand-server starting");
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "sqlite:./data/seasoned-hand.db".to_string());
+    let db = db::open(&database_url).await?;
 
+    let addr = bind_addr()?;
+    tracing::info!(%addr, %database_url, "seasoned-hand-server starting");
+
+    let state = AppState { db };
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, seasoned_hand_server::app())
+    axum::serve(listener, app(state))
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 

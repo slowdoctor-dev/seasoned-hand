@@ -294,8 +294,11 @@ when needed. This keeps the event stream KV-cache-friendly (PRINCIPLE #3).
 
 Use `refinery` (embedded SQL migrations, Rust-native, no extra runtime).
 Migrations run on every server start; SQLite WAL set via `PRAGMA journal_mode=WAL;`
-on connection open. Migration files committed to `/migrations/` and numbered
-sequentially. Phase 0 ships 3 files (sessions, events, plans).
+on connection open. Migration files committed to `/migrations/` using the
+**refinery convention**: `V<n>__<name>.sql` (capital `V`, two underscores
+after the version number, monotonically increasing `<n>` starting at 1).
+Phase 0 ships 3 files: `V001__sessions.sql`, `V002__events.sql`,
+`V003__plans.sql`.
 
 ---
 
