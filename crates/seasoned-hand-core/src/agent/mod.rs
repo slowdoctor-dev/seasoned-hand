@@ -23,9 +23,11 @@ use crate::tools::ToolContext;
 
 pub mod init;
 mod prompt;
+pub mod recite;
 pub mod stuck;
 
 pub use prompt::build_messages;
+use recite::{ReciteScheduler, recite_tick};
 use stuck::{StuckAction, StuckTracker};
 
 #[derive(Debug, Clone)]
@@ -103,6 +105,7 @@ impl AgentRunner {
             sessions: deps.sessions,
             plan_manager: deps.plan_manager,
             mask_policy: deps.mask_policy,
+            checkpoint_labels: deps.checkpoint_labels,
         }
     }
 

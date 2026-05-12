@@ -500,6 +500,83 @@ async fn agent_runner_uses_structured_render() {
     assert!(combined.contains("[active]"));
 }
 
+#[tokio::test]
+async fn recite_integration_fires_on_tenth_iteration() {
+    let mut calls = Vec::new();
+    for i in 1..=10 {
+        calls.push(completion(vec![(
+            &format!("call-{i}"),
+            "message_notify_user",
+            json!({"content":"keep going"}),
+        )]));
+    }
+    calls.push(completion(vec![("call-11", "idle", json!({}))]));
+    let h = harness(calls).await;
+
+    let progress_path = h._workspace.path().join(&h.session_id).join("progress.txt");
+    std::fs::create_dir_all(progress_path.parent().unwrap()).unwrap();
+    let progress = (1..=200)
+        .map(|i| format!("line-{i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(progress_path, progress).unwrap();
+
+    let result = h.runner.resume(req(&h.session_id, 11)).await.expect("run");
+    assert!(result.completed);
+    assert_eq!(result.steps, 11);
+
+    let events = h
+        .events
+        .query(&h.session_id, EventQuery::default())
+        .await
+        .expect("events query");
+    let recites = events
+        .iter()
+        .filter(|event| {
+            event.event_type == EventType::Misc
+                && event.data.get("kind").and_then(Value::as_str) == Some("progress_recite")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(recites.len(), 1);
+    let preview = recites[0]
+        .data
+        .get("content_preview")
+        .and_then(Value::as_str)
+        .expect("recite content");
+    let lines = preview.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 80);
+    assert_eq!(lines.first().copied(), Some("line-121"));
+    assert_eq!(lines.last().copied(), Some("line-200"));
+}
+
+#[tokio::test]
+async fn recite_skip_on_missing_file_does_not_break_loop() {
+    let mut calls = Vec::new();
+    for i in 1..=10 {
+        calls.push(completion(vec![(
+            &format!("call-{i}"),
+            "message_notify_user",
+            json!({"content":"keep going"}),
+        )]));
+    }
+    calls.push(completion(vec![("call-11", "idle", json!({}))]));
+    let h = harness(calls).await;
+
+    let result = h.runner.resume(req(&h.session_id, 11)).await.expect("run");
+    assert!(result.completed);
+    assert_eq!(result.steps, 11);
+
+    let events = h
+        .events
+        .query(&h.session_id, EventQuery::default())
+        .await
+        .expect("events query");
+    assert!(events.iter().any(|event| {
+        event.event_type == EventType::Misc
+            && event.data.get("kind").and_then(Value::as_str) == Some("progress_recite_skipped")
+    }));
+}
+
 async fn session_state(db: &DbPool, session_id: &str) -> String {
     let session_id = session_id.to_string();
     db.with_conn(move |conn| {
