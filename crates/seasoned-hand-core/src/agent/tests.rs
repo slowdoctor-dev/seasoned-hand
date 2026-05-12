@@ -7,6 +7,7 @@ use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use super::*;
+use crate::cost::CostClient;
 use crate::db;
 use crate::dispatch::hooks::EventEmittingHook;
 use crate::events::EventQuery;
@@ -55,6 +56,13 @@ struct Harness {
 }
 
 async fn harness(responses: Vec<Value>) -> Harness {
+    harness_with_cost(responses, Vec::new()).await
+}
+
+async fn harness_with_cost(
+    responses: Vec<Value>,
+    cost_responses: Vec<ResponseTemplate>,
+) -> Harness {
     let mock = MockServer::start().await;
     let requests = Arc::new(Mutex::new(Vec::new()));
     Mock::given(method("POST"))
@@ -63,6 +71,13 @@ async fn harness(responses: Vec<Value>) -> Harness {
         .respond_with(ScriptedResponder::new(responses, requests.clone()))
         .mount(&mock)
         .await;
+    if !cost_responses.is_empty() {
+        Mock::given(method("GET"))
+            .and(path("/cost"))
+            .respond_with(CostResponder::new(cost_responses))
+            .mount(&mock)
+            .await;
+    }
 
     let db = db::open(":memory:").await.expect("in-memory db opens");
     let session_id = "session-1".to_string();
@@ -93,15 +108,17 @@ slots:
     );
     let search = Arc::new(SearchClient::new(SearchProvider::Brave { api_key: None }));
     let llm = LlmClient::new(mock.uri(), None);
-    let runner = AgentRunner::new(
+    let cost = Arc::new(CostClient::new(mock.uri()));
+    let runner = AgentRunner::new(AgentRunnerDeps {
         llm,
         dispatcher,
-        events.clone(),
+        events: events.clone(),
         router,
         sandbox,
         search,
-        db.clone(),
-    );
+        cost,
+        sessions: db.clone(),
+    });
 
     Harness {
         runner,
@@ -111,6 +128,28 @@ slots:
         requests,
         _mock: mock,
         _workspace: workspace,
+    }
+}
+
+#[derive(Clone)]
+struct CostResponder {
+    responses: Arc<Mutex<VecDeque<ResponseTemplate>>>,
+}
+
+impl CostResponder {
+    fn new(responses: Vec<ResponseTemplate>) -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(VecDeque::from(responses))),
+        }
+    }
+}
+
+impl Respond for CostResponder {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        let mut guard = self.responses.lock().expect("cost script lock poisoned");
+        guard
+            .pop_front()
+            .unwrap_or_else(|| ResponseTemplate::new(500).set_body_string("cost script exhausted"))
     }
 }
 
@@ -358,6 +397,65 @@ async fn agent_runner_terminates_on_four_duplicates() {
     }));
 }
 
+#[tokio::test]
+async fn agent_runner_halts_on_cost_cap() {
+    let h = harness_with_cost(
+        vec![
+            completion(vec![(
+                "call-1",
+                "message_notify_user",
+                json!({"content": "costly"}),
+            )]),
+            completion(vec![("call-2", "idle", json!({}))]),
+        ],
+        vec![
+            ResponseTemplate::new(200).set_body_json(json!({"total_cents": 0})),
+            ResponseTemplate::new(200).set_body_json(json!({"total_cents": 5})),
+        ],
+    )
+    .await;
+    let mut request = req(&h.session_id, 4);
+    request.cost_cap_cents = Some(5);
+
+    let result = h.runner.run(request).await.expect("run");
+    let events = h
+        .events
+        .query(&h.session_id, EventQuery::default())
+        .await
+        .expect("events query");
+
+    assert!(!result.completed);
+    assert_eq!(result.steps, 1);
+    assert_eq!(session_state(&h.db, &h.session_id).await, "SUSPENDED");
+    assert_eq!(session_cost(&h.db, &h.session_id).await, 5);
+    assert!(events.iter().any(|event| {
+        event.event_type == EventType::Misc
+            && event.data.get("kind").and_then(Value::as_str) == Some("cost_cap")
+            && event.data.get("current_cents").and_then(Value::as_i64) == Some(5)
+    }));
+}
+
+#[tokio::test]
+async fn agent_runner_continues_when_cost_poll_fails() {
+    let h = harness_with_cost(
+        vec![completion(vec![("call-1", "idle", json!({}))])],
+        vec![
+            ResponseTemplate::new(503).set_body_string("baseline unavailable"),
+            ResponseTemplate::new(503).set_body_string("delta unavailable"),
+        ],
+    )
+    .await;
+    let mut request = req(&h.session_id, 2);
+    request.cost_cap_cents = Some(1);
+
+    let result = h.runner.run(request).await.expect("run");
+
+    assert!(result.completed);
+    assert_eq!(result.steps, 1);
+    assert_eq!(session_state(&h.db, &h.session_id).await, "FINISHED");
+    assert_eq!(session_cost(&h.db, &h.session_id).await, 0);
+}
+
 async fn session_state(db: &DbPool, session_id: &str) -> String {
     let session_id = session_id.to_string();
     db.with_conn(move |conn| {
@@ -369,4 +467,17 @@ async fn session_state(db: &DbPool, session_id: &str) -> String {
     })
     .await
     .expect("state query")
+}
+
+async fn session_cost(db: &DbPool, session_id: &str) -> i64 {
+    let session_id = session_id.to_string();
+    db.with_conn(move |conn| {
+        conn.query_row(
+            "SELECT cost_cents FROM sessions WHERE id = ?",
+            rusqlite::params![session_id],
+            |row| row.get::<_, i64>(0),
+        )
+    })
+    .await
+    .expect("cost query")
 }

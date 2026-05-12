@@ -262,16 +262,11 @@
   strategy-change prompt at 2 repeated responses and terminates the session
   as ERROR at 4 repeated responses.~~
 
-### 24. Runner accepts cost caps but does not enforce them
-- **Origin**: story 0.14
-- **Severity**: **Medium**
-- **What**: `RunRequest.cost_cap_cents` is accepted and carried through the
-  runner API, but the loop does not query Bifrost cost data or terminate on
-  `{kind:"cost_cap"}` yet.
-- **Why**: Cost lookup ownership belongs to story 0.16; story 0.14 keeps the
-  API shape forward-compatible without adding a fake accounting path.
-- **Pay down**: Story 0.16 — poll Bifrost cost data after each iteration,
-  update `sessions.cost_cents`, and terminate when the cap is exceeded.
+### ~~24. Runner accepts cost caps but does not enforce them~~ ✅ resolved 2026-05-12 (story 0.16)
+- ~~Origin: story 0.14~~
+- ~~Resolved by story 0.16: the runner polls Bifrost `/cost`, increments
+  `sessions.cost_cents`, and suspends the session with `Misc{kind:"cost_cap"}`
+  when the configured cap is reached.~~
 
 ### 25. Plan tools remain callable stubs
 - **Origin**: story 0.14
@@ -285,6 +280,17 @@
 - **Pay down**: Follow-up Plan Manager story — wire the plan tools to the
   `plans` table, emit Plan events for each mutation, and make sticky context
   render the latest structured plan instead of raw events.
+
+### 26. Cost deltas assume one active session per Bifrost instance
+- **Origin**: story 0.16
+- **Severity**: **Medium**
+- **What**: `CostClient` reads Bifrost's aggregate `/cost` counter. The runner
+  attributes each positive aggregate delta to the active session.
+- **Why**: Phase 0 is single-user and expects one task at a time. Bifrost does
+  not expose per-session/per-request attribution in the current contract.
+- **Pay down**: Phase 1 — add per-request cost attribution if Bifrost exposes
+  it, or isolate Bifrost accounting per session before concurrent sessions
+  are allowed.
 
 ---
 

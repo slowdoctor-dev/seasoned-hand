@@ -1,6 +1,7 @@
 //! Agent ReAct runner.
 //! refs: /specs/phase-0/stories/story-0.14.md
 //! refs: /specs/phase-0/stories/story-0.15.md
+//! refs: /specs/phase-0/stories/story-0.16.md
 //! refs: /specs/phase-0/architecture.md §1, §4.3
 
 use std::sync::Arc;
@@ -8,6 +9,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use thiserror::Error;
 
+use crate::cost::{CostClient, CostSnapshot, delta_between};
 use crate::db::{DbError, DbPool};
 use crate::dispatch::ToolDispatcher;
 use crate::events::{EventError, EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
@@ -64,27 +66,32 @@ pub struct AgentRunner {
     router: Arc<SlotRouter>,
     sandbox: Arc<SandboxClient>,
     search: Arc<SearchClient>,
+    cost: Arc<CostClient>,
     sessions: DbPool,
 }
 
+pub struct AgentRunnerDeps {
+    pub llm: LlmClient,
+    pub dispatcher: Arc<ToolDispatcher>,
+    pub events: Arc<SqliteEventStore>,
+    pub router: Arc<SlotRouter>,
+    pub sandbox: Arc<SandboxClient>,
+    pub search: Arc<SearchClient>,
+    pub cost: Arc<CostClient>,
+    pub sessions: DbPool,
+}
+
 impl AgentRunner {
-    pub fn new(
-        llm: LlmClient,
-        dispatcher: Arc<ToolDispatcher>,
-        events: Arc<SqliteEventStore>,
-        router: Arc<SlotRouter>,
-        sandbox: Arc<SandboxClient>,
-        search: Arc<SearchClient>,
-        sessions: DbPool,
-    ) -> Self {
+    pub fn new(deps: AgentRunnerDeps) -> Self {
         Self {
-            llm,
-            dispatcher,
-            events,
-            router,
-            sandbox,
-            search,
-            sessions,
+            llm: deps.llm,
+            dispatcher: deps.dispatcher,
+            events: deps.events,
+            router: deps.router,
+            sandbox: deps.sandbox,
+            search: deps.search,
+            cost: deps.cost,
+            sessions: deps.sessions,
         }
     }
 
@@ -101,7 +108,13 @@ impl AgentRunner {
         let mut status_errors = 0u32;
         let mut steps_run = 0u32;
         let mut stopped_early = false;
-        let _cost_cap_cents = req.cost_cap_cents;
+        let mut cost_baseline = match self.cost.snapshot().await {
+            Ok(snapshot) => Some(snapshot),
+            Err(error) => {
+                tracing::warn!(%error, "cost baseline poll failed; cost accounting starts at 0");
+                None
+            }
+        };
 
         for step in 0..req.max_steps {
             steps_run = step + 1;
@@ -220,6 +233,27 @@ impl AgentRunner {
                 .dispatch(&ctx, &call.function.name, args)
                 .await;
 
+            let current_cost = self
+                .record_step_cost(&req.session_id, &mut cost_baseline)
+                .await;
+            if let Some(cap) = req.cost_cap_cents
+                && current_cost >= i64::from(cap)
+            {
+                self.emit_misc(
+                    &req.session_id,
+                    "cost_cap",
+                    json!({"current_cents": current_cost, "cap_cents": cap}),
+                )
+                .await?;
+                self.set_session_state(&req.session_id, "SUSPENDED").await?;
+                return Ok(RunResult {
+                    session_id: req.session_id,
+                    completed: false,
+                    last_message,
+                    steps: step + 1,
+                });
+            }
+
             if call.function.name == "idle" && output.ok {
                 self.set_session_state(&req.session_id, "FINISHED").await?;
                 return Ok(RunResult {
@@ -330,6 +364,67 @@ impl AgentRunner {
             })
             .await?;
         Ok(())
+    }
+
+    async fn record_step_cost(
+        &self,
+        session_id: &str,
+        cost_baseline: &mut Option<CostSnapshot>,
+    ) -> i64 {
+        match self.cost.snapshot().await {
+            Ok(current) => {
+                let delta = cost_baseline
+                    .as_ref()
+                    .map(|baseline| delta_between(baseline, &current))
+                    .unwrap_or(0);
+                *cost_baseline = Some(current);
+                if delta > 0
+                    && let Err(error) = self.bump_session_cost(session_id, delta).await
+                {
+                    tracing::warn!(%error, %session_id, "session cost update failed");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, %session_id, "cost delta poll failed; skipping accounting");
+            }
+        }
+
+        match self.session_cost(session_id).await {
+            Ok(cost) => cost,
+            Err(error) => {
+                tracing::warn!(%error, %session_id, "session cost read failed");
+                0
+            }
+        }
+    }
+
+    async fn bump_session_cost(&self, session_id: &str, delta: i64) -> Result<(), AgentError> {
+        let session_id = session_id.to_string();
+        self.sessions
+            .with_conn(move |conn| {
+                conn.execute(
+                    "UPDATE sessions SET cost_cents = cost_cents + ?, \
+                     updated_at = unixepoch('subsec') * 1000000 WHERE id = ?",
+                    rusqlite::params![delta, session_id],
+                )
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn session_cost(&self, session_id: &str) -> Result<i64, AgentError> {
+        let session_id = session_id.to_string();
+        let cost = self
+            .sessions
+            .with_conn(move |conn| {
+                conn.query_row(
+                    "SELECT cost_cents FROM sessions WHERE id = ?",
+                    rusqlite::params![session_id],
+                    |row| row.get::<_, i64>(0),
+                )
+            })
+            .await?;
+        Ok(cost)
     }
 
     async fn set_session_state(&self, session_id: &str, state: &str) -> Result<(), AgentError> {

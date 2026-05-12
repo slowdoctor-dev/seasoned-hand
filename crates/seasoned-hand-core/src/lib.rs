@@ -3,6 +3,7 @@
 
 pub mod agent;
 pub mod capability;
+pub mod cost;
 pub mod db;
 pub mod dispatch;
 pub mod events;

@@ -12,8 +12,9 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use seasoned_hand_core::agent::AgentRunner;
+use seasoned_hand_core::agent::{AgentRunner, AgentRunnerDeps};
 use seasoned_hand_core::capability::ModelCapabilities;
+use seasoned_hand_core::cost::{CostClient, CostSnapshot};
 use seasoned_hand_core::db::DbPool;
 use seasoned_hand_core::dispatch::{ToolDispatcher, hooks::EventEmittingHook};
 use seasoned_hand_core::events::{EventQuery, EventStore, EventType, sqlite::SqliteEventStore};
@@ -35,6 +36,7 @@ pub struct AppState {
     pub dispatcher: Arc<ToolDispatcher>,
     pub router: Arc<SlotRouter>,
     pub capabilities: Arc<HashMap<String, ModelCapabilities>>,
+    pub cost: Arc<CostClient>,
     pub runner: Arc<AgentRunner>,
 }
 
@@ -57,15 +59,17 @@ impl AppState {
         let router = Arc::new(router);
         let main_slot = router.resolve(SlotName::Main);
         let llm = LlmClient::new(main_slot.base_url.clone(), main_slot.api_key.clone());
-        let runner = Arc::new(AgentRunner::new(
+        let cost = Arc::new(CostClient::new(main_slot.base_url.clone()));
+        let runner = Arc::new(AgentRunner::new(AgentRunnerDeps {
             llm,
-            dispatcher.clone(),
-            events.clone(),
-            router.clone(),
-            sandbox.clone(),
-            search.clone(),
-            db.clone(),
-        ));
+            dispatcher: dispatcher.clone(),
+            events: events.clone(),
+            router: router.clone(),
+            sandbox: sandbox.clone(),
+            search: search.clone(),
+            cost: cost.clone(),
+            sessions: db.clone(),
+        }));
         Self {
             db,
             redis,
@@ -75,6 +79,7 @@ impl AppState {
             dispatcher,
             router,
             capabilities: Arc::new(capabilities),
+            cost,
             runner,
         }
     }
@@ -190,9 +195,27 @@ async fn list_events(
     }
 }
 
+async fn cost_snapshot(
+    State(state): State<AppState>,
+) -> Result<Json<CostSnapshot>, (StatusCode, Json<ApiError>)> {
+    match state.cost.snapshot().await {
+        Ok(snapshot) => Ok(Json(snapshot)),
+        Err(error) => {
+            tracing::warn!(%error, "cost snapshot proxy failed");
+            Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiError {
+                    error: "cost_unavailable".into(),
+                }),
+            ))
+        }
+    }
+}
+
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/v1/cost", get(cost_snapshot))
         .route("/v1/sessions/:id/events", get(list_events))
         .with_state(state)
 }

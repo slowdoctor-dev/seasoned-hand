@@ -1,6 +1,6 @@
 # Story 0.16 — Cost cap (Bifrost /cost polling + per-session DB tracking)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 1 hour
 > **Dependencies**: story 0.11 (LLM client), 0.14 (agent runner)
 > **Phase**: 0
