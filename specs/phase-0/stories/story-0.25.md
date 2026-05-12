@@ -1,6 +1,6 @@
 # Story 0.25 — xterm.js + ttyd terminal
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 0.24 (sandbox URLs surfaced), 0.23 (tabs)
 > **Phase**: 0
