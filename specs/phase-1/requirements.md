@@ -245,9 +245,10 @@ Detailed specs at `/specs/phase-1/stories/story-1.X.md`.
 | 1.17 | WS `task_pause` / `task_resume` / `task_cancel` real | 2h | 1.10, 1.9b | Phase 0 DEBT #27 |
 | 1.18 | Frontend: narration lane + Verifier verdict pane | 2h | 1.9, 1.10, 1.15 | — |
 | 1.19 | Frontend: 3-track BrowserTab (A/B/C) | 2.5h | 1.16 | — |
-| 1.20 | Phase 1 E2E + acceptance fixture (corpus only, gated live-LLM smoke) + retrospective + DEBT audit | 3-4h | all | — |
+| 1.20 | Phase 1 E2E runtime verification (GAIA fixture + 50-step wiremock + workflow_dispatch job) | 2.5h | 1.1-1.19 | — |
+| 1.20b | Phase 1 closeout (retrospective + DEBT audit + status flips + BASELINE/CHANGELOG) | 1.5h | 1.20 | — |
 
-**Total**: 22 stories, ~50 h, fits 4-week timebox at ~3 h/day with Codex
+**Total**: 23 stories, ~50 h, fits 4-week timebox at ~3 h/day with Codex
 pair workflow. Parallelisable seams: {1.5, 1.6, 1.14, 1.17} after 1.4 lands;
 {1.11, 1.13} after 1.10; {1.13b} after 1.13 + 1.5.
 

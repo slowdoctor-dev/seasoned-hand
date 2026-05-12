@@ -60,8 +60,10 @@ file_ref). Backend-only; frontend rendering is story 1.19.
       - DOM-text capture fails → Observation still emitted *without*
         the `dom_text_ref` field; emit Misc `browser_track_b_skipped`.
 - [ ] Tests:
-      - `browser_view_reuses_dom_text` — assert no extra
-        `/v1/browser/view` call.
+      - `browser_view_reuses_dom_text` — when the dispatched tool is
+        `browser_view`, assert the hook does NOT invoke the
+        SandboxClient's view accessor a second time (counter on the
+        mock asserts `view_calls == 1` for that tool dispatch).
       - `browser_click_captures_both_tracks_b_and_c` — wiremock'd
         sandbox returns canned DOM text + PNG; assert one Observation
         with `dom_text_ref` and one Misc `browser_track_c`.
@@ -253,9 +255,11 @@ feat(phase-1): story 1.16 - 3-track browser representation (backend)
   tool dispatch
 - Track A: no change (Phase 0 noVNC iframe)
 - Track B: DOM text. For browser_view, reuse the tool's return. For
-  other browser_* tools, call /v1/browser/view internally to capture
-  state after the effect lands. Attached to Observation as
-  dom_text_ref; >16KB uses the story-1.14 file-ref helper
+  other browser_* tools, the hook reuses the SAME sandbox accessor
+  the Phase 0 browser_view tool dispatches to (do not invent a new
+  HTTP path — find the existing method via the Phase 0 tool source
+  and share it). Attached to Observation as dom_text_ref; >16KB uses
+  the story-1.14 file-ref helper
 - Track C: PNG screenshot via /v1/browser/screenshot (3-second
   timeout), written to /workspace/.tracks/<call_id>.png; emits
   Misc browser_track_c{call_id, file_ref{path, sha256, size}}

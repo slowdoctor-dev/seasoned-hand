@@ -255,8 +255,11 @@ feat(phase-1): story 1.18 - frontend narration lane + Verifier verdict pane
   events newest-first; pass/fail badge, one-line reason, trigger kind,
   model id, created_at
 - Row expand lazy-loads /v1/verifications/:id for full detail;
-  evidence chips lazy-fetch /v1/events/:id on click (architecture
-  §12 q1 decision)
+  evidence chips resolve event_ids from the per-session
+  Map<event_id, Event> the frontend already maintains (no new
+  backend route; out-of-window events render "older than loaded
+  window") — architecture §12 q1 lazy decision honored without a
+  new fetch path
 - Tab hydrates from /v1/sessions/:id/verifications on mount and
   refreshes on every WS Misc{kind:"verifier_verdict"} arrival
 - No new frontend dependencies; pure React + existing Tailwind tokens
