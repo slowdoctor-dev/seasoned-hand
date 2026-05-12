@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/seasoned-hand-core",
+    "crates/seasoned-hand-server",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+authors = ["Seasoned Hand contributors"]
+repository = "https://github.com/slowdoctor-dev/seasoned-hand"
+
+[workspace.dependencies]
+axum = "0.7"
+tokio = { version = "1.40", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"

@@ -1,6 +1,6 @@
 # Story 0.2 — Rust workspace initialization (Cargo + Axum hello)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 1 hour
 > **Dependencies**: story 0.1 (Bifrost running)
 > **Phase**: 0
