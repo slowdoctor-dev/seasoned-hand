@@ -27,6 +27,13 @@ use seasoned_hand_core::router::{SlotName, SlotRouter};
 use seasoned_hand_core::sandbox::SandboxClient;
 use seasoned_hand_core::search::SearchClient;
 use seasoned_hand_core::tools::register_builtin_tools;
+use seasoned_hand_core::verifier::{
+    VerificationStore,
+    routes::{
+        ListQuery as VerifyListQuery, RouteOutcome as VerifyRouteOutcome, get_verification,
+        list_verifications,
+    },
+};
 use serde::{Deserialize, Serialize};
 
 pub mod ws;
@@ -48,6 +55,13 @@ pub struct AppState {
     /// `AppState::new` time. Story 1.9's Verifier Worker reads this to
     /// decide whether to spawn.
     pub verifier_enabled: bool,
+    /// Story 1.9: FAIL-biased verifier system prompt loaded from
+    /// `config/prompts/verifier.system.txt` at boot when
+    /// `verifier_enabled` is true; empty string when verifier is
+    /// disabled.
+    pub verifier_system_prompt: Arc<String>,
+    /// Story 1.9: persistence handle for the `verifications` table.
+    pub verifications: Arc<VerificationStore>,
 }
 
 impl AppState {
@@ -67,6 +81,7 @@ impl AppState {
                 .with_hook(Arc::new(EventEmittingHook::new(events.clone()))),
         );
         let verifier_enabled = router.verifier_enabled();
+        let verifications = Arc::new(VerificationStore::new(db.clone()));
         let router = Arc::new(router);
         let plan_manager = Arc::new(PlanManager::new(db.clone(), events.clone()));
         let main_slot = router.resolve(SlotName::Main);
@@ -96,7 +111,18 @@ impl AppState {
             plan_manager,
             runner,
             verifier_enabled,
+            verifier_system_prompt: Arc::new(String::new()),
+            verifications,
         }
+    }
+
+    /// Story 1.9: replace the (default-empty) verifier system prompt
+    /// with content loaded from `config/prompts/verifier.system.txt` at
+    /// server bootstrap. Main.rs is the canonical caller; tests can
+    /// skip this (they never exercise the verifier loop).
+    pub fn with_verifier_prompt(mut self, prompt: Arc<String>) -> Self {
+        self.verifier_system_prompt = prompt;
+        self
     }
 }
 
@@ -551,5 +577,76 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/workspace/:session_id/*sub_path", get(workspace_proxy))
         .route("/v1/workspace/:session_id", get(workspace_root))
         .route("/v1/workspace/:session_id/", get(workspace_root))
+        .route(
+            "/v1/sessions/:id/verifications",
+            get(list_verifications_handler),
+        )
+        .route("/v1/verifications/:id", get(get_verification_handler))
         .with_state(state)
+}
+
+// ---------------------------------------------------------------------------
+// Story 1.9: verifier HTTP route handlers — thin axum wrappers over the
+// pure RouteOutcome layer in seasoned_hand_core::verifier::routes.
+// ---------------------------------------------------------------------------
+
+async fn list_verifications_handler(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    Query(q): Query<VerifyListQuery>,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    use axum::http::header;
+    use axum::response::Response;
+    match list_verifications(&state.verifications, &session_id, q).await {
+        VerifyRouteOutcome::Ok(body) => {
+            let bytes = serde_json::to_vec(&body).unwrap_or_default();
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(bytes))
+                .unwrap_or_else(|_| Response::new(axum::body::Body::empty())))
+        }
+        VerifyRouteOutcome::NotFound(msg) => {
+            Err((StatusCode::NOT_FOUND, Json(ApiError { error: msg })))
+        }
+        VerifyRouteOutcome::Internal(msg) => {
+            tracing::error!(error = %msg, "list_verifications failed");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            ))
+        }
+    }
+}
+
+async fn get_verification_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    use axum::http::header;
+    use axum::response::Response;
+    match get_verification(&state.verifications, &id).await {
+        VerifyRouteOutcome::Ok(body) => {
+            let bytes = serde_json::to_vec(&body).unwrap_or_default();
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(bytes))
+                .unwrap_or_else(|_| Response::new(axum::body::Body::empty())))
+        }
+        VerifyRouteOutcome::NotFound(msg) => {
+            Err((StatusCode::NOT_FOUND, Json(ApiError { error: msg })))
+        }
+        VerifyRouteOutcome::Internal(msg) => {
+            tracing::error!(error = %msg, "get_verification failed");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            ))
+        }
+    }
 }

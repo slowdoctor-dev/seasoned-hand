@@ -14,6 +14,7 @@ pub mod router;
 pub mod sandbox;
 pub mod search;
 pub mod tools;
+pub mod verifier;
 
 /// Returns the core crate version.
 pub fn version() -> &'static str {

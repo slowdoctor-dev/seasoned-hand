@@ -1,6 +1,6 @@
 # Story 1.9 — Verifier DB layer + V004 migration + `verifications` table + read routes
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 1.8 (verifier startup gate; `AppState::verifier_enabled`)
 > **Phase**: 1

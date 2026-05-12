@@ -64,7 +64,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_main_supports_tool_calling(&router, &capabilities)?;
     warn_implied_slot_capability_mismatches(&router, &capabilities);
 
-    let state = AppState::new(db, redis, sandbox, search, router, capabilities);
+    let mut state = AppState::new(db, redis, sandbox, search, router, capabilities);
+
+    // Phase 1 / story 1.9: when the verifier slot is enabled, load the
+    // FAIL-biased system prompt from disk. Missing file is a startup-
+    // fatal configuration error.
+    if state.verifier_enabled {
+        let prompt_path = std::env::var("VERIFIER_PROMPT_PATH")
+            .unwrap_or_else(|_| "config/prompts/verifier.system.txt".to_string());
+        let prompt = seasoned_hand_core::verifier::load_system_prompt(&prompt_path)?;
+        state = state.with_verifier_prompt(std::sync::Arc::new(prompt));
+        tracing::info!(path = %prompt_path, "verifier system prompt loaded");
+    }
 
     // Phase 1: rehydrate sandbox handle cache from Docker before binding the
     // listener so existing per-session containers from a prior boot are
