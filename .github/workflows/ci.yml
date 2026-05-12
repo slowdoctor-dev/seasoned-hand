@@ -82,9 +82,9 @@ jobs:
       - name: Pull pinned AIO sandbox image
         run: docker pull ghcr.io/agent-infra/sandbox:1.0.0.152
       - name: Run ignored Redis pubsub tests
-        run: cargo test --workspace -- --ignored pubsub::
+        run: "cargo test --workspace -- --ignored pubsub::"
       - name: Run ignored live sandbox lifecycle test
-        run: cargo test --workspace -- --ignored sandbox::tests::live_create_inspect_destroy
+        run: "cargo test --workspace -- --ignored sandbox::tests::live_create_inspect_destroy"
       - name: Start Bifrost (only when provider keys are set)
         if: ${{ env.ANTHROPIC_API_KEY != '' || env.OPENAI_API_KEY != '' }}
         run: |
