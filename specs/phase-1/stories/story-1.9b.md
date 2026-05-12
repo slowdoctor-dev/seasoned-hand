@@ -1,6 +1,6 @@
 # Story 1.9b — Verifier Worker runtime (Redis Streams + concurrency + watchdog)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 1.9 (DB layer, types, routes, system prompt loaded)
 > **Phase**: 1

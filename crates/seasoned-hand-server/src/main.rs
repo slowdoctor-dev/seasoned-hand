@@ -95,6 +95,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     }
 
+    // Story 1.9b: spawn the Verifier Worker if verifier is enabled.
+    // The worker's `run()` returns Ok(()) immediately when disabled, so
+    // we can spawn unconditionally for symmetry, but skipping the spawn
+    // keeps the runtime smaller when the verifier slot isn't configured.
+    let verifier_shutdown = tokio_util::sync::CancellationToken::new();
+    let verifier_handle = if state.verifier_enabled {
+        use seasoned_hand_core::verifier::{Worker, WorkerDeps};
+        let deps = WorkerDeps::from_router(
+            &state.router,
+            state.plan_manager.clone(),
+            state.events.clone(),
+            state.sandbox.clone(),
+            state.verifications.clone(),
+            state.cost.clone(),
+            state.verifier_system_prompt.clone(),
+        );
+        let worker = Worker::new(deps);
+        let redis = std::sync::Arc::new(state.redis.clone());
+        let token = verifier_shutdown.clone();
+        Some(tokio::spawn(async move {
+            if let Err(error) = worker.run(true, redis, token).await {
+                tracing::error!(%error, "verifier worker exited with error");
+            }
+        }))
+    } else {
+        tracing::info!("verifier worker not spawned (verifier_enabled = false)");
+        None
+    };
+
     let addr = bind_addr()?;
     tracing::info!(%addr, %database_url, %redis_url, "seasoned-hand-server starting");
 
@@ -102,6 +131,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app(state))
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    // Signal the verifier worker to drain and exit.
+    verifier_shutdown.cancel();
+    if let Some(handle) = verifier_handle {
+        let _ = handle.await;
+    }
 
     Ok(())
 }

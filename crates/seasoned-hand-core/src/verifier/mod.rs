@@ -15,10 +15,14 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod context;
+pub mod parse;
 pub mod persistence;
 pub mod routes;
+pub mod worker;
 
 pub use persistence::{VerificationStore, VerifierPersistenceError};
+pub use worker::{Worker, WorkerDeps, handle_request_with_watchdog};
 
 /// Trigger source for a single verifier run. Stored as `trigger_kind`
 /// (one of `TaskComplete`/`Invalidation`/`CircuitBreaker`) plus the

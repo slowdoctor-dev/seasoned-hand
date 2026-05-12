@@ -8,6 +8,7 @@ license.workspace = true
 seasoned-hand-core = { path = "../seasoned-hand-core" }
 axum = { workspace = true, features = ["ws"] }
 tokio = { workspace = true }
+tokio-util = "0.7"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde = { workspace = true }
