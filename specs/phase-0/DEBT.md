@@ -186,24 +186,12 @@
 - **Pay down**: CI workflow (item 14) should bring up Docker, prime the
   image cache once per CI run, then `cargo test -- --ignored sandbox::`.
 
-### 19. Story 0.9 shipped representative sandbox-tool wiring (4 of 22)
-- **Origin**: story 0.9
-- **Severity**: **Medium**
-- **What**: Of the 22 sandbox-backed tools that story 0.9 was supposed to
-  wire, only 4 are real (`file_read`, `file_write`, `shell_exec`,
-  `info_search_web`). The other 18 (file_str_replace, file_find_in_content,
-  file_find_by_name, shell_view/wait/write_to_process/kill_process, 12
-  browser_*) remain `StubTool`s.
-- **Why**: Story 0.9 was sized at 3h; verifying the AIO Sandbox v1.0.0.152
-  API contract for each tool (especially the browser action namespace which
-  multiplexes into `/v1/browser/actions` with action-typed bodies) is a
-  bigger discovery task than expected. The dispatcher + `sandbox_post`
-  helper + 4 representative real tools demonstrate the wiring pattern is
-  sound; the other 18 are mechanical follow-up work.
-- **Pay down**: New story 0.9b — "wire remaining 18 sandbox tools" —
-  uses the same `sandbox_post` helper. Should land before story 0.27 E2E
-  if the E2E test exercises browsing (which it does — "find GitHub stars
-  of FoundationAgents/OpenManus").
+### ~~19. Story 0.9 shipped representative sandbox-tool wiring (4 of 22)~~ ✅ resolved 2026-05-12 (story 0.9b)
+- ~~Origin: story 0.9~~
+- ~~Resolved by story 0.9b: the remaining 18 sandbox-backed tools are now
+  wired to verified AIO Sandbox endpoints (`/v1/file/{replace,search,find}`,
+  `/v1/shell/{view,wait,write,kill}`, `/v1/browser/page/*`, `/v1/browser/restart`,
+  and `/v1/browser/actions` for action-typed inputs).~~
 
 ### 27. Frontend shipped on Next.js 16 (not 15 as architecture says)
 - **Origin**: story 0.18
@@ -229,11 +217,11 @@
   marker. Architecture §3.4 specifies writing the full body to
   `/workspace/.observations/<call_id>.txt` via the sandbox and storing
   only a `file_ref` in the event.
-- **Why**: The sandbox-file-write path needs the 18-of-22 sandbox tools
-  (DEBT #19) plus a write helper. Defer until that wiring lands.
-- **Pay down**: When DEBT #19 (story 0.9b) closes, add a
-  `write_observation_file(call_id, content)` helper to the hook and replace
-  the inline truncation with the file_ref path.
+- **Why**: The sandbox-file-write path needed the broader sandbox-tool
+  wiring plus a write helper; story 0.9b closed endpoint coverage, but
+  this hook-level file persistence path is still deferred.
+- **Pay down**: Add a `write_observation_file(call_id, content)` helper to
+  the hook and replace the inline truncation with the file_ref path.
 
 ### 22. Capability table assumes Bifrost cloud aliases support tool calling
 - **Origin**: story 0.13

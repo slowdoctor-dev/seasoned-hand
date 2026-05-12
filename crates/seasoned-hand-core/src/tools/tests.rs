@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+use wiremock::matchers::{body_json, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{ToolContext, register_builtin_tools};
 use crate::db;
@@ -114,7 +116,26 @@ async fn stubs_return_not_implemented() {
         // story 0.9
         "file_read",
         "file_write",
+        "file_str_replace",
+        "file_find_in_content",
+        "file_find_by_name",
         "shell_exec",
+        "shell_view",
+        "shell_wait",
+        "shell_write_to_process",
+        "shell_kill_process",
+        "browser_view",
+        "browser_navigate",
+        "browser_restart",
+        "browser_click",
+        "browser_input",
+        "browser_move_mouse",
+        "browser_press_key",
+        "browser_select_option",
+        "browser_scroll_up",
+        "browser_scroll_down",
+        "browser_console_exec",
+        "browser_console_view",
         "info_search_web",
     ];
     for (name, tool) in reg.iter() {
@@ -213,4 +234,65 @@ async fn glossary_lookup_is_not_implemented() {
     let out = tool.invoke(json!({"term": "X"}), &cx).await.unwrap();
     assert!(!out.ok);
     assert_eq!(out.error.as_ref().unwrap().kind, "not_implemented");
+}
+
+#[tokio::test]
+async fn file_str_replace_posts_replace_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/file/replace"))
+        .and(body_json(json!({
+            "file": "/workspace/a.txt",
+            "old_str": "old",
+            "new_str": "new"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let out = super::builtin::sandbox_post_raw(
+        &format!("{}/v1/file/replace", server.uri()),
+        json!({"file": "/workspace/a.txt", "old_str": "old", "new_str": "new"}),
+    )
+    .await
+    .unwrap();
+    assert!(out.ok);
+}
+
+#[tokio::test]
+async fn shell_view_posts_process_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/shell/view"))
+        .and(body_json(json!({"id": "proc-1"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let out = super::builtin::sandbox_post_raw(
+        &format!("{}/v1/shell/view", server.uri()),
+        json!({"id": "proc-1"}),
+    )
+    .await
+    .unwrap();
+    assert!(out.ok);
+}
+
+#[tokio::test]
+async fn browser_navigate_posts_url_action() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/browser/page/navigate"))
+        .and(body_json(json!({"url": "https://example.com"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let out = super::builtin::sandbox_post_raw(
+        &format!("{}/v1/browser/page/navigate", server.uri()),
+        json!({"url": "https://example.com"}),
+    )
+    .await
+    .unwrap();
+    assert!(out.ok);
 }

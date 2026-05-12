@@ -1,6 +1,6 @@
 # Story 0.9b — Wire remaining 18 sandbox tools (follow-up to 0.9)
 
-> **Status**: ready
+> **Status**: in-progress
 > **Estimated**: 3 hours
 > **Dependencies**: 0.8 (sandbox client), 0.9 (dispatcher + sandbox_post helper)
 > **Phase**: 0 (closeout)

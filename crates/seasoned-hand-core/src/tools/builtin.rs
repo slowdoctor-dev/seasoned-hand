@@ -8,19 +8,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::{Tool, ToolContext, ToolError, ToolErrorPayload, ToolOutput};
 use crate::events::{EventStore, EventType, NewEvent};
 
-async fn sandbox_post(ctx: &ToolContext, path: &str, body: Value) -> Result<ToolOutput, ToolError> {
-    let handle = ctx.sandbox.get(&ctx.session_id).await.ok_or_else(|| {
-        ToolError::Backend(format!("sandbox not ready for session {}", ctx.session_id))
-    })?;
-    let url = format!("{}{}", handle.api_url, path);
+pub(super) async fn sandbox_post_raw(url: &str, body: Value) -> Result<ToolOutput, ToolError> {
     let client = reqwest::Client::new();
     let resp = client
-        .post(&url)
+        .post(url)
         .json(&body)
         .send()
         .await
@@ -45,6 +41,64 @@ async fn sandbox_post(ctx: &ToolContext, path: &str, body: Value) -> Result<Tool
             }),
         })
     }
+}
+
+async fn sandbox_post(ctx: &ToolContext, path: &str, body: Value) -> Result<ToolOutput, ToolError> {
+    let handle = ctx.sandbox.get(&ctx.session_id).await.ok_or_else(|| {
+        ToolError::Backend(format!("sandbox not ready for session {}", ctx.session_id))
+    })?;
+    let url = format!("{}{}", handle.api_url, path);
+    sandbox_post_raw(&url, body).await
+}
+
+pub(super) async fn sandbox_get_raw(url: &str) -> Result<ToolOutput, ToolError> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| ToolError::Backend(e.to_string()))?;
+    let status = resp.status();
+    let parsed: Value = resp.json().await.unwrap_or(Value::Null);
+    if status.is_success() {
+        Ok(ToolOutput {
+            ok: true,
+            output: parsed,
+            file_ref: None,
+            error: None,
+        })
+    } else {
+        Ok(ToolOutput {
+            ok: false,
+            output: parsed,
+            file_ref: None,
+            error: Some(ToolErrorPayload {
+                kind: "sandbox_http".into(),
+                message: format!("HTTP {}", status.as_u16()),
+            }),
+        })
+    }
+}
+
+async fn sandbox_get(ctx: &ToolContext, path: &str) -> Result<ToolOutput, ToolError> {
+    let handle = ctx.sandbox.get(&ctx.session_id).await.ok_or_else(|| {
+        ToolError::Backend(format!("sandbox not ready for session {}", ctx.session_id))
+    })?;
+    let url = format!("{}{}", handle.api_url, path);
+    sandbox_get_raw(&url).await
+}
+
+async fn browser_action(
+    ctx: &ToolContext,
+    action: &str,
+    body: Value,
+) -> Result<ToolOutput, ToolError> {
+    let mut object = match body {
+        Value::Object(map) => map,
+        _ => Map::new(),
+    };
+    object.insert("action_type".into(), Value::String(action.to_string()));
+    sandbox_post(ctx, "/v1/browser/actions", Value::Object(object)).await
 }
 
 fn require_str(args: &Value, key: &str) -> Result<String, ToolError> {
@@ -383,6 +437,399 @@ impl Tool for InfoSearchWeb {
     }
 }
 
+pub struct FileStrReplace;
+#[async_trait]
+impl Tool for FileStrReplace {
+    fn name(&self) -> &'static str {
+        "file_str_replace"
+    }
+    fn description(&self) -> &'static str {
+        "Replace one substring with another in a sandbox file."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(
+            json!({"path":{"type":"string"},"old_str":{"type":"string"},"new_str":{"type":"string"}}),
+            &["path", "old_str", "new_str"],
+        )
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        sandbox_post(ctx, "/v1/file/replace", json!({"file": require_str(&args, "path")?, "old_str": require_str(&args, "old_str")?, "new_str": require_str(&args, "new_str")?})).await
+    }
+}
+
+pub struct FileFindInContent;
+#[async_trait]
+impl Tool for FileFindInContent {
+    fn name(&self) -> &'static str {
+        "file_find_in_content"
+    }
+    fn description(&self) -> &'static str {
+        "Find a regex pattern within a sandbox file's contents."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(
+            json!({"path":{"type":"string"},"pattern":{"type":"string"}}),
+            &["path", "pattern"],
+        )
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        sandbox_post(
+            ctx,
+            "/v1/file/search",
+            json!({"file": require_str(&args, "path")?, "regex": require_str(&args, "pattern")?}),
+        )
+        .await
+    }
+}
+
+pub struct FileFindByName;
+#[async_trait]
+impl Tool for FileFindByName {
+    fn name(&self) -> &'static str {
+        "file_find_by_name"
+    }
+    fn description(&self) -> &'static str {
+        "Find files in the sandbox workspace whose names match a glob."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(
+            json!({"glob":{"type":"string"},"cwd":{"type":"string"}}),
+            &["glob"],
+        )
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let glob = require_str(&args, "glob")?;
+        let cwd = args
+            .get("cwd")
+            .and_then(Value::as_str)
+            .unwrap_or("/workspace");
+        sandbox_post(ctx, "/v1/file/find", json!({"path": cwd, "glob": glob})).await
+    }
+}
+
+pub struct ShellView;
+#[async_trait]
+impl Tool for ShellView {
+    fn name(&self) -> &'static str {
+        "shell_view"
+    }
+    fn description(&self) -> &'static str {
+        "Read accumulated stdout/stderr from a running sandbox process."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(json!({"process_id":{"type":"string"}}), &["process_id"])
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        sandbox_post(
+            ctx,
+            "/v1/shell/view",
+            json!({"id": require_str(&args, "process_id")?}),
+        )
+        .await
+    }
+}
+
+pub struct ShellWait;
+#[async_trait]
+impl Tool for ShellWait {
+    fn name(&self) -> &'static str {
+        "shell_wait"
+    }
+    fn description(&self) -> &'static str {
+        "Block until a sandbox process exits, then return its exit code."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(
+            json!({"process_id":{"type":"string"},"timeout_secs":{"type":"integer","minimum":1}}),
+            &["process_id"],
+        )
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let mut body = json!({"id": require_str(&args, "process_id")?});
+        if let Some(timeout) = args.get("timeout_secs").and_then(Value::as_u64) {
+            body["max_wait_seconds"] = Value::Number(timeout.into());
+        }
+        sandbox_post(ctx, "/v1/shell/wait", body).await
+    }
+}
+
+pub struct ShellWriteToProcess;
+#[async_trait]
+impl Tool for ShellWriteToProcess {
+    fn name(&self) -> &'static str {
+        "shell_write_to_process"
+    }
+    fn description(&self) -> &'static str {
+        "Write data to a running sandbox process's stdin."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(
+            json!({"process_id":{"type":"string"},"data":{"type":"string"}}),
+            &["process_id", "data"],
+        )
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        sandbox_post(ctx, "/v1/shell/write", json!({"id": require_str(&args, "process_id")?, "input": require_str(&args, "data")?, "press_enter": false})).await
+    }
+}
+
+pub struct ShellKillProcess;
+#[async_trait]
+impl Tool for ShellKillProcess {
+    fn name(&self) -> &'static str {
+        "shell_kill_process"
+    }
+    fn description(&self) -> &'static str {
+        "Send SIGTERM/SIGKILL to a running sandbox process."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(json!({"process_id":{"type":"string"}}), &["process_id"])
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        sandbox_post(
+            ctx,
+            "/v1/shell/kill",
+            json!({"id": require_str(&args, "process_id")?}),
+        )
+        .await
+    }
+}
+
+pub struct BrowserView;
+#[async_trait]
+impl Tool for BrowserView {
+    fn name(&self) -> &'static str {
+        "browser_view"
+    }
+    fn description(&self) -> &'static str {
+        "Take a screenshot + DOM dump of the current browser page."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(json!({}), &[])
+    }
+    async fn invoke(&self, _args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let info = sandbox_get(ctx, "/v1/browser/info").await?;
+        let elements = sandbox_get(ctx, "/v1/browser/page/elements").await?;
+        Ok(ToolOutput {
+            ok: info.ok && elements.ok,
+            output: json!({"browser_info": info.output, "elements": elements.output}),
+            file_ref: None,
+            error: info.error.or(elements.error),
+        })
+    }
+}
+
+pub struct BrowserNavigate;
+#[async_trait]
+impl Tool for BrowserNavigate {
+    fn name(&self) -> &'static str {
+        "browser_navigate"
+    }
+    fn description(&self) -> &'static str {
+        "Navigate the sandbox browser to a URL."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(json!({"url":{"type":"string","format":"uri"}}), &["url"])
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        sandbox_post(
+            ctx,
+            "/v1/browser/page/navigate",
+            json!({"url": require_str(&args, "url")?}),
+        )
+        .await
+    }
+}
+
+pub struct BrowserRestart;
+#[async_trait]
+impl Tool for BrowserRestart {
+    fn name(&self) -> &'static str {
+        "browser_restart"
+    }
+    fn description(&self) -> &'static str {
+        "Restart the sandbox browser session."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(json!({}), &[])
+    }
+    async fn invoke(&self, _args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        sandbox_post(ctx, "/v1/browser/restart", json!({})).await
+    }
+}
+
+pub struct BrowserClick;
+#[async_trait]
+impl Tool for BrowserClick {
+    fn name(&self) -> &'static str {
+        "browser_click"
+    }
+    fn description(&self) -> &'static str {
+        "Click an element matching a CSS selector."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(json!({"selector":{"type":"string"}}), &["selector"])
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        sandbox_post(
+            ctx,
+            "/v1/browser/page/click",
+            json!({"selector": require_str(&args, "selector")?}),
+        )
+        .await
+    }
+}
+
+pub struct BrowserInput;
+#[async_trait]
+impl Tool for BrowserInput {
+    fn name(&self) -> &'static str {
+        "browser_input"
+    }
+    fn description(&self) -> &'static str {
+        "Type text into an input matching a CSS selector."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(
+            json!({"selector":{"type":"string"},"text":{"type":"string"}}),
+            &["selector", "text"],
+        )
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        sandbox_post(ctx, "/v1/browser/page/fill", json!({"selector": require_str(&args, "selector")?, "text": require_str(&args, "text")?})).await
+    }
+}
+
+pub struct BrowserMoveMouse;
+#[async_trait]
+impl Tool for BrowserMoveMouse {
+    fn name(&self) -> &'static str {
+        "browser_move_mouse"
+    }
+    fn description(&self) -> &'static str {
+        "Move the mouse to viewport coordinates."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(
+            json!({"x":{"type":"integer"},"y":{"type":"integer"}}),
+            &["x", "y"],
+        )
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        browser_action(ctx, "MOVE_TO", json!({"x": args.get("x").and_then(Value::as_i64).ok_or_else(|| ToolError::InvalidArgs("missing 'x' integer".into()))?, "y": args.get("y").and_then(Value::as_i64).ok_or_else(|| ToolError::InvalidArgs("missing 'y' integer".into()))?})).await
+    }
+}
+
+pub struct BrowserPressKey;
+#[async_trait]
+impl Tool for BrowserPressKey {
+    fn name(&self) -> &'static str {
+        "browser_press_key"
+    }
+    fn description(&self) -> &'static str {
+        "Press a single key (e.g. Enter, Tab, ArrowDown)."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(json!({"key":{"type":"string"}}), &["key"])
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        browser_action(ctx, "PRESS", json!({"key": require_str(&args, "key")?})).await
+    }
+}
+
+pub struct BrowserSelectOption;
+#[async_trait]
+impl Tool for BrowserSelectOption {
+    fn name(&self) -> &'static str {
+        "browser_select_option"
+    }
+    fn description(&self) -> &'static str {
+        "Select an option in a <select> by value."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(
+            json!({"selector":{"type":"string"},"value":{"type":"string"}}),
+            &["selector", "value"],
+        )
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        sandbox_post(ctx, "/v1/browser/page/select_option", json!({"selector": require_str(&args, "selector")?, "value": require_str(&args, "value")?})).await
+    }
+}
+
+pub struct BrowserScrollUp;
+#[async_trait]
+impl Tool for BrowserScrollUp {
+    fn name(&self) -> &'static str {
+        "browser_scroll_up"
+    }
+    fn description(&self) -> &'static str {
+        "Scroll the browser viewport up by one page."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(json!({}), &[])
+    }
+    async fn invoke(&self, _args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        browser_action(ctx, "SCROLL", json!({"dx": 0, "dy": -800})).await
+    }
+}
+
+pub struct BrowserScrollDown;
+#[async_trait]
+impl Tool for BrowserScrollDown {
+    fn name(&self) -> &'static str {
+        "browser_scroll_down"
+    }
+    fn description(&self) -> &'static str {
+        "Scroll the browser viewport down by one page."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(json!({}), &[])
+    }
+    async fn invoke(&self, _args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        browser_action(ctx, "SCROLL", json!({"dx": 0, "dy": 800})).await
+    }
+}
+
+pub struct BrowserConsoleExec;
+#[async_trait]
+impl Tool for BrowserConsoleExec {
+    fn name(&self) -> &'static str {
+        "browser_console_exec"
+    }
+    fn description(&self) -> &'static str {
+        "Run a JavaScript expression in the browser dev console."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(json!({"code":{"type":"string"}}), &["code"])
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        sandbox_post(
+            ctx,
+            "/v1/browser/page/evaluate",
+            json!({"expression": require_str(&args, "code")?}),
+        )
+        .await
+    }
+}
+
+pub struct BrowserConsoleView;
+#[async_trait]
+impl Tool for BrowserConsoleView {
+    fn name(&self) -> &'static str {
+        "browser_console_view"
+    }
+    fn description(&self) -> &'static str {
+        "Read the most recent dev console log lines."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(json!({}), &[])
+    }
+    async fn invoke(&self, _args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        sandbox_get(ctx, "/v1/browser/page/console").await
+    }
+}
+
 // ===== stub tool (story 0.7) =====
 //
 // Used for the 28 tools whose real backends land in stories 0.8 / 0.9 /
@@ -454,243 +901,32 @@ pub fn all() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("glossary_lookup", Arc::new(GlossaryLookup));
 
     // ===== File (5) — backend: Sandbox =====
-    // Real: file_read, file_write (story 0.9). Stubs: file_str_replace,
-    // file_find_in_content, file_find_by_name — pending 0.9 follow-up.
     map.insert("file_read", Arc::new(FileRead));
     map.insert("file_write", Arc::new(FileWrite));
-    map.insert(
-        "file_str_replace",
-        stub(
-            "file_str_replace",
-            "Replace one substring with another in a sandbox file.",
-            obj_schema(
-                json!({
-                    "path": { "type": "string" },
-                    "old_str": { "type": "string" },
-                    "new_str": { "type": "string" }
-                }),
-                &["path", "old_str", "new_str"],
-            ),
-            "story 0.8/0.9",
-        ),
-    );
-    map.insert(
-        "file_find_in_content",
-        stub(
-            "file_find_in_content",
-            "Find a regex pattern within a sandbox file's contents.",
-            obj_schema(
-                json!({
-                    "path": { "type": "string" },
-                    "pattern": { "type": "string" }
-                }),
-                &["path", "pattern"],
-            ),
-            "story 0.8/0.9",
-        ),
-    );
-    map.insert(
-        "file_find_by_name",
-        stub(
-            "file_find_by_name",
-            "Find files in the sandbox workspace whose names match a glob.",
-            obj_schema(
-                json!({
-                    "glob": { "type": "string" },
-                    "cwd": { "type": "string" }
-                }),
-                &["glob"],
-            ),
-            "story 0.8/0.9",
-        ),
-    );
+    map.insert("file_str_replace", Arc::new(FileStrReplace));
+    map.insert("file_find_in_content", Arc::new(FileFindInContent));
+    map.insert("file_find_by_name", Arc::new(FileFindByName));
 
     // ===== Shell (5) — backend: Sandbox =====
-    // Real: shell_exec (story 0.9). Stubs: shell_view/wait/write_to_process/
-    // kill_process — pending 0.9 follow-up.
     map.insert("shell_exec", Arc::new(ShellExec));
-    let process_id_only = obj_schema(
-        json!({ "process_id": { "type": "string" } }),
-        &["process_id"],
-    );
-    map.insert(
-        "shell_view",
-        stub(
-            "shell_view",
-            "Read accumulated stdout/stderr from a running sandbox process.",
-            process_id_only.clone(),
-            "story 0.8/0.9",
-        ),
-    );
-    map.insert(
-        "shell_wait",
-        stub(
-            "shell_wait",
-            "Block until a sandbox process exits, then return its exit code.",
-            obj_schema(
-                json!({
-                    "process_id": { "type": "string" },
-                    "timeout_secs": { "type": "integer", "minimum": 1 }
-                }),
-                &["process_id"],
-            ),
-            "story 0.8/0.9",
-        ),
-    );
-    map.insert(
-        "shell_write_to_process",
-        stub(
-            "shell_write_to_process",
-            "Write data to a running sandbox process's stdin.",
-            obj_schema(
-                json!({
-                    "process_id": { "type": "string" },
-                    "data": { "type": "string" }
-                }),
-                &["process_id", "data"],
-            ),
-            "story 0.8/0.9",
-        ),
-    );
-    map.insert(
-        "shell_kill_process",
-        stub(
-            "shell_kill_process",
-            "Send SIGTERM/SIGKILL to a running sandbox process.",
-            process_id_only.clone(),
-            "story 0.8/0.9",
-        ),
-    );
+    map.insert("shell_view", Arc::new(ShellView));
+    map.insert("shell_wait", Arc::new(ShellWait));
+    map.insert("shell_write_to_process", Arc::new(ShellWriteToProcess));
+    map.insert("shell_kill_process", Arc::new(ShellKillProcess));
 
-    // ===== Browser (12) — backend: Sandbox Chromium (story 0.8 + 0.9) =====
-    let empty_obj = obj_schema(json!({}), &[]);
-    map.insert(
-        "browser_view",
-        stub(
-            "browser_view",
-            "Take a screenshot + DOM dump of the current browser page.",
-            empty_obj.clone(),
-            "story 0.8/0.9",
-        ),
-    );
-    map.insert(
-        "browser_navigate",
-        stub(
-            "browser_navigate",
-            "Navigate the sandbox browser to a URL.",
-            obj_schema(
-                json!({ "url": { "type": "string", "format": "uri" } }),
-                &["url"],
-            ),
-            "story 0.8/0.9",
-        ),
-    );
-    map.insert(
-        "browser_restart",
-        stub(
-            "browser_restart",
-            "Restart the sandbox browser session.",
-            empty_obj.clone(),
-            "story 0.8/0.9",
-        ),
-    );
-    let selector_only = obj_schema(json!({ "selector": { "type": "string" } }), &["selector"]);
-    map.insert(
-        "browser_click",
-        stub(
-            "browser_click",
-            "Click an element matching a CSS selector.",
-            selector_only.clone(),
-            "story 0.8/0.9",
-        ),
-    );
-    map.insert(
-        "browser_input",
-        stub(
-            "browser_input",
-            "Type text into an input matching a CSS selector.",
-            obj_schema(
-                json!({
-                    "selector": { "type": "string" },
-                    "text": { "type": "string" }
-                }),
-                &["selector", "text"],
-            ),
-            "story 0.8/0.9",
-        ),
-    );
-    map.insert(
-        "browser_move_mouse",
-        stub(
-            "browser_move_mouse",
-            "Move the mouse to viewport coordinates.",
-            obj_schema(
-                json!({ "x": { "type": "integer" }, "y": { "type": "integer" } }),
-                &["x", "y"],
-            ),
-            "story 0.8/0.9",
-        ),
-    );
-    map.insert(
-        "browser_press_key",
-        stub(
-            "browser_press_key",
-            "Press a single key (e.g. Enter, Tab, ArrowDown).",
-            obj_schema(json!({ "key": { "type": "string" } }), &["key"]),
-            "story 0.8/0.9",
-        ),
-    );
-    map.insert(
-        "browser_select_option",
-        stub(
-            "browser_select_option",
-            "Select an option in a <select> by value.",
-            obj_schema(
-                json!({
-                    "selector": { "type": "string" },
-                    "value": { "type": "string" }
-                }),
-                &["selector", "value"],
-            ),
-            "story 0.8/0.9",
-        ),
-    );
-    map.insert(
-        "browser_scroll_up",
-        stub(
-            "browser_scroll_up",
-            "Scroll the browser viewport up by one page.",
-            empty_obj.clone(),
-            "story 0.8/0.9",
-        ),
-    );
-    map.insert(
-        "browser_scroll_down",
-        stub(
-            "browser_scroll_down",
-            "Scroll the browser viewport down by one page.",
-            empty_obj.clone(),
-            "story 0.8/0.9",
-        ),
-    );
-    map.insert(
-        "browser_console_exec",
-        stub(
-            "browser_console_exec",
-            "Run a JavaScript expression in the browser dev console.",
-            obj_schema(json!({ "code": { "type": "string" } }), &["code"]),
-            "story 0.8/0.9",
-        ),
-    );
-    map.insert(
-        "browser_console_view",
-        stub(
-            "browser_console_view",
-            "Read the most recent dev console log lines.",
-            empty_obj.clone(),
-            "story 0.8/0.9",
-        ),
-    );
+    // ===== Browser (12) — backend: Sandbox Chromium =====
+    map.insert("browser_view", Arc::new(BrowserView));
+    map.insert("browser_navigate", Arc::new(BrowserNavigate));
+    map.insert("browser_restart", Arc::new(BrowserRestart));
+    map.insert("browser_click", Arc::new(BrowserClick));
+    map.insert("browser_input", Arc::new(BrowserInput));
+    map.insert("browser_move_mouse", Arc::new(BrowserMoveMouse));
+    map.insert("browser_press_key", Arc::new(BrowserPressKey));
+    map.insert("browser_select_option", Arc::new(BrowserSelectOption));
+    map.insert("browser_scroll_up", Arc::new(BrowserScrollUp));
+    map.insert("browser_scroll_down", Arc::new(BrowserScrollDown));
+    map.insert("browser_console_exec", Arc::new(BrowserConsoleExec));
+    map.insert("browser_console_view", Arc::new(BrowserConsoleView));
 
     // ===== Search (1) — backend: Search client (story 0.9 real) =====
     map.insert("info_search_web", Arc::new(InfoSearchWeb));
@@ -741,7 +977,7 @@ pub fn all() -> HashMap<&'static str, Arc<dyn Tool>> {
         stub(
             "plan_advance",
             "Advance the current plan to the next phase. ADR-010.",
-            empty_obj.clone(),
+            obj_schema(json!({}), &[]),
             "story 0.14",
         ),
     );
