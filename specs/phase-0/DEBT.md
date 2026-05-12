@@ -211,6 +211,17 @@
   if the E2E test exercises browsing (which it does — "find GitHub stars
   of FoundationAgents/OpenManus").
 
+### 27. Frontend shipped on Next.js 16 (not 15 as architecture says)
+- **Origin**: story 0.18
+- **Severity**: **Low** (forward-compat drift)
+- **What**: `create-next-app@latest` produced Next.js 16.2.6 / React 19.2.4 /
+  Tailwind 4.3.0. Architecture §5.3 and BASELINE.md still say "Next.js 15".
+- **Why**: Pinning at create-time would have meant rolling our own template;
+  shipping latest is the lower-friction choice and matches Phase 0's
+  "use upstream defaults" pattern.
+- **Pay down**: Update ARCHITECTURE.md §1 + §5.3 + BASELINE.md §4 to read
+  "Next.js 16" in a doc-only commit (no code change).
+
 ### ~~20. ToolDispatcher ships with no hooks registered~~ ✅ resolved 2026-05-12 (story 0.10)
 - ~~Origin: story 0.9~~
 - ~~Resolved by story 0.10: `EventEmittingHook` writes Action + Observation
