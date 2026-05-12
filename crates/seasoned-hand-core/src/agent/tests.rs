@@ -620,7 +620,11 @@ async fn idle_call_pushes_verify_request_and_transitions_to_verifying() {
 
 #[tokio::test]
 async fn message_notify_user_without_final_does_not_trigger() {
-    let h = harness(vec![completion(vec![(
+    // Use the verifier-enabled harness so the test asserts the right
+    // thing: with verifier ENABLED, omitting `final` still must not
+    // trigger the VERIFYING transition. (Phase 1.10 trigger gate is
+    // `final:true && verifier_active`.)
+    let h = harness_with_verifier(vec![completion(vec![(
         "call-1",
         "message_notify_user",
         json!({"content":"not final"}),
