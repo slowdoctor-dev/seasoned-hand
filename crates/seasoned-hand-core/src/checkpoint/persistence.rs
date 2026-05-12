@@ -79,6 +79,104 @@ impl CheckpointStore {
         Ok(id)
     }
 
+    /// Fetch a single checkpoint row by id. Returns `Ok(None)` when the
+    /// row does not exist; the rollback path treats that as a 404.
+    pub async fn get(&self, id: &str) -> Result<Option<Checkpoint>, CheckpointPersistenceError> {
+        let id_owned = id.to_string();
+        let row = self
+            .pool
+            .with_conn(move |conn| -> rusqlite::Result<Option<Checkpoint>> {
+                let mut stmt = conn.prepare(
+                    "SELECT id, session_id, plan_phase_id, git_sha, label, \
+                            triggered_by_event_id, rolled_back_at, rolled_back_by, created_at \
+                       FROM checkpoints WHERE id = ?",
+                )?;
+                let mut rows = stmt.query_map(params![id_owned], |row| {
+                    Ok(Checkpoint {
+                        id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        plan_phase_id: row.get(2)?,
+                        git_sha: row.get(3)?,
+                        label: row.get(4)?,
+                        triggered_by_event_id: row.get(5)?,
+                        rolled_back_at: row.get(6)?,
+                        rolled_back_by: row.get(7)?,
+                        created_at: row.get(8)?,
+                    })
+                })?;
+                match rows.next() {
+                    Some(row) => Ok(Some(row?)),
+                    None => Ok(None),
+                }
+            })
+            .await?;
+        Ok(row)
+    }
+
+    /// Story 1.13b: mark a checkpoint as rolled back. Updates
+    /// `rolled_back_at` and `rolled_back_by` atomically. Returns the
+    /// number of affected rows (0 when the id does not exist).
+    pub async fn mark_rolled_back(
+        &self,
+        id: &str,
+        rolled_back_at: i64,
+        rolled_back_by: &str,
+    ) -> Result<usize, CheckpointPersistenceError> {
+        let id_owned = id.to_string();
+        let by_owned = rolled_back_by.to_string();
+        let n = self
+            .pool
+            .with_conn(move |conn| {
+                conn.execute(
+                    "UPDATE checkpoints SET rolled_back_at = ?, rolled_back_by = ? \
+                     WHERE id = ?",
+                    params![rolled_back_at, by_owned, id_owned],
+                )
+            })
+            .await?;
+        Ok(n)
+    }
+
+    /// Story 1.13b: return the most recent (highest `created_at`) NON
+    /// rolled-back checkpoint for a session. Used by the opt-in
+    /// Verifier-driven rollback path to pick the row to revert.
+    pub async fn latest_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<Checkpoint>, CheckpointPersistenceError> {
+        let sid = session_id.to_string();
+        let row = self
+            .pool
+            .with_conn(move |conn| -> rusqlite::Result<Option<Checkpoint>> {
+                let mut stmt = conn.prepare(
+                    "SELECT id, session_id, plan_phase_id, git_sha, label, \
+                            triggered_by_event_id, rolled_back_at, rolled_back_by, created_at \
+                       FROM checkpoints \
+                      WHERE session_id = ? AND rolled_back_at IS NULL \
+                      ORDER BY created_at DESC LIMIT 1",
+                )?;
+                let mut rows = stmt.query_map(params![sid], |row| {
+                    Ok(Checkpoint {
+                        id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        plan_phase_id: row.get(2)?,
+                        git_sha: row.get(3)?,
+                        label: row.get(4)?,
+                        triggered_by_event_id: row.get(5)?,
+                        rolled_back_at: row.get(6)?,
+                        rolled_back_by: row.get(7)?,
+                        created_at: row.get(8)?,
+                    })
+                })?;
+                match rows.next() {
+                    Some(row) => Ok(Some(row?)),
+                    None => Ok(None),
+                }
+            })
+            .await?;
+        Ok(row)
+    }
+
     pub async fn list_by_session(
         &self,
         session_id: &str,

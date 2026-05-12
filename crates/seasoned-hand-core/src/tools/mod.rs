@@ -11,7 +11,7 @@ use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::checkpoint::CheckpointLabelBuffer;
+use crate::checkpoint::{CheckpointLabelBuffer, CheckpointStore};
 use crate::dispatch::mask::MaskContext;
 use crate::events::sqlite::SqliteEventStore;
 use crate::plan::PlanManager;
@@ -63,6 +63,11 @@ pub struct ToolContext {
     /// `Plan{op:"advance"}` checkpoint. The `checkpoint_label` tool
     /// writes here; the `CheckpointManager` reads + clears.
     pub checkpoint_labels: Arc<CheckpointLabelBuffer>,
+    /// Story 1.13b: persistence handle for the `checkpoints` table —
+    /// used by the internal `checkpoint_rollback` tool to read the
+    /// target row, look up sibling rows, and stamp `rolled_back_at` /
+    /// `rolled_back_by` after a successful `git revert`.
+    pub checkpoints: Arc<CheckpointStore>,
 }
 
 #[async_trait]

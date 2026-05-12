@@ -80,6 +80,7 @@ pub struct AgentRunner {
     plan_manager: Arc<PlanManager>,
     mask_policy: Arc<dyn ToolMaskPolicy>,
     checkpoint_labels: Arc<crate::checkpoint::CheckpointLabelBuffer>,
+    checkpoints: Arc<crate::checkpoint::CheckpointStore>,
     redis: Arc<RedisPool>,
     run_config: Arc<tokio::sync::Mutex<HashMap<String, RunRequest>>>,
 }
@@ -96,6 +97,7 @@ pub struct AgentRunnerDeps {
     pub plan_manager: Arc<PlanManager>,
     pub mask_policy: Arc<dyn ToolMaskPolicy>,
     pub checkpoint_labels: Arc<crate::checkpoint::CheckpointLabelBuffer>,
+    pub checkpoints: Arc<crate::checkpoint::CheckpointStore>,
     pub redis: Arc<RedisPool>,
 }
 
@@ -113,6 +115,7 @@ impl AgentRunner {
             plan_manager: deps.plan_manager,
             mask_policy: deps.mask_policy,
             checkpoint_labels: deps.checkpoint_labels,
+            checkpoints: deps.checkpoints,
             redis: deps.redis,
             run_config: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
@@ -310,6 +313,7 @@ impl AgentRunner {
                 search: self.search.clone(),
                 plan_manager: self.plan_manager.clone(),
                 checkpoint_labels: self.checkpoint_labels.clone(),
+                checkpoints: self.checkpoints.clone(),
             };
             let final_notify = call.function.name == "message_notify_user"
                 && args.get("final").and_then(Value::as_bool).unwrap_or(false);

@@ -7,6 +7,11 @@ pub enum AgentMode {
     Initializer,
     Worker,
     Verifier,
+    /// Story 1.13b: trusted-internal caller (admin HTTP endpoint,
+    /// Verifier-driven opt-in rollback handler). Tools that are
+    /// LLM-masked (e.g. `checkpoint_rollback`) are AVAILABLE in this
+    /// mode. Never set when an LLM is in the loop.
+    Internal,
 }
 
 #[derive(Debug, Clone)]
@@ -34,10 +39,17 @@ pub struct DefaultMaskPolicy;
 
 impl ToolMaskPolicy for DefaultMaskPolicy {
     fn is_available(&self, tool_name: &str, ctx: &MaskContext) -> bool {
-        !matches!(
-            (tool_name, ctx.mode),
-            ("plan_create", AgentMode::Worker | AgentMode::Verifier) | ("checkpoint_rollback", _)
-        )
+        match (tool_name, ctx.mode) {
+            // `plan_create` is Initializer-only.
+            ("plan_create", AgentMode::Worker | AgentMode::Verifier) => false,
+            // Story 1.13b: `checkpoint_rollback` is masked from every
+            // LLM-facing mode. The trusted-internal `Internal` mode
+            // (admin endpoint + verifier-driven opt-in handler) can
+            // dispatch it.
+            ("checkpoint_rollback", AgentMode::Internal) => true,
+            ("checkpoint_rollback", _) => false,
+            _ => true,
+        }
     }
 }
 
@@ -127,6 +139,40 @@ mod tests {
                 .collect();
             assert_eq!(baseline, current);
         }
+    }
+
+    #[test]
+    fn mask_blocks_checkpoint_rollback_from_every_llm_facing_mode() {
+        // Story 1.13b regression: `checkpoint_rollback` must NEVER be
+        // visible to an LLM. The trusted-internal `AgentMode::Internal`
+        // (admin endpoint + verifier-driven opt-in handler) CAN
+        // dispatch it. Pin both halves of the invariant against
+        // accidental future change.
+        let policy = DefaultMaskPolicy;
+        for mode in [
+            AgentMode::Initializer,
+            AgentMode::Worker,
+            AgentMode::Verifier,
+        ] {
+            let ctx = MaskContext {
+                session_id: "s1".into(),
+                iteration: 0,
+                mode,
+            };
+            assert!(
+                !policy.is_available("checkpoint_rollback", &ctx),
+                "checkpoint_rollback must be masked from AgentMode::{mode:?}"
+            );
+        }
+        let internal = MaskContext {
+            session_id: "s1".into(),
+            iteration: 0,
+            mode: AgentMode::Internal,
+        };
+        assert!(
+            policy.is_available("checkpoint_rollback", &internal),
+            "checkpoint_rollback must be AVAILABLE in AgentMode::Internal"
+        );
     }
 
     #[test]

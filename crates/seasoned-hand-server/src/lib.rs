@@ -69,6 +69,16 @@ pub struct AppState {
     pub checkpoint_labels: Arc<seasoned_hand_core::checkpoint::CheckpointLabelBuffer>,
     /// Story 1.13: persistence handle for the `checkpoints` table.
     pub checkpoints: Arc<seasoned_hand_core::checkpoint::CheckpointStore>,
+    /// Story 1.13b: admin token from `SEASONED_HAND_ADMIN_TOKEN` env.
+    /// Empty when unset — the admin rollback route fails with
+    /// `503 admin_token_not_configured` instead of allowing
+    /// unauthenticated access (PRINCIPLE #10: fail visibly).
+    pub admin_token: Arc<String>,
+    /// Story 1.13b: opt-in flag that lets the VerifierGate trigger a
+    /// checkpoint rollback when a verdict carries
+    /// `rollback_required: true`. Default `false` per phase-1/DEBT.md #3
+    /// — Phase 2 retrospective will decide whether to flip this.
+    pub checkpoint_rollback_on_verifier_fail: bool,
 }
 
 impl AppState {
@@ -94,6 +104,12 @@ impl AppState {
         let checkpoints = Arc::new(seasoned_hand_core::checkpoint::CheckpointStore::new(
             db.clone(),
         ));
+        // Story 1.13b: admin_token / rollback flag default empty/false;
+        // production main.rs reads them from env and calls the
+        // builder methods. Tests can do the same without touching
+        // process-wide environment variables.
+        let admin_token = Arc::new(String::new());
+        let checkpoint_rollback_on_verifier_fail = false;
         let router = Arc::new(router);
         let plan_manager = Arc::new(PlanManager::new(db.clone(), events.clone()));
         let main_slot = router.resolve(SlotName::Main);
@@ -111,6 +127,7 @@ impl AppState {
             plan_manager: plan_manager.clone(),
             mask_policy: Arc::new(DefaultMaskPolicy),
             checkpoint_labels: checkpoint_labels.clone(),
+            checkpoints: checkpoints.clone(),
             redis: Arc::new(redis.clone()),
         }));
         Self {
@@ -130,6 +147,8 @@ impl AppState {
             verifications,
             checkpoint_labels,
             checkpoints,
+            admin_token,
+            checkpoint_rollback_on_verifier_fail,
         }
     }
 
@@ -139,6 +158,22 @@ impl AppState {
     /// skip this (they never exercise the verifier loop).
     pub fn with_verifier_prompt(mut self, prompt: Arc<String>) -> Self {
         self.verifier_system_prompt = prompt;
+        self
+    }
+
+    /// Story 1.13b: set the admin token for the rollback endpoint.
+    /// Empty string keeps the endpoint disabled (returns 503). Main.rs
+    /// reads from `SEASONED_HAND_ADMIN_TOKEN`; tests construct
+    /// explicitly to avoid racing on process env vars.
+    pub fn with_admin_token(mut self, token: impl Into<String>) -> Self {
+        self.admin_token = Arc::new(token.into());
+        self
+    }
+
+    /// Story 1.13b: enable the opt-in Verifier-driven rollback path.
+    /// Defaults `false` per phase-1/DEBT.md #3.
+    pub fn with_rollback_on_verifier_fail(mut self, enabled: bool) -> Self {
+        self.checkpoint_rollback_on_verifier_fail = enabled;
         self
     }
 }
@@ -603,7 +638,193 @@ pub fn app(state: AppState) -> Router {
             "/v1/sessions/:id/checkpoints",
             get(list_checkpoints_handler),
         )
+        .route(
+            "/v1/sessions/:id/checkpoints/:checkpoint_id/rollback",
+            axum::routing::post(post_checkpoint_rollback_handler),
+        )
         .with_state(state)
+}
+
+// ---------------------------------------------------------------------------
+// Story 1.13b: admin rollback handler. Loopback-bound, token-gated.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct RollbackBody {
+    reason: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RollbackResponse {
+    checkpoint_id: String,
+    rolled_back_at: i64,
+}
+
+async fn post_checkpoint_rollback_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Path((session_id, checkpoint_id)): Path<(String, String)>,
+    Json(body): Json<RollbackBody>,
+) -> Result<(StatusCode, Json<RollbackResponse>), (StatusCode, Json<ApiError>)> {
+    // Guard 1: admin token must be configured at boot.
+    if state.admin_token.is_empty() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiError {
+                error: "admin_token_not_configured".into(),
+            }),
+        ));
+    }
+    // Guard 2: loopback only.
+    if !remote.ip().is_loopback() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ApiError {
+                error: "forbidden_non_loopback".into(),
+            }),
+        ));
+    }
+    // Guard 3: token header match.
+    let token_hdr = headers
+        .get("X-Seasoned-Hand-Admin-Token")
+        .and_then(|h| h.to_str().ok());
+    if token_hdr != Some(state.admin_token.as_str()) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(ApiError {
+                error: "unauthorized_token".into(),
+            }),
+        ));
+    }
+    // Guard 4: reason length.
+    if body.reason.len() > 200 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "reason_too_long".into(),
+            }),
+        ));
+    }
+
+    // Guard 5: session state must NOT be RUNNING or VERIFYING.
+    let session_state = state
+        .db
+        .with_conn({
+            let sid = session_id.clone();
+            move |conn| -> rusqlite::Result<Option<String>> {
+                let mut stmt = conn.prepare("SELECT state FROM sessions WHERE id = ?")?;
+                let mut rows =
+                    stmt.query_map(rusqlite::params![sid], |row| row.get::<_, String>(0))?;
+                match rows.next() {
+                    Some(r) => Ok(Some(r?)),
+                    None => Ok(None),
+                }
+            }
+        })
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "rollback: session state query");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            )
+        })?;
+    match session_state.as_deref() {
+        Some("RUNNING") | Some("VERIFYING") => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(ApiError {
+                    error: "wrong_state".into(),
+                }),
+            ));
+        }
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "session_not_found".into(),
+                }),
+            ));
+        }
+        _ => {}
+    }
+
+    // Guard 6: sandbox must not be paused.
+    let paused = state.sandbox.is_paused(&session_id).await.map_err(|e| {
+        tracing::warn!(error = %e, "rollback: sandbox paused-state probe failed");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: "internal_error".into(),
+            }),
+        )
+    })?;
+    if paused {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "sandbox_paused".into(),
+            }),
+        ));
+    }
+
+    // All guards passed — dispatch the internal tool. The mask layer
+    // affects only what's exposed to the LLM, so direct dispatch works.
+    let ctx = seasoned_hand_core::tools::ToolContext {
+        session_id: session_id.clone(),
+        mask_ctx: seasoned_hand_core::dispatch::mask::MaskContext {
+            session_id: session_id.clone(),
+            iteration: 0,
+            mode: seasoned_hand_core::dispatch::mask::AgentMode::Internal,
+        },
+        events: state.events.clone(),
+        sandbox: state.sandbox.clone(),
+        search: state.search.clone(),
+        plan_manager: state.plan_manager.clone(),
+        checkpoint_labels: state.checkpoint_labels.clone(),
+        checkpoints: state.checkpoints.clone(),
+    };
+    let out = state
+        .dispatcher
+        .dispatch(
+            &ctx,
+            "checkpoint_rollback",
+            serde_json::json!({
+                "checkpoint_id": checkpoint_id,
+                "reason": body.reason,
+                "rolled_back_by": "admin:cli",
+            }),
+        )
+        .await;
+    if !out.ok {
+        let err_kind = out
+            .error
+            .as_ref()
+            .map(|e| e.kind.clone())
+            .unwrap_or_else(|| "tool_error".to_string());
+        let status = match err_kind.as_str() {
+            "checkpoint_not_found" => StatusCode::NOT_FOUND,
+            "reason_too_long" => StatusCode::BAD_REQUEST,
+            "revert_failed" => StatusCode::INTERNAL_SERVER_ERROR,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        return Err((status, Json(ApiError { error: err_kind })));
+    }
+    let rolled_back_at = out
+        .output
+        .get("rolled_back_at")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(RollbackResponse {
+            checkpoint_id,
+            rolled_back_at,
+        }),
+    ))
 }
 
 // ---------------------------------------------------------------------------

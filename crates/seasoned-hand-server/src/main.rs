@@ -66,6 +66,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut state = AppState::new(db, redis, sandbox, search, router, capabilities);
 
+    // Story 1.13b: load admin-token + rollback-flag env vars and
+    // apply via builder. Done in main.rs (not AppState::new) so tests
+    // don't race on process-wide env state.
+    let admin_token = std::env::var("SEASONED_HAND_ADMIN_TOKEN").unwrap_or_default();
+    state = state.with_admin_token(admin_token);
+    let rollback_flag = std::env::var("SEASONED_HAND_ROLLBACK_ON_VERIFIER_FAIL")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    state = state.with_rollback_on_verifier_fail(rollback_flag);
+
     // Phase 1 / story 1.9: when the verifier slot is enabled, load the
     // FAIL-biased system prompt from disk. Missing file is a startup-
     // fatal configuration error.
@@ -138,7 +148,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             state.verifier_system_prompt.clone(),
         );
         let worker = Worker::new(deps);
-        let gate = VerifierGate::new(state.db.clone(), state.events.clone(), state.runner.clone());
+        // Story 1.13b: production rollback handler — looks up the
+        // latest checkpoint for the session and dispatches the
+        // (LLM-masked) `checkpoint_rollback` tool. Attached
+        // unconditionally; the rollback only fires when
+        // `checkpoint_rollback_on_verifier_fail` (env-gated) is true.
+        let rollback_handler = std::sync::Arc::new(ProductionRollbackHandler::new(state.clone()))
+            as std::sync::Arc<dyn seasoned_hand_core::verifier::gate::RollbackHandler>;
+        let gate = VerifierGate::new(state.db.clone(), state.events.clone(), state.runner.clone())
+            .with_rollback(rollback_handler, state.checkpoint_rollback_on_verifier_fail);
         let redis = std::sync::Arc::new(state.redis.clone());
         let token = verifier_shutdown.clone();
         let gate_token = verifier_shutdown.clone();
@@ -162,9 +180,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(%addr, %database_url, %redis_url, "seasoned-hand-server starting");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // Story 1.13b: the rollback admin endpoint needs `ConnectInfo<SocketAddr>`
+    // to enforce the loopback guard, so we use
+    // `into_make_service_with_connect_info` instead of the plain Router.
+    axum::serve(
+        listener,
+        app(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     // Signal the verifier worker to drain and exit.
     verifier_shutdown.cancel();
@@ -199,4 +223,62 @@ async fn shutdown_signal() {
         tracing::warn!(%error, "failed to listen for shutdown signal");
     }
     tracing::info!("shutdown signal received");
+}
+
+/// Story 1.13b: production `RollbackHandler` for the VerifierGate's
+/// opt-in path. Looks up the latest non-rolled-back checkpoint and
+/// dispatches the (LLM-masked) `checkpoint_rollback` tool.
+struct ProductionRollbackHandler {
+    state: seasoned_hand_server::AppState,
+}
+
+impl ProductionRollbackHandler {
+    fn new(state: seasoned_hand_server::AppState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait::async_trait]
+impl seasoned_hand_core::verifier::gate::RollbackHandler for ProductionRollbackHandler {
+    async fn rollback_latest(&self, session_id: &str, reason: &str) -> bool {
+        let latest = match self.state.checkpoints.latest_for_session(session_id).await {
+            Ok(Some(cp)) => cp,
+            Ok(None) => {
+                tracing::warn!(%session_id, "no rollback candidate (no un-reverted checkpoints)");
+                return false;
+            }
+            Err(error) => {
+                tracing::warn!(%session_id, %error, "rollback: latest_for_session failed");
+                return false;
+            }
+        };
+        let ctx = seasoned_hand_core::tools::ToolContext {
+            session_id: session_id.to_string(),
+            mask_ctx: seasoned_hand_core::dispatch::mask::MaskContext {
+                session_id: session_id.to_string(),
+                iteration: 0,
+                mode: seasoned_hand_core::dispatch::mask::AgentMode::Internal,
+            },
+            events: self.state.events.clone(),
+            sandbox: self.state.sandbox.clone(),
+            search: self.state.search.clone(),
+            plan_manager: self.state.plan_manager.clone(),
+            checkpoint_labels: self.state.checkpoint_labels.clone(),
+            checkpoints: self.state.checkpoints.clone(),
+        };
+        let out = self
+            .state
+            .dispatcher
+            .dispatch(
+                &ctx,
+                "checkpoint_rollback",
+                serde_json::json!({
+                    "checkpoint_id": latest.id,
+                    "reason": reason,
+                    "rolled_back_by": "verifier",
+                }),
+            )
+            .await;
+        out.ok
+    }
 }

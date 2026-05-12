@@ -1157,8 +1157,9 @@ pub fn all() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("feature_mark_done", Arc::new(FeatureMarkDone));
     map.insert("progress_update", Arc::new(ProgressUpdate));
 
-    // ===== Checkpoint (1) — story 1.13 =====
+    // ===== Checkpoint (2) — story 1.13 + 1.13b =====
     map.insert("checkpoint_label", Arc::new(CheckpointLabel));
+    map.insert("checkpoint_rollback", Arc::new(CheckpointRollback));
 
     map
 }
@@ -1215,6 +1216,151 @@ impl Tool for CheckpointLabel {
             error: None,
         })
     }
+}
+
+/// Story 1.13b: revert a prior phase checkpoint via
+/// `git -C /workspace revert --no-commit <git_sha>` inside the sandbox.
+/// Registered in the catalog but MASKED from every LLM-facing
+/// `AgentMode` by [`crate::dispatch::mask::DefaultMaskPolicy`].
+/// Architecture §2.6 explicitly chose `git revert --no-commit` over
+/// `git reset --hard` so history is preserved and the agent sees a
+/// follow-up Misc event describing the revert.
+pub struct CheckpointRollback;
+
+#[async_trait]
+impl Tool for CheckpointRollback {
+    fn name(&self) -> &'static str {
+        "checkpoint_rollback"
+    }
+    fn description(&self) -> &'static str {
+        "Revert a prior checkpoint via `git revert --no-commit` inside the sandbox. \
+         Internal use only — masked from the LLM."
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "checkpoint_id":   { "type": "string" },
+                "reason":          { "type": "string", "maxLength": 200 },
+                "rolled_back_by":  { "type": "string", "default": "admin:cli" }
+            },
+            "required": ["checkpoint_id", "reason"],
+            "additionalProperties": false,
+        })
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let checkpoint_id = require_str(&args, "checkpoint_id")?;
+        let reason = require_str(&args, "reason")?;
+        if reason.len() > 200 {
+            return Ok(tool_err(
+                "reason_too_long",
+                json!({"max": 200, "got": reason.len()}),
+            ));
+        }
+        let rolled_back_by = args
+            .get("rolled_back_by")
+            .and_then(Value::as_str)
+            .unwrap_or("admin:cli")
+            .to_string();
+
+        let row = match ctx
+            .checkpoints
+            .get(&checkpoint_id)
+            .await
+            .map_err(|e| ToolError::Backend(format!("checkpoint get: {e}")))?
+        {
+            Some(r) => r,
+            None => {
+                return Ok(tool_err(
+                    "checkpoint_not_found",
+                    json!({"checkpoint_id": checkpoint_id}),
+                ));
+            }
+        };
+
+        // Run the revert against the sandbox's /v1/shell/exec. We pass
+        // through `sandbox_post`; non-zero exit codes are surfaced as
+        // `revert_failed` tool errors so the caller can act.
+        let revert_cmd = format!("git -C /workspace revert --no-commit {}", row.git_sha);
+        let shell_out = sandbox_post(ctx, "/v1/shell/exec", json!({"command": revert_cmd})).await?;
+        let exit_code = shell_out
+            .output
+            .get("exit_code")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        if !shell_out.ok || exit_code != 0 {
+            let stderr = shell_out
+                .output
+                .get("stderr")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            return Ok(tool_err(
+                "revert_failed",
+                json!({
+                    "checkpoint_id": checkpoint_id,
+                    "git_sha": row.git_sha,
+                    "exit_code": exit_code,
+                    "stderr": stderr,
+                }),
+            ));
+        }
+
+        let rolled_back_at = now_micros_for_rollback();
+        ctx.checkpoints
+            .mark_rolled_back(&checkpoint_id, rolled_back_at, &rolled_back_by)
+            .await
+            .map_err(|e| ToolError::Backend(format!("mark_rolled_back: {e}")))?;
+
+        // Emit Misc so build_messages surfaces the rollback to the
+        // agent's next iteration (architecture §2.6: agent must see a
+        // follow-up describing the revert).
+        let _ = ctx
+            .events
+            .append(crate::events::NewEvent {
+                session_id: ctx.session_id.clone(),
+                event_type: crate::events::EventType::Misc,
+                source: "checkpoint".into(),
+                data: json!({
+                    "kind": "checkpoint_rollback",
+                    "checkpoint_id": checkpoint_id,
+                    "git_sha": row.git_sha,
+                    "reason": reason,
+                    "rolled_back_by": rolled_back_by,
+                }),
+            })
+            .await;
+
+        Ok(ToolOutput {
+            ok: true,
+            output: json!({
+                "checkpoint_id": checkpoint_id,
+                "rolled_back_at": rolled_back_at,
+            }),
+            file_ref: None,
+            error: None,
+        })
+    }
+}
+
+fn tool_err(kind: &str, output: Value) -> ToolOutput {
+    ToolOutput {
+        ok: false,
+        output,
+        file_ref: None,
+        error: Some(ToolErrorPayload {
+            kind: kind.to_string(),
+            message: kind.to_string(),
+        }),
+    }
+}
+
+fn now_micros_for_rollback() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_micros() as i64)
+        .unwrap_or(0)
 }
 
 fn parse_phases(args: &Value) -> Result<Vec<Phase>, ToolError> {

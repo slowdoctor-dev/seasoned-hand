@@ -159,6 +159,7 @@ slots:
         plan_manager,
         mask_policy: Arc::new(DefaultMaskPolicy),
         checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
+        checkpoints: Arc::new(crate::checkpoint::CheckpointStore::new(db.clone())),
         redis: Arc::new(redis.clone()),
     });
 

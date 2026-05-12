@@ -26,7 +26,8 @@ async fn fixture() -> (ToolDispatcher, ToolContext) {
     })
     .await;
     let store = Arc::new(SqliteEventStore::new(pool.clone()));
-    let plan_manager = Arc::new(PlanManager::new(pool, store.clone()));
+    let plan_manager = Arc::new(PlanManager::new(pool.clone(), store.clone()));
+    let checkpoints = Arc::new(crate::checkpoint::CheckpointStore::new(pool));
     let sandbox = Arc::new(
         SandboxClient::new(
             "ghcr.io/agent-infra/sandbox:1.0.0.152",
@@ -47,6 +48,7 @@ async fn fixture() -> (ToolDispatcher, ToolContext) {
         search,
         plan_manager,
         checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
+        checkpoints,
     };
     let dispatcher = ToolDispatcher::new(register_builtin_tools());
     (dispatcher, ctx)
@@ -102,7 +104,8 @@ async fn fixture_with_hook() -> (ToolDispatcher, ToolContext, Arc<SqliteEventSto
     })
     .await;
     let store = Arc::new(SqliteEventStore::new(pool.clone()));
-    let plan_manager = Arc::new(PlanManager::new(pool, store.clone()));
+    let plan_manager = Arc::new(PlanManager::new(pool.clone(), store.clone()));
+    let checkpoints = Arc::new(crate::checkpoint::CheckpointStore::new(pool));
     let sandbox = Arc::new(
         SandboxClient::new(
             "ghcr.io/agent-infra/sandbox:1.0.0.152",
@@ -123,6 +126,7 @@ async fn fixture_with_hook() -> (ToolDispatcher, ToolContext, Arc<SqliteEventSto
         search,
         plan_manager,
         checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
+        checkpoints,
     };
     let dispatcher = ToolDispatcher::new(register_builtin_tools())
         .with_hook(Arc::new(hooks::EventEmittingHook::new(store.clone())));

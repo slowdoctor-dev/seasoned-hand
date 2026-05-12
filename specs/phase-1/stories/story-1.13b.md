@@ -1,6 +1,6 @@
 # Story 1.13b — Checkpoint rollback (internal tool + admin endpoint + opt-in Verifier path)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 1.13 (checkpoint create path + table), 1.5
 > (tool-mask layer — `checkpoint_rollback` is registered but never

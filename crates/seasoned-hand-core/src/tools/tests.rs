@@ -25,7 +25,8 @@ async fn ctx() -> (super::ToolContext, Arc<SqliteEventStore>) {
     })
     .await;
     let store = Arc::new(SqliteEventStore::new(pool.clone()));
-    let plan_manager = Arc::new(PlanManager::new(pool, store.clone()));
+    let plan_manager = Arc::new(PlanManager::new(pool.clone(), store.clone()));
+    let checkpoints = Arc::new(crate::checkpoint::CheckpointStore::new(pool));
     // Tests don't reach into the sandbox or hit the network — these clients
     // are inert handles. SandboxClient::new requires Docker; if unavailable,
     // fall back to a placeholder.
@@ -47,6 +48,7 @@ async fn ctx() -> (super::ToolContext, Arc<SqliteEventStore>) {
         search: Arc::new(search),
         plan_manager,
         checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
+        checkpoints,
     };
     (ctx, store)
 }
@@ -98,8 +100,9 @@ const EXPECTED_TOOLS: &[&str] = &[
     "plan_update",
     "feature_mark_done",
     "progress_update",
-    // checkpoint (1) — story 1.13
+    // checkpoint (2) — story 1.13 + 1.13b
     "checkpoint_label",
+    "checkpoint_rollback",
 ];
 
 #[test]
@@ -158,6 +161,11 @@ async fn stubs_return_not_implemented() {
         "progress_update",
         // Story 1.13: real one-shot label tool.
         "checkpoint_label",
+        // Story 1.13b: registered but masked from LLM; dispatch path is
+        // real (admin endpoint + opt-in Verifier-driven). Treated as
+        // `real` here so the stubs test doesn't try to invoke it
+        // against the empty fixture (it would 404 on checkpoint_id).
+        "checkpoint_rollback",
     ];
     for (name, tool) in reg.iter() {
         if real.contains(name) {
@@ -471,4 +479,192 @@ async fn progress_update_truncates_long_lines() {
     .into_owned();
     let last = text.lines().last().unwrap();
     assert!(last.ends_with('…'));
+}
+
+// ============================================================================
+// Story 1.13b: checkpoint_rollback tool body.
+// ============================================================================
+
+#[tokio::test]
+async fn checkpoint_rollback_returns_404_when_checkpoint_missing() {
+    let (cx, _events) = ctx().await;
+    let out = register_builtin_tools()
+        .get("checkpoint_rollback")
+        .unwrap()
+        .invoke(
+            serde_json::json!({"checkpoint_id": "does-not-exist", "reason": "manual"}),
+            &cx,
+        )
+        .await
+        .expect("invoke");
+    assert!(!out.ok, "missing id must return ok=false");
+    assert_eq!(
+        out.error.as_ref().map(|e| e.kind.as_str()),
+        Some("checkpoint_not_found")
+    );
+}
+
+#[tokio::test]
+async fn checkpoint_rollback_validates_reason_length() {
+    let (cx, _events) = ctx().await;
+    let too_long = "x".repeat(201);
+    let out = register_builtin_tools()
+        .get("checkpoint_rollback")
+        .unwrap()
+        .invoke(
+            serde_json::json!({"checkpoint_id": "any", "reason": too_long}),
+            &cx,
+        )
+        .await
+        .expect("invoke");
+    assert!(!out.ok);
+    assert_eq!(
+        out.error.as_ref().map(|e| e.kind.as_str()),
+        Some("reason_too_long")
+    );
+}
+
+#[tokio::test]
+async fn checkpoint_rollback_happy_path_marks_row_and_emits_misc() {
+    use wiremock::matchers::{body_partial_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // Stand up a wiremock sandbox HTTP API that returns a clean
+    // /v1/shell/exec for the `git revert` command the tool issues.
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/shell/exec"))
+        .and(body_partial_json(serde_json::json!({
+            "command": "git -C /workspace revert --no-commit aaaa1111"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "exit_code": 0, "stdout": "", "stderr": ""
+        })))
+        .mount(&mock)
+        .await;
+
+    let (cx, events) = ctx().await;
+    // Point the sandbox handle at the wiremock so the tool's
+    // `/v1/shell/exec` call lands there.
+    cx.sandbox
+        .insert_handle_for_test(crate::sandbox::SandboxHandle {
+            session_id: "s1".into(),
+            container_id: "c1".into(),
+            api_url: mock.uri(),
+            novnc_url: "http://127.0.0.1:2".into(),
+            ttyd_url: "ws://127.0.0.1:3".into(),
+            workspace_host_path: std::env::temp_dir().join("s1"),
+        })
+        .await;
+
+    // Seed a checkpoint row.
+    let cp_id = cx
+        .checkpoints
+        .insert(crate::checkpoint::NewCheckpoint {
+            session_id: "s1".into(),
+            plan_phase_id: 1,
+            git_sha: "aaaa1111".into(),
+            label: None,
+            triggered_by_event_id: 1,
+        })
+        .await
+        .unwrap();
+
+    let out = register_builtin_tools()
+        .get("checkpoint_rollback")
+        .unwrap()
+        .invoke(
+            serde_json::json!({
+                "checkpoint_id": cp_id,
+                "reason": "manual rollback",
+                "rolled_back_by": "admin:cli",
+            }),
+            &cx,
+        )
+        .await
+        .expect("invoke");
+
+    assert!(out.ok, "tool should succeed; got {out:?}");
+    let row = cx.checkpoints.get(&cp_id).await.unwrap().unwrap();
+    assert!(
+        row.rolled_back_at.is_some(),
+        "rolled_back_at must be set after revert"
+    );
+    assert_eq!(row.rolled_back_by.as_deref(), Some("admin:cli"));
+
+    let evs = events
+        .query(
+            "s1",
+            crate::events::EventQuery {
+                after_id: None,
+                event_type: Some(crate::events::EventType::Misc),
+                limit: Some(50),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        evs.iter().any(|e| {
+            e.data.get("kind").and_then(serde_json::Value::as_str) == Some("checkpoint_rollback")
+                && e.data.get("git_sha").and_then(serde_json::Value::as_str) == Some("aaaa1111")
+        }),
+        "checkpoint_rollback Misc event must be emitted with the git_sha"
+    );
+}
+
+#[tokio::test]
+async fn checkpoint_rollback_surfaces_revert_failure() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/shell/exec"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "exit_code": 1, "stdout": "", "stderr": "error: conflicting changes"
+        })))
+        .mount(&mock)
+        .await;
+
+    let (cx, _events) = ctx().await;
+    cx.sandbox
+        .insert_handle_for_test(crate::sandbox::SandboxHandle {
+            session_id: "s1".into(),
+            container_id: "c1".into(),
+            api_url: mock.uri(),
+            novnc_url: "http://127.0.0.1:2".into(),
+            ttyd_url: "ws://127.0.0.1:3".into(),
+            workspace_host_path: std::env::temp_dir().join("s1"),
+        })
+        .await;
+    let cp_id = cx
+        .checkpoints
+        .insert(crate::checkpoint::NewCheckpoint {
+            session_id: "s1".into(),
+            plan_phase_id: 1,
+            git_sha: "bbbb2222".into(),
+            label: None,
+            triggered_by_event_id: 1,
+        })
+        .await
+        .unwrap();
+
+    let out = register_builtin_tools()
+        .get("checkpoint_rollback")
+        .unwrap()
+        .invoke(
+            serde_json::json!({"checkpoint_id": cp_id, "reason": "x"}),
+            &cx,
+        )
+        .await
+        .expect("invoke");
+
+    assert!(!out.ok);
+    assert_eq!(
+        out.error.as_ref().map(|e| e.kind.as_str()),
+        Some("revert_failed")
+    );
+    // Row must NOT be marked rolled-back on failure.
+    let row = cx.checkpoints.get(&cp_id).await.unwrap().unwrap();
+    assert!(row.rolled_back_at.is_none());
 }

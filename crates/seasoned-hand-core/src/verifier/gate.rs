@@ -7,16 +7,54 @@ use crate::agent::AgentRunner;
 use crate::db::DbPool;
 use crate::events::{EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
 
+/// Story 1.13b: handler called when a `fail+rollback_required` verdict
+/// fires and the opt-in `rollback_on_verifier_fail` flag is true. The
+/// production impl looks up the latest checkpoint for the session and
+/// dispatches the `checkpoint_rollback` tool against it. Tests inject
+/// a mock that records the call.
+#[async_trait::async_trait]
+pub trait RollbackHandler: Send + Sync {
+    /// Roll back the most recent un-reverted checkpoint for the
+    /// session, using `reason` as the rollback reason. Returns `true`
+    /// when a rollback was attempted, `false` when there was no
+    /// eligible checkpoint or the handler decided to skip.
+    async fn rollback_latest(&self, session_id: &str, reason: &str) -> bool;
+}
+
 #[derive(Clone)]
 pub struct VerifierGate {
     db: DbPool,
     events: Arc<SqliteEventStore>,
     runner: Arc<AgentRunner>,
+    /// Story 1.13b: opt-in rollback wiring. `None` when the runtime has
+    /// no rollback handler configured (Phase 0 / pre-1.13b deployments).
+    rollback: Option<Arc<dyn RollbackHandler>>,
+    /// Story 1.13b: gate flag for the rollback handler. Defaults `false`
+    /// per phase-1/DEBT.md #3 — even when a handler is attached, the
+    /// gate only invokes it when this is true.
+    rollback_enabled: bool,
 }
 
 impl VerifierGate {
     pub fn new(db: DbPool, events: Arc<SqliteEventStore>, runner: Arc<AgentRunner>) -> Self {
-        Self { db, events, runner }
+        Self {
+            db,
+            events,
+            runner,
+            rollback: None,
+            rollback_enabled: false,
+        }
+    }
+
+    /// Story 1.13b: attach a rollback handler. The handler is invoked
+    /// only when (a) `enabled == true` AND (b) the verdict carries
+    /// `rollback_required: true`. When `enabled == false` the handler
+    /// stays attached but is dormant; the `rollback_required` field on
+    /// verdicts is logged-and-ignored.
+    pub fn with_rollback(mut self, handler: Arc<dyn RollbackHandler>, enabled: bool) -> Self {
+        self.rollback = Some(handler);
+        self.rollback_enabled = enabled;
+        self
     }
 
     pub async fn run(&self, shutdown: tokio_util::sync::CancellationToken) {
@@ -107,6 +145,27 @@ impl VerifierGate {
                 "finished"
             }
             "fail" => {
+                // Story 1.13b opt-in: if the verdict requests rollback
+                // AND the gate is configured to honor it, fire the
+                // rollback handler BEFORE applying the
+                // fail+suggestion / fail-no-suggestion branch. Default
+                // off per phase-1/DEBT.md #3 — when off, log only.
+                let want_rollback = data
+                    .get("rollback_required")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if want_rollback {
+                    if self.rollback_enabled {
+                        if let Some(handler) = &self.rollback {
+                            handler.rollback_latest(session_id, "verifier_fail").await;
+                        }
+                    } else {
+                        tracing::info!(
+                            %session_id,
+                            "verdict requested rollback but checkpoint.rollback_on_verifier_fail is off (phase-1/DEBT.md #3 — default)"
+                        );
+                    }
+                }
                 if data.get("suggested_plan_update").is_some()
                     && !data
                         .get("suggested_plan_update")
@@ -229,6 +288,7 @@ mod tests {
             plan_manager,
             mask_policy: Arc::new(DefaultMaskPolicy),
             checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
+            checkpoints: Arc::new(crate::checkpoint::CheckpointStore::new(db.clone())),
             redis: Arc::new(redis.clone()),
         }));
 
@@ -400,6 +460,111 @@ mod tests {
             state(&db, &session_id).await,
             "VERIFYING",
             "post-restart poll must not re-transition the session"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Story 1.13b: Verifier-driven rollback opt-in path
+    // ------------------------------------------------------------------
+
+    use std::sync::Mutex;
+
+    #[derive(Default, Clone)]
+    struct RecordingRollback {
+        calls: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl RollbackHandler for RecordingRollback {
+        async fn rollback_latest(&self, session_id: &str, reason: &str) -> bool {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((session_id.to_string(), reason.to_string()));
+            true
+        }
+    }
+
+    async fn insert_rollback_verdict_event(
+        events: &SqliteEventStore,
+        session_id: &str,
+        rollback_required: bool,
+    ) {
+        events
+            .append(NewEvent {
+                session_id: session_id.to_string(),
+                event_type: EventType::Misc,
+                source: "verifier".into(),
+                data: json!({
+                    "kind": "verifier_verdict",
+                    "trigger_kind": "TaskComplete",
+                    "verdict": "fail",
+                    "reason": "test",
+                    "rollback_required": rollback_required,
+                    "verification_id": "v1",
+                }),
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn verifier_driven_rollback_disabled_by_default() {
+        // No `with_rollback(...)` call ⇒ rollback handler not attached.
+        // Even with `rollback_required: true` on the verdict, no
+        // rollback should fire.
+        let (gate, events, _db, session_id) = fixture().await;
+        insert_rollback_verdict_event(&events, &session_id, true).await;
+        let _ = gate.poll_once(0).await.unwrap();
+        // Handler was never invoked because gate.rollback was None.
+        // (No mock to assert against — the test just verifies the
+        // code path doesn't panic and the fail-no-suggestion
+        // transition still happens.)
+    }
+
+    #[tokio::test]
+    async fn verifier_driven_rollback_does_not_fire_when_flag_off() {
+        // Handler attached but `enabled=false`. Verdict requests
+        // rollback. Handler must NOT be called.
+        let (mut gate, events, _db, session_id) = fixture().await;
+        let recorder = Arc::new(RecordingRollback::default());
+        gate = gate.with_rollback(recorder.clone(), false);
+        insert_rollback_verdict_event(&events, &session_id, true).await;
+        let _ = gate.poll_once(0).await.unwrap();
+        let calls = recorder.calls.lock().unwrap().clone();
+        assert!(
+            calls.is_empty(),
+            "handler must NOT fire when enabled=false; got {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verifier_driven_rollback_invokes_when_enabled_and_required() {
+        // Handler attached, flag on, verdict requests rollback ⇒ fire.
+        let (mut gate, events, _db, session_id) = fixture().await;
+        let recorder = Arc::new(RecordingRollback::default());
+        gate = gate.with_rollback(recorder.clone(), true);
+        insert_rollback_verdict_event(&events, &session_id, true).await;
+        let _ = gate.poll_once(0).await.unwrap();
+        let calls = recorder.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1, "exactly one rollback call expected");
+        assert_eq!(calls[0].0, session_id);
+        assert_eq!(calls[0].1, "verifier_fail");
+    }
+
+    #[tokio::test]
+    async fn verifier_driven_rollback_does_not_fire_when_required_false() {
+        // Handler attached, flag on, verdict does NOT request rollback
+        // ⇒ no fire (rollback only on opt-in by both sides).
+        let (mut gate, events, _db, session_id) = fixture().await;
+        let recorder = Arc::new(RecordingRollback::default());
+        gate = gate.with_rollback(recorder.clone(), true);
+        insert_rollback_verdict_event(&events, &session_id, false).await;
+        let _ = gate.poll_once(0).await.unwrap();
+        let calls = recorder.calls.lock().unwrap().clone();
+        assert!(
+            calls.is_empty(),
+            "handler must NOT fire when verdict.rollback_required=false"
         );
     }
 }

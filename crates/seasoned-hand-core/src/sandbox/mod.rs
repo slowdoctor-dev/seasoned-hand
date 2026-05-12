@@ -273,6 +273,25 @@ impl SandboxClient {
         Ok(handle)
     }
 
+    /// Story 1.13b: cheap pause-state probe used by the admin rollback
+    /// endpoint to reject 409 sandbox_paused early. Returns `Ok(false)`
+    /// when the container is missing or the docker daemon is
+    /// unreachable — those aren't the "paused" failure mode the gate
+    /// exists to catch, and treating them as "not paused" lets the
+    /// rollback attempt proceed (a real revert failure will surface
+    /// downstream as `revert_failed`).
+    pub async fn is_paused(&self, session_id: &str) -> Result<bool, SandboxError> {
+        let name = container_name(session_id);
+        match self.docker.inspect_container(&name, None).await {
+            Ok(inspect) => Ok(inspect
+                .state
+                .as_ref()
+                .and_then(|s| s.paused)
+                .unwrap_or(false)),
+            Err(_) => Ok(false),
+        }
+    }
+
     pub async fn pause(&self, session_id: &str) -> Result<(), SandboxError> {
         let name = container_name(session_id);
         let inspect = self.docker.inspect_container(&name, None).await?;
