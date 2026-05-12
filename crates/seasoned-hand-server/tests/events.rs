@@ -21,7 +21,15 @@ async fn boot() -> (String, AppState) {
     // Tests use an unreachable redis URL — append() will log a publish-failure
     // warning but still succeed (PRINCIPLE #10 failure-tolerance).
     let redis = pubsub::RedisPool::new("redis://127.0.0.1:6").unwrap();
-    let state = AppState::new(pool, redis);
+    let sandbox = seasoned_hand_core::sandbox::SandboxClient::new(
+        "ghcr.io/agent-infra/sandbox:1.0.0.152",
+        std::env::temp_dir(),
+    )
+    .unwrap();
+    let search = seasoned_hand_core::search::SearchClient::new(
+        seasoned_hand_core::search::SearchProvider::Brave { api_key: None },
+    );
+    let state = AppState::new(pool, redis, sandbox, search);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

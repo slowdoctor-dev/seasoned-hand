@@ -13,6 +13,40 @@ use serde_json::{Value, json};
 use super::{Tool, ToolContext, ToolError, ToolErrorPayload, ToolOutput};
 use crate::events::{EventStore, EventType, NewEvent};
 
+async fn sandbox_post(ctx: &ToolContext, path: &str, body: Value) -> Result<ToolOutput, ToolError> {
+    let handle = ctx.sandbox.get(&ctx.session_id).await.ok_or_else(|| {
+        ToolError::Backend(format!("sandbox not ready for session {}", ctx.session_id))
+    })?;
+    let url = format!("{}{}", handle.api_url, path);
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| ToolError::Backend(e.to_string()))?;
+    let status = resp.status();
+    let parsed: Value = resp.json().await.unwrap_or(Value::Null);
+    if status.is_success() {
+        Ok(ToolOutput {
+            ok: true,
+            output: parsed,
+            file_ref: None,
+            error: None,
+        })
+    } else {
+        Ok(ToolOutput {
+            ok: false,
+            output: parsed,
+            file_ref: None,
+            error: Some(ToolErrorPayload {
+                kind: "sandbox_http".into(),
+                message: format!("HTTP {}", status.as_u16()),
+            }),
+        })
+    }
+}
+
 fn require_str(args: &Value, key: &str) -> Result<String, ToolError> {
     args.get(key)
         .and_then(Value::as_str)
@@ -203,6 +237,152 @@ impl Tool for GlossaryLookup {
     }
 }
 
+// ===== sandbox-backed tools (story 0.9 — representative subset) =====
+//
+// Phase-0 story 0.9 wires 4 representative sandbox tools to prove the
+// dispatcher + sandbox_post() pattern works end-to-end. The remaining
+// 18 sandbox-backed tools (3 file + 4 shell + 12 browser) stay as
+// StubTools — a follow-up story will use the same pattern to wire them
+// once AIO Sandbox API paths are verified end-to-end. See DEBT.md.
+
+pub struct FileRead;
+#[async_trait]
+impl Tool for FileRead {
+    fn name(&self) -> &'static str {
+        "file_read"
+    }
+    fn description(&self) -> &'static str {
+        "Read the contents of a file in the sandbox workspace."
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "path": { "type": "string" } },
+            "required": ["path"],
+            "additionalProperties": false,
+        })
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let path = require_str(&args, "path")?;
+        sandbox_post(ctx, "/v1/file/read", json!({"file": path})).await
+    }
+}
+
+pub struct FileWrite;
+#[async_trait]
+impl Tool for FileWrite {
+    fn name(&self) -> &'static str {
+        "file_write"
+    }
+    fn description(&self) -> &'static str {
+        "Write content to a file in the sandbox workspace, overwriting if it exists."
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "content": { "type": "string" }
+            },
+            "required": ["path", "content"],
+            "additionalProperties": false,
+        })
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let path = require_str(&args, "path")?;
+        let content = require_str(&args, "content")?;
+        sandbox_post(
+            ctx,
+            "/v1/file/write",
+            json!({"file": path, "content": content}),
+        )
+        .await
+    }
+}
+
+pub struct ShellExec;
+#[async_trait]
+impl Tool for ShellExec {
+    fn name(&self) -> &'static str {
+        "shell_exec"
+    }
+    fn description(&self) -> &'static str {
+        "Run a shell command in the sandbox and return its output."
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "cmd": { "type": "string" },
+                "cwd": { "type": "string" }
+            },
+            "required": ["cmd"],
+            "additionalProperties": false,
+        })
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let cmd = require_str(&args, "cmd")?;
+        let mut body = json!({"command": cmd});
+        if let Some(cwd) = args.get("cwd").and_then(Value::as_str) {
+            body["cwd"] = Value::String(cwd.into());
+        }
+        sandbox_post(ctx, "/v1/shell/exec", body).await
+    }
+}
+
+pub struct InfoSearchWeb;
+#[async_trait]
+impl Tool for InfoSearchWeb {
+    fn name(&self) -> &'static str {
+        "info_search_web"
+    }
+    fn description(&self) -> &'static str {
+        "Web search via the configured provider (Brave default)."
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string" },
+                "max_results": { "type": "integer", "minimum": 1, "maximum": 20 }
+            },
+            "required": ["query"],
+            "additionalProperties": false,
+        })
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let query = require_str(&args, "query")?;
+        let max_results = args
+            .get("max_results")
+            .and_then(Value::as_u64)
+            .map(|n| n as usize)
+            .unwrap_or(10);
+        match ctx.search.web_search(&query, max_results).await {
+            Ok(hits) => Ok(ToolOutput {
+                ok: true,
+                output: serde_json::to_value(&hits).unwrap_or(Value::Null),
+                file_ref: None,
+                error: None,
+            }),
+            Err(e) => Ok(ToolOutput {
+                ok: false,
+                output: Value::Null,
+                file_ref: None,
+                error: Some(ToolErrorPayload {
+                    kind: match &e {
+                        crate::search::SearchError::MissingApiKey(_) => "missing_api_key".into(),
+                        crate::search::SearchError::ProviderNotImplemented(_) => {
+                            "not_implemented".into()
+                        }
+                        _ => "search_failed".into(),
+                    },
+                    message: e.to_string(),
+                }),
+            }),
+        }
+    }
+}
+
 // ===== stub tool (story 0.7) =====
 //
 // Used for the 28 tools whose real backends land in stories 0.8 / 0.9 /
@@ -273,32 +453,11 @@ pub fn all() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("sop_read", Arc::new(SopRead));
     map.insert("glossary_lookup", Arc::new(GlossaryLookup));
 
-    // ===== File (5) — backend: Sandbox (story 0.8 + 0.9) =====
-    let path_only = obj_schema(json!({ "path": { "type": "string" } }), &["path"]);
-    map.insert(
-        "file_read",
-        stub(
-            "file_read",
-            "Read the contents of a file in the sandbox workspace.",
-            path_only.clone(),
-            "story 0.8/0.9",
-        ),
-    );
-    map.insert(
-        "file_write",
-        stub(
-            "file_write",
-            "Write content to a file in the sandbox workspace, overwriting if it exists.",
-            obj_schema(
-                json!({
-                    "path": { "type": "string" },
-                    "content": { "type": "string" }
-                }),
-                &["path", "content"],
-            ),
-            "story 0.8/0.9",
-        ),
-    );
+    // ===== File (5) — backend: Sandbox =====
+    // Real: file_read, file_write (story 0.9). Stubs: file_str_replace,
+    // file_find_in_content, file_find_by_name — pending 0.9 follow-up.
+    map.insert("file_read", Arc::new(FileRead));
+    map.insert("file_write", Arc::new(FileWrite));
     map.insert(
         "file_str_replace",
         stub(
@@ -346,22 +505,10 @@ pub fn all() -> HashMap<&'static str, Arc<dyn Tool>> {
         ),
     );
 
-    // ===== Shell (5) — backend: Sandbox (story 0.8 + 0.9) =====
-    map.insert(
-        "shell_exec",
-        stub(
-            "shell_exec",
-            "Run a shell command in the sandbox and return its output.",
-            obj_schema(
-                json!({
-                    "cmd": { "type": "string" },
-                    "cwd": { "type": "string" }
-                }),
-                &["cmd"],
-            ),
-            "story 0.8/0.9",
-        ),
-    );
+    // ===== Shell (5) — backend: Sandbox =====
+    // Real: shell_exec (story 0.9). Stubs: shell_view/wait/write_to_process/
+    // kill_process — pending 0.9 follow-up.
+    map.insert("shell_exec", Arc::new(ShellExec));
     let process_id_only = obj_schema(
         json!({ "process_id": { "type": "string" } }),
         &["process_id"],
@@ -545,22 +692,8 @@ pub fn all() -> HashMap<&'static str, Arc<dyn Tool>> {
         ),
     );
 
-    // ===== Search (1) — backend: Search client (story 0.9) =====
-    map.insert(
-        "info_search_web",
-        stub(
-            "info_search_web",
-            "Web search via the configured provider (Brave or Tavily).",
-            obj_schema(
-                json!({
-                    "query": { "type": "string" },
-                    "max_results": { "type": "integer", "minimum": 1, "maximum": 20 }
-                }),
-                &["query"],
-            ),
-            "story 0.9",
-        ),
-    );
+    // ===== Search (1) — backend: Search client (story 0.9 real) =====
+    map.insert("info_search_web", Arc::new(InfoSearchWeb));
 
     // ===== Deploy (2) — Phase 0 stubs (architecture §4.3 — real impl Phase 1+) =====
     map.insert(

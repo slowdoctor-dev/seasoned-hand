@@ -2,9 +2,11 @@
 //! refs: /specs/phase-0/architecture.md §2
 
 pub mod db;
+pub mod dispatch;
 pub mod events;
 pub mod pubsub;
 pub mod sandbox;
+pub mod search;
 pub mod tools;
 
 /// Returns the core crate version.

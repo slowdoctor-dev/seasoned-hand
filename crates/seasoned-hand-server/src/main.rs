@@ -2,7 +2,10 @@
 //! refs: /specs/phase-0/architecture.md §4.1
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
+use seasoned_hand_core::sandbox::SandboxClient;
+use seasoned_hand_core::search::SearchClient;
 use seasoned_hand_core::{db, pubsub};
 use seasoned_hand_server::{AppState, app};
 use tracing_subscriber::EnvFilter;
@@ -15,14 +18,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "sqlite:./data/seasoned-hand.db".to_string());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+    let sandbox_image = std::env::var("AIO_SANDBOX_IMAGE")
+        .unwrap_or_else(|_| "ghcr.io/agent-infra/sandbox:1.0.0.152".to_string());
+    let workspace_root: PathBuf = std::env::var("SANDBOX_WORKSPACE_HOST")
+        .unwrap_or_else(|_| "./data/workspaces".into())
+        .into();
 
     let db = db::open(&database_url).await?;
     let redis = pubsub::RedisPool::new(&redis_url)?;
     if let Err(e) = redis.ping().await {
         tracing::warn!(error = %e, %redis_url, "redis ping failed at startup; healthz will report degraded until reachable");
     }
+    let sandbox = SandboxClient::new(sandbox_image, workspace_root)?;
+    let search = SearchClient::brave_from_env();
 
-    let state = AppState::new(db, redis);
+    let state = AppState::new(db, redis, sandbox, search);
 
     let addr = bind_addr()?;
     tracing::info!(%addr, %database_url, %redis_url, "seasoned-hand-server starting");

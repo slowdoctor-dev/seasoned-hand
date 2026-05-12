@@ -12,6 +12,8 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::events::sqlite::SqliteEventStore;
+use crate::sandbox::SandboxClient;
+use crate::search::SearchClient;
 
 #[derive(Debug, Serialize)]
 pub struct ToolOutput {
@@ -50,6 +52,8 @@ pub enum ToolError {
 pub struct ToolContext {
     pub session_id: String,
     pub events: Arc<SqliteEventStore>,
+    pub sandbox: Arc<SandboxClient>,
+    pub search: Arc<SearchClient>,
 }
 
 #[async_trait]

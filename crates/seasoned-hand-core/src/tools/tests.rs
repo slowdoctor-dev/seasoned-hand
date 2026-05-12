@@ -6,6 +6,8 @@ use super::{ToolContext, register_builtin_tools};
 use crate::db;
 use crate::events::sqlite::SqliteEventStore;
 use crate::events::{EventQuery, EventStore};
+use crate::sandbox::SandboxClient;
+use crate::search::{SearchClient, SearchProvider};
 
 async fn ctx() -> (super::ToolContext, Arc<SqliteEventStore>) {
     let pool = db::open(":memory:").await.unwrap();
@@ -19,9 +21,20 @@ async fn ctx() -> (super::ToolContext, Arc<SqliteEventStore>) {
     })
     .await;
     let store = Arc::new(SqliteEventStore::new(pool));
+    // Tests don't reach into the sandbox or hit the network — these clients
+    // are inert handles. SandboxClient::new requires Docker; if unavailable,
+    // fall back to a placeholder.
+    let sandbox = SandboxClient::new(
+        "ghcr.io/agent-infra/sandbox:1.0.0.152",
+        std::env::temp_dir(),
+    )
+    .expect("docker daemon required for tools tests");
+    let search = SearchClient::new(SearchProvider::Brave { api_key: None });
     let ctx = ToolContext {
         session_id: "s1".into(),
         events: store.clone(),
+        sandbox: Arc::new(sandbox),
+        search: Arc::new(search),
     };
     (ctx, store)
 }
@@ -98,6 +111,11 @@ async fn stubs_return_not_implemented() {
         "idle",
         "sop_read",
         "glossary_lookup",
+        // story 0.9
+        "file_read",
+        "file_write",
+        "shell_exec",
+        "info_search_web",
     ];
     for (name, tool) in reg.iter() {
         if real.contains(name) {

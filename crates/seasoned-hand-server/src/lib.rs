@@ -12,8 +12,12 @@ use axum::{
     routing::get,
 };
 use seasoned_hand_core::db::DbPool;
+use seasoned_hand_core::dispatch::ToolDispatcher;
 use seasoned_hand_core::events::{EventQuery, EventStore, EventType, sqlite::SqliteEventStore};
 use seasoned_hand_core::pubsub::RedisPool;
+use seasoned_hand_core::sandbox::SandboxClient;
+use seasoned_hand_core::search::SearchClient;
+use seasoned_hand_core::tools::register_builtin_tools;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
@@ -21,12 +25,25 @@ pub struct AppState {
     pub db: DbPool,
     pub redis: RedisPool,
     pub events: Arc<SqliteEventStore>,
+    pub sandbox: Arc<SandboxClient>,
+    pub search: Arc<SearchClient>,
+    pub dispatcher: Arc<ToolDispatcher>,
 }
 
 impl AppState {
-    pub fn new(db: DbPool, redis: RedisPool) -> Self {
+    pub fn new(db: DbPool, redis: RedisPool, sandbox: SandboxClient, search: SearchClient) -> Self {
         let events = Arc::new(SqliteEventStore::with_redis(db.clone(), redis.clone()));
-        Self { db, redis, events }
+        let sandbox = Arc::new(sandbox);
+        let search = Arc::new(search);
+        let dispatcher = Arc::new(ToolDispatcher::new(register_builtin_tools()));
+        Self {
+            db,
+            redis,
+            events,
+            sandbox,
+            search,
+            dispatcher,
+        }
     }
 }
 

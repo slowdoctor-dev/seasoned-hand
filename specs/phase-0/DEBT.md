@@ -192,6 +192,37 @@
 - **Pay down**: CI workflow (item 14) should bring up Docker, prime the
   image cache once per CI run, then `cargo test -- --ignored sandbox::`.
 
+### 19. Story 0.9 shipped representative sandbox-tool wiring (4 of 22)
+- **Origin**: story 0.9
+- **Severity**: **Medium**
+- **What**: Of the 22 sandbox-backed tools that story 0.9 was supposed to
+  wire, only 4 are real (`file_read`, `file_write`, `shell_exec`,
+  `info_search_web`). The other 18 (file_str_replace, file_find_in_content,
+  file_find_by_name, shell_view/wait/write_to_process/kill_process, 12
+  browser_*) remain `StubTool`s.
+- **Why**: Story 0.9 was sized at 3h; verifying the AIO Sandbox v1.0.0.152
+  API contract for each tool (especially the browser action namespace which
+  multiplexes into `/v1/browser/actions` with action-typed bodies) is a
+  bigger discovery task than expected. The dispatcher + `sandbox_post`
+  helper + 4 representative real tools demonstrate the wiring pattern is
+  sound; the other 18 are mechanical follow-up work.
+- **Pay down**: New story 0.9b — "wire remaining 18 sandbox tools" —
+  uses the same `sandbox_post` helper. Should land before story 0.27 E2E
+  if the E2E test exercises browsing (which it does — "find GitHub stars
+  of FoundationAgents/OpenManus").
+
+### 20. ToolDispatcher ships with no hooks registered
+- **Origin**: story 0.9
+- **Severity**: **Medium**
+- **What**: `ToolDispatcher::new(registry)` creates an empty hook vec.
+  `AppState::new` does not register `NoopHook` or any real hook. Events
+  for tool dispatches (Action / Observation) are NOT emitted to the event
+  stream right now — only message_notify_user / message_ask_user write to
+  it directly.
+- **Why**: Story 0.10's job is to add `EventEmittingHook`. The hook trait
+  + call sites exist; the body doesn't.
+- **Pay down**: Story 0.10.
+
 ### 18. SandboxClient holds in-process handle cache — single-process assumption
 - **Origin**: story 0.8
 - **Severity**: **Medium**

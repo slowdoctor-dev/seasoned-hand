@@ -1,6 +1,10 @@
 # Story 0.9 — Tool dispatcher (5-backend routing + sandbox + search + hooks scaffold)
 
-> **Status**: ready
+> **Status**: done (representative scope — see Debt items 19–20)
+> **Verified API paths** (against agent-infra/sandbox sdk/python):
+> - File: `POST /v1/file/{read,write,replace,grep,find}`
+> - Shell: `POST /v1/shell/{exec,view,wait,write,kill}`
+> - Browser: `POST /v1/browser/{actions,restart}` (actions is multi-typed)
 > **Estimated**: 3 hours
 > **Dependencies**: stories 0.4 (events), 0.6 (Tool trait), 0.7 (33 tools), 0.8 (sandbox client)
 > **Phase**: 0
