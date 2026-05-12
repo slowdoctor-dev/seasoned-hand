@@ -1,6 +1,6 @@
 # Story 0.13 — Capability auto-detection
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: story 0.11 (LLM client), story 0.12 (slot router)
 > **Phase**: 0

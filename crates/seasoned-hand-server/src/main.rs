@@ -4,7 +4,11 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use seasoned_hand_core::router::SlotRouter;
+use seasoned_hand_core::capability::{
+    CapabilityProbe, assert_main_supports_tool_calling, warn_implied_slot_capability_mismatches,
+};
+use seasoned_hand_core::llm::LlmClient;
+use seasoned_hand_core::router::{SlotName, SlotRouter};
 use seasoned_hand_core::sandbox::SandboxClient;
 use seasoned_hand_core::search::SearchClient;
 use seasoned_hand_core::{db, pubsub};
@@ -47,8 +51,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!(%slots_path, "slots config not found; using default (main -> agent-primary)");
         SlotRouter::default_for_bifrost()
     };
+    let main_slot = router.resolve(SlotName::Main);
+    let llm = LlmClient::new(main_slot.base_url.clone(), main_slot.api_key.clone());
+    let probe = CapabilityProbe::new(llm);
+    let capabilities = match probe.probe_models().await {
+        Ok(probed) => probed,
+        Err(error) => {
+            tracing::warn!(%error, "capability probe failed; falling back to built-in table");
+            Default::default()
+        }
+    };
+    assert_main_supports_tool_calling(&router, &capabilities)?;
+    warn_implied_slot_capability_mismatches(&router, &capabilities);
 
-    let state = AppState::new(db, redis, sandbox, search, router);
+    let state = AppState::new(db, redis, sandbox, search, router, capabilities);
 
     let addr = bind_addr()?;
     tracing::info!(%addr, %database_url, %redis_url, "seasoned-hand-server starting");

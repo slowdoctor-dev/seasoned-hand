@@ -30,7 +30,7 @@ async fn boot() -> (String, AppState) {
         seasoned_hand_core::search::SearchProvider::Brave { api_key: None },
     );
     let router = seasoned_hand_core::router::SlotRouter::default_for_bifrost();
-    let state = AppState::new(pool, redis, sandbox, search, router);
+    let state = AppState::new(pool, redis, sandbox, search, router, Default::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

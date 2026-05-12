@@ -230,6 +230,20 @@
   `write_observation_file(call_id, content)` helper to the hook and replace
   the inline truncation with the file_ref path.
 
+### 22. Capability table assumes Bifrost cloud aliases support tool calling
+- **Origin**: story 0.13
+- **Severity**: **Low**
+- **What**: `built_in_capabilities()` treats `agent-primary` and
+  `agent-fallback` as ToolCalling + Vision + LongContext aliases so the
+  Phase 0 default router (`main -> agent-primary`) can pass startup
+  validation even when Bifrost `/v1/models` returns aliases instead of
+  provider model IDs.
+- **Why**: Story 0.13 is a static startup gate only; real probing with a
+  dummy tool call is explicitly out of scope because it costs money.
+- **Pay down**: Phase 1 — resolve Bifrost aliases to their configured
+  provider model IDs before checking capabilities, or perform a cheap
+  provider-supported metadata probe if Bifrost exposes capability flags.
+
 ### 18. SandboxClient holds in-process handle cache — single-process assumption
 - **Origin**: story 0.8
 - **Severity**: **Medium**

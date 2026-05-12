@@ -22,7 +22,7 @@ async fn healthz_returns_ok_with_db_only() {
     .expect("docker socket");
     let search = SearchClient::new(SearchProvider::Brave { api_key: None });
     let router = SlotRouter::default_for_bifrost();
-    let state = AppState::new(pool, redis, sandbox, search, router);
+    let state = AppState::new(pool, redis, sandbox, search, router, Default::default());
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await

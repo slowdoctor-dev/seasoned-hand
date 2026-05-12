@@ -1,6 +1,7 @@
 //! Seasoned Hand core library.
 //! refs: /specs/phase-0/architecture.md §2
 
+pub mod capability;
 pub mod db;
 pub mod dispatch;
 pub mod events;

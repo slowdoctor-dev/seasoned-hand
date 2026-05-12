@@ -1,6 +1,7 @@
 //! Seasoned Hand HTTP server.
 //! refs: /specs/phase-0/architecture.md §4.1
 
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -11,6 +12,7 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use seasoned_hand_core::capability::ModelCapabilities;
 use seasoned_hand_core::db::DbPool;
 use seasoned_hand_core::dispatch::{ToolDispatcher, hooks::EventEmittingHook};
 use seasoned_hand_core::events::{EventQuery, EventStore, EventType, sqlite::SqliteEventStore};
@@ -30,6 +32,7 @@ pub struct AppState {
     pub search: Arc<SearchClient>,
     pub dispatcher: Arc<ToolDispatcher>,
     pub router: Arc<SlotRouter>,
+    pub capabilities: Arc<HashMap<String, ModelCapabilities>>,
 }
 
 impl AppState {
@@ -39,6 +42,7 @@ impl AppState {
         sandbox: SandboxClient,
         search: SearchClient,
         router: SlotRouter,
+        capabilities: HashMap<String, ModelCapabilities>,
     ) -> Self {
         let events = Arc::new(SqliteEventStore::with_redis(db.clone(), redis.clone()));
         let sandbox = Arc::new(sandbox);
@@ -55,6 +59,7 @@ impl AppState {
             search,
             dispatcher,
             router: Arc::new(router),
+            capabilities: Arc::new(capabilities),
         }
     }
 }
