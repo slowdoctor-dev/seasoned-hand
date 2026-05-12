@@ -1,6 +1,6 @@
 # Story 0.26 — Monaco editor + file tree (read-only)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 0.23 (tabs), backend `GET /v1/workspace/:session_id/*path` from architecture §4.1
 > **Phase**: 0

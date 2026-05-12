@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { BrowserTab } from "@/components/agent-computer/browser-tab";
+import { EditorTab } from "@/components/agent-computer/editor-tab";
 import { TerminalTab } from "@/components/agent-computer/terminal-tab";
 
 type Tab = "browser" | "terminal" | "editor" | "files";
@@ -83,32 +84,9 @@ export function AgentComputer({ sessionId }: Props) {
       <div className="flex-1 overflow-auto p-4 text-sm text-gray-500">
         {active === "browser" && <BrowserTab sessionId={sessionId} />}
         {active === "terminal" && <TerminalTab sessionId={sessionId} />}
-        {active === "editor" && (
-          <Placeholder sessionId={sessionId} story="0.26" label="Editor" />
-        )}
+        {active === "editor" && <EditorTab sessionId={sessionId} />}
       </div>
     </aside>
   );
 }
 
-function Placeholder({
-  sessionId,
-  story,
-  label,
-}: {
-  sessionId: string | null;
-  story: string;
-  label: string;
-}) {
-  return (
-    <div>
-      <p className="font-medium text-gray-700 dark:text-gray-300">{label}</p>
-      <p className="mt-1 text-xs">
-        Story {story} lands here. Session:{" "}
-        <code className="rounded bg-gray-100 px-1 dark:bg-gray-800">
-          {sessionId ?? "(none)"}
-        </code>
-      </p>
-    </div>
-  );
-}

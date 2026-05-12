@@ -322,6 +322,139 @@ async fn get_session(
     Ok(Json(SessionDetail { summary, sandbox }))
 }
 
+const WORKSPACE_FILE_CAP_BYTES: u64 = 1024 * 1024;
+
+#[derive(Debug, Serialize)]
+struct WorkspaceEntry {
+    name: String,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    size: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum WorkspaceResponse {
+    Dir { entries: Vec<WorkspaceEntry> },
+}
+
+async fn workspace_root(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    workspace_proxy_inner(state, session_id, String::new()).await
+}
+
+async fn workspace_proxy(
+    State(state): State<AppState>,
+    Path((session_id, sub_path)): Path<(String, String)>,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    workspace_proxy_inner(state, session_id, sub_path).await
+}
+
+async fn workspace_proxy_inner(
+    state: AppState,
+    session_id: String,
+    sub_path: String,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    use axum::http::header;
+    use axum::response::Response;
+
+    if sub_path.starts_with('/') || sub_path.split('/').any(|seg| seg == "..") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "path_traversal".into(),
+            }),
+        ));
+    }
+
+    let Some(handle) = state.sandbox.get(&session_id).await else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "no_sandbox_for_session".into(),
+            }),
+        ));
+    };
+
+    let target = if sub_path.is_empty() {
+        handle.workspace_host_path.clone()
+    } else {
+        handle.workspace_host_path.join(&sub_path)
+    };
+
+    let metadata = tokio::fs::metadata(&target).await.map_err(|e| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: format!("not_found: {e}"),
+            }),
+        )
+    })?;
+
+    if metadata.is_dir() {
+        let mut entries = Vec::new();
+        let mut read_dir = tokio::fs::read_dir(&target).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: format!("readdir: {e}"),
+                }),
+            )
+        })?;
+        while let Ok(Some(entry)) = read_dir.next_entry().await {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Ok(entry_md) = entry.metadata().await else {
+                continue;
+            };
+            let (kind, size) = if entry_md.is_dir() {
+                ("dir", None)
+            } else {
+                ("file", Some(entry_md.len()))
+            };
+            entries.push(WorkspaceEntry { name, kind, size });
+        }
+        entries.sort_by(|a, b| match (a.kind, b.kind) {
+            ("dir", "file") => std::cmp::Ordering::Less,
+            ("file", "dir") => std::cmp::Ordering::Greater,
+            _ => a.name.cmp(&b.name),
+        });
+        let body = serde_json::to_vec(&WorkspaceResponse::Dir { entries }).unwrap_or_default();
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(body))
+            .unwrap_or_else(|_| Response::new(axum::body::Body::empty())));
+    }
+
+    if metadata.len() > WORKSPACE_FILE_CAP_BYTES {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(ApiError {
+                error: format!(
+                    "file_too_large: {} bytes (cap {WORKSPACE_FILE_CAP_BYTES})",
+                    metadata.len()
+                ),
+            }),
+        ));
+    }
+
+    let bytes = tokio::fs::read(&target).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: format!("read: {e}"),
+            }),
+        )
+    })?;
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(axum::body::Body::from(bytes))
+        .unwrap_or_else(|_| Response::new(axum::body::Body::empty())))
+}
+
 async fn cost_snapshot(
     State(state): State<AppState>,
 ) -> Result<Json<CostSnapshot>, (StatusCode, Json<ApiError>)> {
@@ -347,5 +480,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/sessions", get(list_sessions))
         .route("/v1/sessions/:id", get(get_session))
         .route("/v1/sessions/:id/events", get(list_events))
+        .route("/v1/workspace/:session_id/*sub_path", get(workspace_proxy))
+        .route("/v1/workspace/:session_id", get(workspace_root))
+        .route("/v1/workspace/:session_id/", get(workspace_root))
         .with_state(state)
 }
