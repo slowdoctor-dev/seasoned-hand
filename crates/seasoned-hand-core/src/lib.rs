@@ -4,6 +4,7 @@
 pub mod db;
 pub mod dispatch;
 pub mod events;
+pub mod llm;
 pub mod pubsub;
 pub mod sandbox;
 pub mod search;

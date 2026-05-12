@@ -1,6 +1,6 @@
 # Story 0.11 — LLM client (OpenAI-compatible over Bifrost)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: story 0.1 (Bifrost up)
 > **Phase**: 0
