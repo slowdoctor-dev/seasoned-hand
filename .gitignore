@@ -51,3 +51,4 @@ tmp/
 .claude/CLAUDE.local.md
 .codex/AGENTS.local.md
 .codex/config.toml
+config/slots.yaml

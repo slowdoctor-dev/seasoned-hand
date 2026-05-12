@@ -1,6 +1,6 @@
 # Story 0.12 — Model router (12-slot resolution + YAML config)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: story 0.11 (LLM client)
 > **Phase**: 0

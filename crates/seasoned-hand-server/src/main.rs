@@ -4,6 +4,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use seasoned_hand_core::router::SlotRouter;
 use seasoned_hand_core::sandbox::SandboxClient;
 use seasoned_hand_core::search::SearchClient;
 use seasoned_hand_core::{db, pubsub};
@@ -32,7 +33,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sandbox = SandboxClient::new(sandbox_image, workspace_root)?;
     let search = SearchClient::brave_from_env();
 
-    let state = AppState::new(db, redis, sandbox, search);
+    let slots_path =
+        std::env::var("SLOTS_CONFIG_PATH").unwrap_or_else(|_| "config/slots.yaml".into());
+    let router = if std::path::Path::new(&slots_path).exists() {
+        match SlotRouter::from_yaml(&slots_path) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, %slots_path, "slots config parse failed; falling back to default");
+                SlotRouter::default_for_bifrost()
+            }
+        }
+    } else {
+        tracing::info!(%slots_path, "slots config not found; using default (main -> agent-primary)");
+        SlotRouter::default_for_bifrost()
+    };
+
+    let state = AppState::new(db, redis, sandbox, search, router);
 
     let addr = bind_addr()?;
     tracing::info!(%addr, %database_url, %redis_url, "seasoned-hand-server starting");

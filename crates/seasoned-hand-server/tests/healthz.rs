@@ -1,6 +1,7 @@
 //! refs: /specs/phase-0/architecture.md §4.1
 
 use axum::http::StatusCode;
+use seasoned_hand_core::router::SlotRouter;
 use seasoned_hand_core::sandbox::SandboxClient;
 use seasoned_hand_core::search::{SearchClient, SearchProvider};
 use seasoned_hand_core::{db, pubsub};
@@ -20,7 +21,8 @@ async fn healthz_returns_ok_with_db_only() {
     )
     .expect("docker socket");
     let search = SearchClient::new(SearchProvider::Brave { api_key: None });
-    let state = AppState::new(pool, redis, sandbox, search);
+    let router = SlotRouter::default_for_bifrost();
+    let state = AppState::new(pool, redis, sandbox, search, router);
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await

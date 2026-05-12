@@ -15,6 +15,7 @@ use seasoned_hand_core::db::DbPool;
 use seasoned_hand_core::dispatch::{ToolDispatcher, hooks::EventEmittingHook};
 use seasoned_hand_core::events::{EventQuery, EventStore, EventType, sqlite::SqliteEventStore};
 use seasoned_hand_core::pubsub::RedisPool;
+use seasoned_hand_core::router::SlotRouter;
 use seasoned_hand_core::sandbox::SandboxClient;
 use seasoned_hand_core::search::SearchClient;
 use seasoned_hand_core::tools::register_builtin_tools;
@@ -28,10 +29,17 @@ pub struct AppState {
     pub sandbox: Arc<SandboxClient>,
     pub search: Arc<SearchClient>,
     pub dispatcher: Arc<ToolDispatcher>,
+    pub router: Arc<SlotRouter>,
 }
 
 impl AppState {
-    pub fn new(db: DbPool, redis: RedisPool, sandbox: SandboxClient, search: SearchClient) -> Self {
+    pub fn new(
+        db: DbPool,
+        redis: RedisPool,
+        sandbox: SandboxClient,
+        search: SearchClient,
+        router: SlotRouter,
+    ) -> Self {
         let events = Arc::new(SqliteEventStore::with_redis(db.clone(), redis.clone()));
         let sandbox = Arc::new(sandbox);
         let search = Arc::new(search);
@@ -46,6 +54,7 @@ impl AppState {
             sandbox,
             search,
             dispatcher,
+            router: Arc::new(router),
         }
     }
 }

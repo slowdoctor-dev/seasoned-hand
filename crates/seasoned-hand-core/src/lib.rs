@@ -6,6 +6,7 @@ pub mod dispatch;
 pub mod events;
 pub mod llm;
 pub mod pubsub;
+pub mod router;
 pub mod sandbox;
 pub mod search;
 pub mod tools;

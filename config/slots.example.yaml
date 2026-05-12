@@ -1,0 +1,57 @@
+# 12-slot model routing (architecture §3 + ADR-003).
+#
+# Copy to config/slots.yaml and edit. The server reads
+# ${SLOTS_CONFIG_PATH:-config/slots.yaml}; if that file is absent it
+# uses a minimal default that points `main` at Bifrost's `agent-primary`
+# alias.
+#
+# Each slot config supports:
+#   provider:    one of: auto | main | <free-form name>
+#                  auto/main both inherit from the main slot
+#   model:       model id (passed through to the LLM gateway)
+#   base_url:    OpenAI-compatible endpoint; defaults to main's, or
+#                http://localhost:4000/v1 (Bifrost) if main has none
+#   api_key_env: name of an env var holding the api key; absent or
+#                empty → no auth header
+#
+# In Phase 0 the agent loop only uses `main`; story 0.14 wires it up.
+# The other 11 slots are reserved for future stages and detected at
+# load time.
+
+slots:
+  main:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    base_url: http://localhost:4000/v1
+    api_key_env: ANTHROPIC_API_KEY
+
+  planner:
+    provider: auto
+
+  verifier:
+    provider: openai
+    model: gpt-4o
+    base_url: http://localhost:4000/v1
+
+  vision:
+    provider: auto
+  web_extract:
+    provider: auto
+  screenshot:
+    provider: auto
+  compression:
+    provider: auto
+  session_title:
+    provider: auto
+  session_search:
+    provider: auto
+  classifier:
+    provider: auto
+
+  embedding:
+    provider: openai
+    model: text-embedding-3-small
+    base_url: http://localhost:4000/v1
+
+  reasoning:
+    provider: auto
