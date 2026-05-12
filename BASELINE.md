@@ -45,12 +45,16 @@ OS metaphor: kernel = agent runtime, user-space = learning artifacts.
 |---|---|---|
 | LLM Gateway | Bifrost (Go) | ADR-001: 50x faster than LiteLLM, single binary |
 | Control plane | Rust + Axum + Tokio + Rig | ADR-002: memory predictability, true concurrency |
-| Frontend | Next.js 15 + Tailwind v4 + React 19 | ADR-003: UI ecosystem |
+| Frontend | Next.js 15 + Tailwind v4 + React 19 | (no dedicated ADR — frontend half of ADR-002 hybrid; UI stack in ARCHITECTURE.md §1) |
 | Sandbox | AIO Sandbox (Docker per session) | ADR-004: isolation per task |
 | Persistence | SQLite WAL + Redis | ADR-005: SQLite for events, Redis for pub/sub |
-| Model routing | 12-slot (3 main + 9 auxiliary) | ADR-006: Hermes-inspired |
-| Tool catalog | 32+ (29 Manus + 3 learning) | ADR-007: extends leaked Manus spec |
-| Event stream | 7 types append-only | ADR-008: single source of truth |
+| Model routing | 12-slot (3 main + 9 auxiliary) | ADR-003: Hermes-inspired |
+| Agent tool source-of-truth | AGENTS.md universal | ADR-006: LLM-agnostic via AGENTS.md |
+| Conservative learning | Verified work only | ADR-007: only verified work feeds playbooks |
+| License | MIT, public from day 0 | ADR-008: open from start |
+| Map / fan-out tool | Deferred to Phase 4+ | ADR-009: depth + learning first |
+| Tool catalog | 32+ (29 Manus + 3 learning) | (no dedicated ADR — catalogue in ARCHITECTURE.md §7) |
+| Event stream | 8 types append-only | (no dedicated ADR — schema in ARCHITECTURE.md §2.1, append-only in PRINCIPLES #3) |
 | Plan Manager | Structured PCB-style plan | ADR-010: prevents goal drift, sticky context |
 | Verification | 4-layer framework | (deterministic / cross-source / observation / meta-cognition) |
 
