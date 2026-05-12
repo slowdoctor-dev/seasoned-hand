@@ -1,6 +1,6 @@
 # Story 0.20 — WebSocket client + reconnection
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 0.17 (WS server), 0.18 (frontend), 0.19 (layout)
 > **Phase**: 0
