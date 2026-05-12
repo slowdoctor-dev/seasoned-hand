@@ -26,6 +26,8 @@ use seasoned_hand_core::search::SearchClient;
 use seasoned_hand_core::tools::register_builtin_tools;
 use serde::{Deserialize, Serialize};
 
+pub mod ws;
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: DbPool,
@@ -215,6 +217,7 @@ async fn cost_snapshot(
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/ws", get(ws::ws_upgrade))
         .route("/v1/cost", get(cost_snapshot))
         .route("/v1/sessions/:id/events", get(list_events))
         .with_state(state)

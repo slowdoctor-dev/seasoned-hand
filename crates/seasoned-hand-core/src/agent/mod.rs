@@ -96,11 +96,21 @@ impl AgentRunner {
     }
 
     pub async fn run(&self, req: RunRequest) -> Result<RunResult, AgentError> {
+        self.run_loop(req, true).await
+    }
+
+    pub async fn resume(&self, req: RunRequest) -> Result<RunResult, AgentError> {
+        self.run_loop(req, false).await
+    }
+
+    async fn run_loop(&self, req: RunRequest, seed_task: bool) -> Result<RunResult, AgentError> {
         self.set_session_state(&req.session_id, "RUNNING").await?;
-        self.create_baseline_plan(&req.session_id, &req.input)
-            .await?;
-        self.append_user_message(&req.session_id, &req.input)
-            .await?;
+        if seed_task {
+            self.create_baseline_plan(&req.session_id, &req.input)
+                .await?;
+            self.append_user_message(&req.session_id, &req.input)
+                .await?;
+        }
 
         let mut stuck = StuckTracker::default();
         let mut strategy_prompt = None;
@@ -290,10 +300,6 @@ impl AgentRunner {
             last_message,
             steps: steps_run,
         })
-    }
-
-    pub async fn resume(&self, req: RunRequest) -> Result<RunResult, AgentError> {
-        self.run(req).await
     }
 
     fn tool_specs_from_registry(&self) -> Vec<ToolSpec> {

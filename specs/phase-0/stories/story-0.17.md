@@ -1,6 +1,6 @@
 # Story 0.17 — WebSocket server (Axum + envelope protocol)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: story 0.4 (events), 0.5 (pubsub), 0.14 (agent runner)
 > **Phase**: 0
