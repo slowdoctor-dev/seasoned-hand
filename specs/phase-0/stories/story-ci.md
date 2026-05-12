@@ -1,6 +1,6 @@
 # Story CI — Validate + extend `.github/workflows/ci.yml`
 
-> **Status**: in-progress
+> **Status**: done
 > **Estimated**: 1 hour
 > **Dependencies**: 0.27 (RETROSPECTIVE), 0.9b (full tool wiring)
 > **Phase**: 0 (closeout — closes DEBT #14)
