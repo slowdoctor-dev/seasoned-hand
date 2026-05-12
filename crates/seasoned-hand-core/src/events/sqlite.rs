@@ -8,14 +8,23 @@ use rusqlite::OptionalExtension;
 
 use super::{Event, EventError, EventQuery, EventStore, EventType, NewEvent};
 use crate::db::DbPool;
+use crate::pubsub::RedisPool;
 
 pub struct SqliteEventStore {
     pool: DbPool,
+    redis: Option<RedisPool>,
 }
 
 impl SqliteEventStore {
     pub fn new(pool: DbPool) -> Self {
-        Self { pool }
+        Self { pool, redis: None }
+    }
+
+    pub fn with_redis(pool: DbPool, redis: RedisPool) -> Self {
+        Self {
+            pool,
+            redis: Some(redis),
+        }
     }
 }
 
@@ -36,7 +45,8 @@ impl EventStore for SqliteEventStore {
         let source = draft.source.clone();
         let type_str = draft.event_type.as_str();
 
-        self.pool
+        let event = self
+            .pool
             .with_conn(move |conn| -> Result<Event, EventError> {
                 let exists: Option<i64> = conn
                     .query_row(
@@ -65,7 +75,31 @@ impl EventStore for SqliteEventStore {
                     data: draft.data,
                 })
             })
-            .await
+            .await?;
+
+        if let Some(redis) = &self.redis {
+            match serde_json::to_string(&event) {
+                Ok(payload) => {
+                    if let Err(e) = redis.publish_event(&event.session_id, &payload).await {
+                        tracing::warn!(
+                            error = %e,
+                            session_id = %event.session_id,
+                            event_id = event.id,
+                            "redis publish failed; append succeeded"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        event_id = event.id,
+                        "failed to serialize event for redis publish; append succeeded"
+                    );
+                }
+            }
+        }
+
+        Ok(event)
     }
 
     async fn query(&self, session_id: &str, filter: EventQuery) -> Result<Vec<Event>, EventError> {

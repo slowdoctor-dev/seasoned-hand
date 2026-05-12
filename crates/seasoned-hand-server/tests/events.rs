@@ -1,8 +1,8 @@
 //! refs: /specs/phase-0/architecture.md §3.2, §3.4, §4.1
 
 use axum::http::StatusCode;
-use seasoned_hand_core::db;
 use seasoned_hand_core::events::{EventStore, EventType, NewEvent};
+use seasoned_hand_core::{db, pubsub};
 use seasoned_hand_server::{AppState, app};
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -18,7 +18,10 @@ async fn boot() -> (String, AppState) {
         .unwrap();
     })
     .await;
-    let state = AppState::new(pool);
+    // Tests use an unreachable redis URL — append() will log a publish-failure
+    // warning but still succeed (PRINCIPLE #10 failure-tolerance).
+    let redis = pubsub::RedisPool::new("redis://127.0.0.1:6").unwrap();
+    let state = AppState::new(pool, redis);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

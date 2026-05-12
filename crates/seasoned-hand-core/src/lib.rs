@@ -3,6 +3,7 @@
 
 pub mod db;
 pub mod events;
+pub mod pubsub;
 
 /// Returns the core crate version.
 pub fn version() -> &'static str {

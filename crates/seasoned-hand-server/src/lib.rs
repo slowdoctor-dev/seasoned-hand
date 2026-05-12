@@ -13,18 +13,20 @@ use axum::{
 };
 use seasoned_hand_core::db::DbPool;
 use seasoned_hand_core::events::{EventQuery, EventStore, EventType, sqlite::SqliteEventStore};
+use seasoned_hand_core::pubsub::RedisPool;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: DbPool,
+    pub redis: RedisPool,
     pub events: Arc<SqliteEventStore>,
 }
 
 impl AppState {
-    pub fn new(db: DbPool) -> Self {
-        let events = Arc::new(SqliteEventStore::new(db.clone()));
-        Self { db, events }
+    pub fn new(db: DbPool, redis: RedisPool) -> Self {
+        let events = Arc::new(SqliteEventStore::with_redis(db.clone(), redis.clone()));
+        Self { db, redis, events }
     }
 }
 
@@ -33,6 +35,7 @@ struct Health {
     status: &'static str,
     version: &'static str,
     db: String,
+    redis: String,
 }
 
 async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
@@ -40,21 +43,20 @@ async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
         .db
         .with_conn(|conn| conn.prepare("SELECT 1").is_ok())
         .await;
-    let (status_code, status_text, db_text) = if db_ok {
-        (StatusCode::OK, "ok", "ok".to_string())
+    let redis_ok = state.redis.ping().await.is_ok();
+
+    let (status_code, status_text) = if db_ok && redis_ok {
+        (StatusCode::OK, "ok")
     } else {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "degraded",
-            "unreachable".to_string(),
-        )
+        (StatusCode::SERVICE_UNAVAILABLE, "degraded")
     };
     (
         status_code,
         Json(Health {
             status: status_text,
             version: seasoned_hand_core::version(),
-            db: db_text,
+            db: if db_ok { "ok" } else { "unreachable" }.into(),
+            redis: if redis_ok { "ok" } else { "unreachable" }.into(),
         }),
     )
 }

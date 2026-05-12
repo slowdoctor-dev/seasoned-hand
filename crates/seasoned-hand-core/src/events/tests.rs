@@ -3,6 +3,7 @@ use serde_json::json;
 use super::sqlite::SqliteEventStore;
 use super::{EventQuery, EventStore, EventType, NewEvent};
 use crate::db;
+use crate::pubsub::RedisPool;
 
 async fn fixture() -> (db::DbPool, SqliteEventStore) {
     let pool = db::open(":memory:").await.unwrap();
@@ -169,6 +170,35 @@ async fn data_payload_survives_roundtrip() {
         .unwrap();
     let got = store.query("s1", EventQuery::default()).await.unwrap();
     assert_eq!(got[0].data, payload);
+}
+
+#[tokio::test]
+async fn append_succeeds_even_if_redis_unreachable() {
+    // Pre-PRINCIPLE-#10: publish failure logs but never fails append.
+    let pool = db::open(":memory:").await.unwrap();
+    pool.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO sessions (id, created_at, updated_at, state) \
+             VALUES ('s1', 1, 1, 'RUNNING')",
+            [],
+        )
+        .unwrap();
+    })
+    .await;
+    let redis = RedisPool::new("redis://127.0.0.1:6").unwrap(); // unreachable
+    let store = SqliteEventStore::with_redis(pool.clone(), redis);
+    let appended = store
+        .append(NewEvent {
+            session_id: "s1".into(),
+            event_type: EventType::Misc,
+            source: "test".into(),
+            data: json!({"ok": true}),
+        })
+        .await
+        .expect("append must succeed regardless of redis state");
+    let queried = store.query("s1", EventQuery::default()).await.unwrap();
+    assert_eq!(queried.len(), 1);
+    assert_eq!(queried[0].id, appended.id);
 }
 
 #[tokio::test]

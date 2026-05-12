@@ -1,6 +1,19 @@
 # Story 0.5 — Redis pub/sub for event subscribe
 
-> **Status**: ready
+> **Status**: done
+
+> **Notes from implementation**:
+> - Module renamed `redis` → `pubsub` to avoid name collision with the
+>   external `redis` crate inside the same crate.
+> - Dropped the standalone `redis` direct dep — used `deadpool_redis::redis`
+>   re-export to keep a single version in the dependency graph
+>   (otherwise `deadpool_redis::redis::aio::MultiplexedConnection`
+>   doesn't satisfy top-level `redis::aio::ConnectionLike` and clippy
+>   fails).
+> - Used `client.get_async_pubsub()` (modern API) rather than the
+>   deprecated `get_async_connection().into_pubsub()`.
+> - Live Redis round-trip tests are `#[ignore]`'d by default; run with
+>   `cargo test -- --ignored` after `docker compose up -d redis`.
 > **Estimated**: 2 hours
 > **Dependencies**: story 0.4 (Event Stream API)
 > **Phase**: 0
