@@ -95,6 +95,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     }
 
+    // Story 1.13: spawn the Checkpoint Manager. The Phase 1 baseline run
+    // loop is a polling no-op; the real Plan{op:"advance"} fanout lands
+    // alongside the global event bus in story 1.20 E2E. The manager's
+    // `handle_plan_advance` is the unit the agent runner will call once
+    // the bus exists.
+    let checkpoint_shutdown = tokio_util::sync::CancellationToken::new();
+    let checkpoint_handle = {
+        use seasoned_hand_core::checkpoint::{
+            CheckpointManager, CheckpointManagerDeps, SandboxGitShell,
+        };
+        let git: std::sync::Arc<dyn seasoned_hand_core::checkpoint::GitShell> =
+            std::sync::Arc::new(SandboxGitShell::new(state.sandbox.clone()));
+        let manager = CheckpointManager::new(CheckpointManagerDeps {
+            store: state.checkpoints.clone(),
+            labels: state.checkpoint_labels.clone(),
+            events: state.events.clone(),
+            git,
+        });
+        let token = checkpoint_shutdown.clone();
+        tokio::spawn(async move {
+            if let Err(error) = manager.run(token).await {
+                tracing::error!(%error, "checkpoint manager exited with error");
+            }
+        })
+    };
+
     // Story 1.9b: spawn the Verifier Worker if verifier is enabled.
     // The worker's `run()` returns Ok(()) immediately when disabled, so
     // we can spawn unconditionally for symmetry, but skipping the spawn
@@ -137,6 +163,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(handle) = verifier_handle {
         let _ = handle.await;
     }
+
+    // Story 1.13: drain the checkpoint manager.
+    checkpoint_shutdown.cancel();
+    let _ = checkpoint_handle.await;
 
     Ok(())
 }

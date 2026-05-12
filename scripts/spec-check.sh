@@ -50,12 +50,13 @@ fi
 # Check 4: No orphan stories (status: done but file changed since)
 # (skipping for v0)
 
-# Check 5: Tool catalog registry size (Phase 1 story 1.4)
-# Phase 1 baseline now ships 35 (Phase 0's 33 + feature_mark_done + progress_update).
+# Check 5: Tool catalog registry size (Phase 1 stories 1.4 + 1.13)
+# Phase 1 baseline now ships 36: Phase 0's 33 + feature_mark_done +
+# progress_update (story 1.4) + checkpoint_label (story 1.13).
 TOOLS_BUILTIN=crates/seasoned-hand-core/src/tools/builtin.rs
 if [ -f "$TOOLS_BUILTIN" ]; then
   count=$(grep -c "map.insert(" "$TOOLS_BUILTIN" || echo 0)
-  expected=35
+  expected=36
   if [ "$count" -ne "$expected" ]; then
     echo "✗ Tool catalog registry has $count entries, expected $expected (story 0.7 / DEBT #4)"
     FAIL=$((FAIL+1))

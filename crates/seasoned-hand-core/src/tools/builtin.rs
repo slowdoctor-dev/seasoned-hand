@@ -1154,7 +1154,64 @@ pub fn all() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("feature_mark_done", Arc::new(FeatureMarkDone));
     map.insert("progress_update", Arc::new(ProgressUpdate));
 
+    // ===== Checkpoint (1) — story 1.13 =====
+    map.insert("checkpoint_label", Arc::new(CheckpointLabel));
+
     map
+}
+
+/// Story 1.13: attach a human-readable label to the next
+/// `Plan{op:"advance"}` checkpoint. One-shot — the label is consumed by
+/// the `CheckpointManager` the next time a phase advance commits.
+pub struct CheckpointLabel;
+
+#[async_trait]
+impl Tool for CheckpointLabel {
+    fn name(&self) -> &'static str {
+        "checkpoint_label"
+    }
+    fn description(&self) -> &'static str {
+        "Attach a short human-readable label to the next phase-advance checkpoint. \
+         One-shot: applies to the very next `plan_advance` then clears."
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "Label text. Max 80 characters.",
+                    "maxLength": 80
+                }
+            },
+            "required": ["label"],
+            "additionalProperties": false,
+        })
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let label = require_str(&args, "label")?;
+        if label.len() > 80 {
+            return Ok(ToolOutput {
+                ok: false,
+                output: json!({"max": 80, "got": label.len()}),
+                file_ref: None,
+                error: Some(ToolErrorPayload {
+                    kind: "label_too_long".into(),
+                    message: format!("label is {} chars; cap is 80", label.len()),
+                }),
+            });
+        }
+        ctx.checkpoint_labels.set(&ctx.session_id, &label);
+        Ok(ToolOutput {
+            ok: true,
+            output: json!({
+                "label": label,
+                "applies_to": "next_phase_advance"
+            }),
+            file_ref: None,
+            error: None,
+        })
+    }
 }
 
 fn parse_phases(args: &Value) -> Result<Vec<Phase>, ToolError> {

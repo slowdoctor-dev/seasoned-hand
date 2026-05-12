@@ -46,6 +46,7 @@ async fn ctx() -> (super::ToolContext, Arc<SqliteEventStore>) {
         sandbox: Arc::new(sandbox),
         search: Arc::new(search),
         plan_manager,
+        checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
     };
     (ctx, store)
 }
@@ -97,6 +98,8 @@ const EXPECTED_TOOLS: &[&str] = &[
     "plan_update",
     "feature_mark_done",
     "progress_update",
+    // checkpoint (1) — story 1.13
+    "checkpoint_label",
 ];
 
 #[test]
@@ -153,6 +156,8 @@ async fn stubs_return_not_implemented() {
         "plan_update",
         "feature_mark_done",
         "progress_update",
+        // Story 1.13: real one-shot label tool.
+        "checkpoint_label",
     ];
     for (name, tool) in reg.iter() {
         if real.contains(name) {

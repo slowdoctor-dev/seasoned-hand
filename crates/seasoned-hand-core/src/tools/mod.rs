@@ -11,6 +11,7 @@ use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::checkpoint::CheckpointLabelBuffer;
 use crate::dispatch::mask::MaskContext;
 use crate::events::sqlite::SqliteEventStore;
 use crate::plan::PlanManager;
@@ -58,6 +59,10 @@ pub struct ToolContext {
     pub sandbox: Arc<SandboxClient>,
     pub search: Arc<SearchClient>,
     pub plan_manager: Arc<PlanManager>,
+    /// Story 1.13: one-shot label slot consumed by the next
+    /// `Plan{op:"advance"}` checkpoint. The `checkpoint_label` tool
+    /// writes here; the `CheckpointManager` reads + clears.
+    pub checkpoint_labels: Arc<CheckpointLabelBuffer>,
 }
 
 #[async_trait]

@@ -77,6 +77,7 @@ pub struct AgentRunner {
     sessions: DbPool,
     plan_manager: Arc<PlanManager>,
     mask_policy: Arc<dyn ToolMaskPolicy>,
+    checkpoint_labels: Arc<crate::checkpoint::CheckpointLabelBuffer>,
 }
 
 pub struct AgentRunnerDeps {
@@ -90,6 +91,7 @@ pub struct AgentRunnerDeps {
     pub sessions: DbPool,
     pub plan_manager: Arc<PlanManager>,
     pub mask_policy: Arc<dyn ToolMaskPolicy>,
+    pub checkpoint_labels: Arc<crate::checkpoint::CheckpointLabelBuffer>,
 }
 
 impl AgentRunner {
@@ -148,6 +150,9 @@ impl AgentRunner {
 
         for step in 0..req.max_steps {
             steps_run = step + 1;
+            if ReciteScheduler::should_fire(step) {
+                recite_tick(&self.sandbox, &self.events, &req.session_id).await;
+            }
             let mut messages =
                 build_messages(&self.events, &self.plan_manager, &req.session_id).await?;
             if let Some(prompt) = strategy_prompt.take() {
@@ -266,6 +271,7 @@ impl AgentRunner {
                 sandbox: self.sandbox.clone(),
                 search: self.search.clone(),
                 plan_manager: self.plan_manager.clone(),
+                checkpoint_labels: self.checkpoint_labels.clone(),
             };
             let output = self
                 .dispatcher

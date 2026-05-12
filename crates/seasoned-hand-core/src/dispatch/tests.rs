@@ -46,6 +46,7 @@ async fn fixture() -> (ToolDispatcher, ToolContext) {
         sandbox,
         search,
         plan_manager,
+        checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
     };
     let dispatcher = ToolDispatcher::new(register_builtin_tools());
     (dispatcher, ctx)
@@ -121,6 +122,7 @@ async fn fixture_with_hook() -> (ToolDispatcher, ToolContext, Arc<SqliteEventSto
         sandbox,
         search,
         plan_manager,
+        checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
     };
     let dispatcher = ToolDispatcher::new(register_builtin_tools())
         .with_hook(Arc::new(hooks::EventEmittingHook::new(store.clone())));

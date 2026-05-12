@@ -63,6 +63,12 @@ pub struct AppState {
     pub verifier_system_prompt: Arc<String>,
     /// Story 1.9: persistence handle for the `verifications` table.
     pub verifications: Arc<VerificationStore>,
+    /// Story 1.13: in-memory one-shot label slot consumed by the next
+    /// `Plan{op:"advance"}` checkpoint. Written by the `checkpoint_label`
+    /// LLM tool, read+cleared by the `CheckpointManager`.
+    pub checkpoint_labels: Arc<seasoned_hand_core::checkpoint::CheckpointLabelBuffer>,
+    /// Story 1.13: persistence handle for the `checkpoints` table.
+    pub checkpoints: Arc<seasoned_hand_core::checkpoint::CheckpointStore>,
 }
 
 impl AppState {
@@ -83,6 +89,11 @@ impl AppState {
         );
         let verifier_enabled = router.verifier_enabled();
         let verifications = Arc::new(VerificationStore::new(db.clone()));
+        let checkpoint_labels =
+            Arc::new(seasoned_hand_core::checkpoint::CheckpointLabelBuffer::new());
+        let checkpoints = Arc::new(seasoned_hand_core::checkpoint::CheckpointStore::new(
+            db.clone(),
+        ));
         let router = Arc::new(router);
         let plan_manager = Arc::new(PlanManager::new(db.clone(), events.clone()));
         let main_slot = router.resolve(SlotName::Main);
@@ -99,6 +110,7 @@ impl AppState {
             sessions: db.clone(),
             plan_manager: plan_manager.clone(),
             mask_policy: Arc::new(DefaultMaskPolicy),
+            checkpoint_labels: checkpoint_labels.clone(),
         }));
         Self {
             db,
@@ -115,6 +127,8 @@ impl AppState {
             verifier_enabled,
             verifier_system_prompt: Arc::new(String::new()),
             verifications,
+            checkpoint_labels,
+            checkpoints,
         }
     }
 
@@ -584,7 +598,44 @@ pub fn app(state: AppState) -> Router {
             get(list_verifications_handler),
         )
         .route("/v1/verifications/:id", get(get_verification_handler))
+        .route(
+            "/v1/sessions/:id/checkpoints",
+            get(list_checkpoints_handler),
+        )
         .with_state(state)
+}
+
+// ---------------------------------------------------------------------------
+// Story 1.13: checkpoints list HTTP handler.
+// ---------------------------------------------------------------------------
+
+async fn list_checkpoints_handler(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    Query(q): Query<seasoned_hand_core::checkpoint::routes::ListQuery>,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    use axum::http::header;
+    use axum::response::Response;
+    use seasoned_hand_core::checkpoint::routes::{RouteOutcome, list_checkpoints};
+    match list_checkpoints(&state.checkpoints, &session_id, q).await {
+        RouteOutcome::Ok(body) => {
+            let bytes = serde_json::to_vec(&body).unwrap_or_default();
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(bytes))
+                .unwrap_or_else(|_| Response::new(axum::body::Body::empty())))
+        }
+        RouteOutcome::Internal(msg) => {
+            tracing::error!(error = %msg, "list_checkpoints failed");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            ))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -141,6 +141,7 @@ slots:
         sessions: db.clone(),
         plan_manager,
         mask_policy: Arc::new(DefaultMaskPolicy),
+        checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
     });
 
     Harness {

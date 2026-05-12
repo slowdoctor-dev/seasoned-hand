@@ -1,6 +1,6 @@
 # Story 1.13 — Checkpoint Manager — V005 + commit-on-advance + `checkpoint_label`
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 1.10 (VERIFYING / SUSPENDED transitions finalized
 > — for state guard semantics that 1.13b consumes), 1.3 (sandbox is a
