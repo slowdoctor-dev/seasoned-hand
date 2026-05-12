@@ -8,11 +8,17 @@ use std::sync::Arc;
 
 use bollard::Docker;
 use bollard::container::{
-    Config, CreateContainerOptions, RemoveContainerOptions, StartContainerOptions,
+    Config, CreateContainerOptions, ListContainersOptions, RemoveContainerOptions,
+    StartContainerOptions,
 };
 use bollard::secret::{HostConfig, PortBinding};
 use thiserror::Error;
 use tokio::sync::RwLock;
+
+use crate::db::DbPool;
+
+pub mod cache;
+pub use cache::RehydrateReport;
 
 /// AIO Sandbox internal ports (per upstream README).
 pub const PORT_API: u16 = 8080;
@@ -25,6 +31,8 @@ pub enum SandboxError {
     Docker(#[from] bollard::errors::Error),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("db error: {0}")]
+    Db(#[from] rusqlite::Error),
     #[error("sandbox not found for session {0}")]
     NotFound(String),
     #[error("sandbox already paused for session {0}")]
@@ -193,6 +201,125 @@ impl SandboxClient {
         Ok(())
     }
 
+    /// Scan Docker for `seasoned-hand-sandbox-*` containers and rehydrate
+    /// the in-process handle cache from disk reality.
+    ///
+    /// Containers whose `sessions` row is in a live state ({IDLE, RUNNING,
+    /// SUSPENDED, VERIFYING}) are re-registered. Containers whose session
+    /// is missing or in a terminal state ({FINISHED, ERROR}) are logged as
+    /// orphans and left running — Phase 0 DEBT #16 owns cleanup. Already
+    /// cached sessions are skipped, which is what makes this idempotent.
+    ///
+    /// refs: /specs/phase-1/stories/story-1.2.md
+    /// refs: /specs/phase-0/DEBT.md #18
+    pub async fn rehydrate_from_docker(
+        &self,
+        sessions: &DbPool,
+    ) -> Result<RehydrateReport, SandboxError> {
+        let mut filters: HashMap<&str, Vec<&str>> = HashMap::new();
+        filters.insert("name", vec![cache::SANDBOX_CONTAINER_PREFIX]);
+        let containers = self
+            .docker
+            .list_containers(Some(ListContainersOptions {
+                all: true,
+                filters,
+                ..Default::default()
+            }))
+            .await?;
+
+        let mut report = RehydrateReport::default();
+        for summary in containers {
+            let name = match summary
+                .names
+                .as_ref()
+                .and_then(|n| n.first().cloned())
+                .filter(|s| !s.is_empty())
+            {
+                Some(n) => n,
+                None => continue,
+            };
+            let Some(session_id) = cache::extract_session_id_from_name(&name) else {
+                continue;
+            };
+            let session_id = session_id.to_string();
+
+            if self.handles.read().await.contains_key(&session_id) {
+                continue;
+            }
+
+            let state = match lookup_session_state(sessions, &session_id).await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(%session_id, error = %e, "rehydrate: db lookup failed");
+                    report.errors.push(format!("{session_id}: db lookup: {e}"));
+                    continue;
+                }
+            };
+
+            if cache::is_live_state(state.as_deref()) {
+                match self.register_existing(&session_id).await {
+                    Ok(()) => report.restored += 1,
+                    Err(e) => {
+                        tracing::warn!(%session_id, error = %e, "rehydrate: register_existing failed");
+                        report
+                            .errors
+                            .push(format!("{session_id}: register_existing: {e}"));
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    orphan_container = %name,
+                    state = ?state,
+                    "orphan sandbox container left running (cleanup is DEBT #16)"
+                );
+                report.orphans += 1;
+            }
+        }
+
+        tracing::info!(
+            restored = report.restored,
+            orphans = report.orphans,
+            errors = report.errors.len(),
+            "sandbox cache rehydrated"
+        );
+        Ok(report)
+    }
+
+    /// Reconstruct a `SandboxHandle` for an existing container without going
+    /// through the `create()` path. Used by `rehydrate_from_docker`.
+    async fn register_existing(&self, session_id: &str) -> Result<(), SandboxError> {
+        let name = container_name(session_id);
+        let inspect = self.docker.inspect_container(&name, None).await?;
+        let container_id = inspect.id.clone().unwrap_or_default();
+        let host_ports = extract_host_ports(&inspect)?;
+        let api_host = host_ports
+            .get(&PORT_API)
+            .ok_or(SandboxError::PortMissing(PORT_API))?;
+        let novnc_host = host_ports
+            .get(&PORT_NOVNC)
+            .ok_or(SandboxError::PortMissing(PORT_NOVNC))?;
+        let ttyd_host = host_ports
+            .get(&PORT_TTYD)
+            .ok_or(SandboxError::PortMissing(PORT_TTYD))?;
+
+        let workspace = self.workspace_root.join(session_id);
+        let workspace_abs = workspace.canonicalize().unwrap_or(workspace);
+
+        let handle = SandboxHandle {
+            session_id: session_id.to_string(),
+            container_id,
+            api_url: format!("http://127.0.0.1:{api_host}"),
+            novnc_url: format!("http://127.0.0.1:{novnc_host}"),
+            ttyd_url: format!("ws://127.0.0.1:{ttyd_host}"),
+            workspace_host_path: workspace_abs,
+        };
+        self.handles
+            .write()
+            .await
+            .insert(session_id.to_string(), handle);
+        Ok(())
+    }
+
     /// Idempotent: a missing container is treated as success.
     pub async fn destroy(&self, session_id: &str) -> Result<(), SandboxError> {
         let name = container_name(session_id);
@@ -223,6 +350,25 @@ impl SandboxClient {
 
 pub fn container_name(session_id: &str) -> String {
     format!("seasoned-hand-sandbox-{session_id}")
+}
+
+async fn lookup_session_state(
+    pool: &DbPool,
+    session_id: &str,
+) -> Result<Option<String>, rusqlite::Error> {
+    let id = session_id.to_string();
+    pool.with_conn(move |conn| {
+        match conn.query_row(
+            "SELECT state FROM sessions WHERE id = ?",
+            rusqlite::params![id],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(state) => Ok(Some(state)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    })
+    .await
 }
 
 fn extract_host_ports(

@@ -66,6 +66,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = AppState::new(db, redis, sandbox, search, router, capabilities);
 
+    // Phase 1: rehydrate sandbox handle cache from Docker before binding the
+    // listener so existing per-session containers from a prior boot are
+    // re-attached to live sessions and orphans are logged. Non-fatal: if
+    // Docker is unreachable (test harness, missing socket), continue with an
+    // empty cache. refs: /specs/phase-1/stories/story-1.2.md
+    match state.sandbox.rehydrate_from_docker(&state.db).await {
+        Ok(report) => tracing::info!(
+            restored = report.restored,
+            orphans = report.orphans,
+            errors = report.errors.len(),
+            "sandbox cache rehydrated"
+        ),
+        Err(error) => tracing::error!(
+            %error,
+            "sandbox rehydration failed; continuing with empty cache"
+        ),
+    }
+
     let addr = bind_addr()?;
     tracing::info!(%addr, %database_url, %redis_url, "seasoned-hand-server starting");
 

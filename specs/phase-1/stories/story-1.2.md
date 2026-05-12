@@ -1,6 +1,6 @@
 # Story 1.2 — SandboxClient handle-cache rehydration (close DEBT #18)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 1.5 hours
 > **Dependencies**: none
 > **Phase**: 1

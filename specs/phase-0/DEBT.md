@@ -236,17 +236,14 @@
   provider model IDs before checking capabilities, or perform a cheap
   provider-supported metadata probe if Bifrost exposes capability flags.
 
-### 18. SandboxClient holds in-process handle cache — single-process assumption
-- **Origin**: story 0.8
-- **Severity**: **Medium**
-- **What**: `Arc<RwLock<HashMap<String, SandboxHandle>>>`. If the control
-  plane crashes and restarts, the cache is empty but real containers from
-  prior runs may still exist. Currently relies on container *names* to
-  recover (we can re-create via `destroy` + `create`).
-- **Why**: Phase 0 has no persistence layer for runtime state beyond
-  events. A real "sandbox registry" in SQLite or Redis is a future story.
-- **Pay down**: Phase 1 — on startup, the SandboxClient could scan Docker
-  for `seasoned-hand-sandbox-*` containers and rehydrate the cache.
+### ~~18. SandboxClient holds in-process handle cache — single-process assumption~~ ✅ resolved 2026-05-13 (story 1.2)
+- ~~Origin: story 0.8~~
+- ~~Resolved by story 1.2: `SandboxClient::rehydrate_from_docker` runs at
+  server bootstrap (before the HTTP listener binds), enumerates
+  `seasoned-hand-sandbox-*` containers via bollard, re-registers handles for
+  sessions whose state ∈ {IDLE, RUNNING, SUSPENDED, VERIFYING}, and logs
+  orphans (sessions FINISHED/ERROR or missing) for DEBT #16 cleanup.
+  Idempotent; non-fatal on Docker outage.~~
 
 ### ~~23. Stuck detection only emits an audit marker~~ ✅ resolved 2026-05-12 (story 0.15)
 - ~~Origin: story 0.14~~
