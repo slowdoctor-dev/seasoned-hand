@@ -125,71 +125,102 @@ impl VerifierGate {
             .get("trigger_kind")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if trigger != "TaskComplete" {
-            return;
-        }
-
         let verification_id = data.get("verification_id").cloned().unwrap_or(Value::Null);
-        let outcome: &str = match verdict {
-            "pass" => {
-                let _ = self.set_state(session_id, "FINISHED").await;
-                let _ = self
-                    .events
-                    .append(NewEvent {
-                        session_id: session_id.to_string(),
-                        event_type: EventType::Misc,
-                        source: "verifier_gate".into(),
-                        data: serde_json::json!({"kind":"task_complete"}),
-                    })
-                    .await;
-                "finished"
-            }
-            "fail" => {
-                // Story 1.13b opt-in: if the verdict requests rollback
-                // AND the gate is configured to honor it, fire the
-                // rollback handler BEFORE applying the
-                // fail+suggestion / fail-no-suggestion branch. Default
-                // off per phase-1/DEBT.md #3 — when off, log only.
-                let want_rollback = data
-                    .get("rollback_required")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                if want_rollback {
-                    if self.rollback_enabled {
-                        if let Some(handler) = &self.rollback {
-                            handler.rollback_latest(session_id, "verifier_fail").await;
-                        }
-                    } else {
-                        tracing::info!(
-                            %session_id,
-                            "verdict requested rollback but checkpoint.rollback_on_verifier_fail is off (phase-1/DEBT.md #3 — default)"
-                        );
-                    }
-                }
-                if data.get("suggested_plan_update").is_some()
-                    && !data
-                        .get("suggested_plan_update")
-                        .is_some_and(Value::is_null)
-                {
-                    let _ = self.set_state(session_id, "RUNNING").await;
-                    let _ = self.runner.resume_session(session_id).await;
-                    "resumed"
-                } else {
-                    let _ = self.set_state(session_id, "SUSPENDED").await;
+        let outcome: &str = match trigger {
+            "TaskComplete" => match verdict {
+                "pass" => {
+                    let _ = self.set_state(session_id, "FINISHED").await;
                     let _ = self
                         .events
                         .append(NewEvent {
                             session_id: session_id.to_string(),
                             event_type: EventType::Misc,
                             source: "verifier_gate".into(),
-                            data: serde_json::json!({
-                                "kind":"task_suspended_by_verifier",
-                                "reason": data.get("reason").cloned().unwrap_or(Value::Null)
-                            }),
+                            data: serde_json::json!({"kind":"task_complete"}),
                         })
                         .await;
-                    "suspended"
+                    "finished"
                 }
+                "fail" => {
+                    let want_rollback = data
+                        .get("rollback_required")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    if want_rollback {
+                        if self.rollback_enabled {
+                            if let Some(handler) = &self.rollback {
+                                handler.rollback_latest(session_id, "verifier_fail").await;
+                            }
+                        } else {
+                            tracing::info!(
+                                %session_id,
+                                "verdict requested rollback but checkpoint.rollback_on_verifier_fail is off (phase-1/DEBT.md #3 — default)"
+                            );
+                        }
+                    }
+                    if data.get("suggested_plan_update").is_some()
+                        && !data
+                            .get("suggested_plan_update")
+                            .is_some_and(Value::is_null)
+                    {
+                        let _ = self.set_state(session_id, "RUNNING").await;
+                        let _ = self.runner.resume_session(session_id).await;
+                        "resumed"
+                    } else {
+                        let _ = self.set_state(session_id, "SUSPENDED").await;
+                        let _ = self
+                            .events
+                            .append(NewEvent {
+                                session_id: session_id.to_string(),
+                                event_type: EventType::Misc,
+                                source: "verifier_gate".into(),
+                                data: serde_json::json!({
+                                    "kind":"task_suspended_by_verifier",
+                                    "reason": data.get("reason").cloned().unwrap_or(Value::Null)
+                                }),
+                            })
+                            .await;
+                        "suspended"
+                    }
+                }
+                _ => return,
+            },
+            "Invalidation" => "continued",
+            "CircuitBreaker" => {
+                let has_suggestion = data.get("suggested_plan_update").is_some()
+                    && !data
+                        .get("suggested_plan_update")
+                        .is_some_and(Value::is_null);
+                let kind = data
+                    .get("breaker_kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let breaker = self.runner.breaker_for_session(session_id).await;
+                if verdict == "pass" {
+                    match kind {
+                        "Stuck" => {
+                            breaker.reset_stuck().await;
+                        }
+                        "ErrorRate" => {
+                            breaker.reset_error_rate().await;
+                        }
+                        "Cost" | "MaxSteps" => {
+                            let _ = self.set_state(session_id, "SUSPENDED").await;
+                        }
+                        _ => {}
+                    }
+                } else if verdict == "fail" {
+                    if has_suggestion {
+                        let _ = self.set_state(session_id, "RUNNING").await;
+                        let _ = self.runner.resume_session(session_id).await;
+                    } else if kind == "Stuck" || kind == "ErrorRate" {
+                        let _ = self.set_state(session_id, "ERROR").await;
+                    } else if kind == "Cost" || kind == "MaxSteps" {
+                        let _ = self.set_state(session_id, "SUSPENDED").await;
+                    }
+                }
+                breaker.rearm().await;
+                "continued"
             }
             _ => return,
         };
@@ -237,6 +268,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::agent::breaker::BreakerRegistry;
     use crate::agent::{AgentRunner, AgentRunnerDeps};
     use crate::cost::CostClient;
     use crate::db;
@@ -290,6 +322,7 @@ mod tests {
             checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
             checkpoints: Arc::new(crate::checkpoint::CheckpointStore::new(db.clone())),
             redis: Arc::new(redis.clone()),
+            breakers: Arc::new(BreakerRegistry::new()),
             cancel_tokens: Arc::new(dashmap::DashMap::new()),
         }));
 
@@ -473,6 +506,56 @@ mod tests {
         insert_verdict_event(&events, &session_id, "Invalidation", "pass", None).await;
         let _ = gate.poll_once(0).await.unwrap();
         assert_eq!(state(&db, &session_id).await, "VERIFYING");
+    }
+
+    async fn insert_breaker_verdict(
+        events: &SqliteEventStore,
+        session_id: &str,
+        verdict: &str,
+        breaker_kind: &str,
+        suggested: Option<serde_json::Value>,
+    ) {
+        events
+            .append(NewEvent {
+                session_id: session_id.to_string(),
+                event_type: EventType::Misc,
+                source: "verifier".into(),
+                data: json!({
+                    "kind":"verifier_verdict",
+                    "trigger_kind":"CircuitBreaker",
+                    "verdict": verdict,
+                    "reason": "r",
+                    "breaker_kind": breaker_kind,
+                    "suggested_plan_update": suggested,
+                    "verification_id": "v1",
+                }),
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn breaker_pass_on_cost_still_suspends() {
+        let (gate, events, db, session_id) = fixture().await;
+        insert_breaker_verdict(&events, &session_id, "pass", "Cost", None).await;
+        let _ = gate.poll_once(0).await.unwrap();
+        assert_eq!(state(&db, &session_id).await, "SUSPENDED");
+    }
+
+    #[tokio::test]
+    async fn breaker_fail_without_suggestion_errors_for_stuck() {
+        let (gate, events, db, session_id) = fixture().await;
+        insert_breaker_verdict(&events, &session_id, "fail", "Stuck", None).await;
+        let _ = gate.poll_once(0).await.unwrap();
+        assert_eq!(state(&db, &session_id).await, "ERROR");
+    }
+
+    #[tokio::test]
+    async fn breaker_fail_without_suggestion_suspends_for_cost() {
+        let (gate, events, db, session_id) = fixture().await;
+        insert_breaker_verdict(&events, &session_id, "fail", "Cost", None).await;
+        let _ = gate.poll_once(0).await.unwrap();
+        assert_eq!(state(&db, &session_id).await, "SUSPENDED");
     }
 
     // ------------------------------------------------------------------

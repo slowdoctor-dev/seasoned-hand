@@ -25,11 +25,15 @@ use crate::sandbox::SandboxClient;
 use crate::search::SearchClient;
 use crate::tools::ToolContext;
 
+pub mod breaker;
+pub mod diversity;
 pub mod init;
 mod prompt;
 pub mod recite;
 pub mod stuck;
 
+use breaker::{BreakerRegistry, CircuitBreaker};
+use diversity::DiversityInjector;
 pub use prompt::build_messages;
 use recite::{ReciteScheduler, recite_tick};
 use stuck::{StuckAction, StuckTracker};
@@ -84,6 +88,8 @@ pub struct AgentRunner {
     checkpoint_labels: Arc<crate::checkpoint::CheckpointLabelBuffer>,
     checkpoints: Arc<crate::checkpoint::CheckpointStore>,
     redis: Arc<RedisPool>,
+    breakers: Arc<BreakerRegistry>,
+    diversity: Arc<DiversityInjector>,
     run_config: Arc<tokio::sync::Mutex<HashMap<String, RunRequest>>>,
     cancel_tokens: Arc<DashMap<String, CancellationToken>>,
 }
@@ -102,6 +108,7 @@ pub struct AgentRunnerDeps {
     pub checkpoint_labels: Arc<crate::checkpoint::CheckpointLabelBuffer>,
     pub checkpoints: Arc<crate::checkpoint::CheckpointStore>,
     pub redis: Arc<RedisPool>,
+    pub breakers: Arc<BreakerRegistry>,
     pub cancel_tokens: Arc<DashMap<String, CancellationToken>>,
 }
 
@@ -121,6 +128,8 @@ impl AgentRunner {
             checkpoint_labels: deps.checkpoint_labels,
             checkpoints: deps.checkpoints,
             redis: deps.redis,
+            breakers: deps.breakers,
+            diversity: Arc::new(DiversityInjector::new()),
             run_config: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             cancel_tokens: deps.cancel_tokens,
         }
@@ -198,6 +207,7 @@ impl AgentRunner {
                 None
             }
         };
+        let breaker = self.breakers.for_session(&req.session_id).await;
 
         for step in start_step..req.max_steps {
             steps_run = step + 1;
@@ -290,7 +300,16 @@ impl AgentRunner {
                         json!({"step": step + 1, "duplicate_count": count}),
                     )
                     .await?;
-                    strategy_prompt = Some(strategy_change_prompt(count));
+                    let (event_id, summary) = self
+                        .latest_observation_summary(&req.session_id)
+                        .await
+                        .unwrap_or((0, "none".to_string()));
+                    strategy_prompt = Some(self.diversity.next_prompt(
+                        &req.session_id,
+                        count,
+                        event_id,
+                        &summary,
+                    ));
                 }
                 StuckAction::Terminate { count } => {
                     self.emit_misc(
@@ -299,8 +318,15 @@ impl AgentRunner {
                         json!({"step": step + 1, "duplicate_count": count}),
                     )
                     .await?;
-                    self.set_session_state(&req.session_id, "ERROR").await?;
-                    return Err(AgentError::StuckTerminated { count });
+                    if let Some(kind) = breaker.note_stuck_and_check(count).await {
+                        self.emit_breaker_trigger(&req.session_id, kind).await?;
+                    }
+                    return Ok(RunResult {
+                        session_id: req.session_id,
+                        completed: false,
+                        last_message,
+                        steps: step + 1,
+                    });
                 }
             }
 
@@ -351,6 +377,15 @@ impl AgentRunner {
                 .dispatcher
                 .dispatch(&ctx, &call.function.name, args)
                 .await;
+            if let Some(kind) = breaker.note_observation_and_check(output.ok).await {
+                self.emit_breaker_trigger(&req.session_id, kind).await?;
+                return Ok(RunResult {
+                    session_id: req.session_id,
+                    completed: false,
+                    last_message,
+                    steps: step + 1,
+                });
+            }
             let final_idle = call.function.name == "idle";
             if output.ok && (final_idle || final_notify) && verifier_active {
                 self.mark_task_complete(&req.session_id, &call.id).await?;
@@ -374,7 +409,9 @@ impl AgentRunner {
                     json!({"current_cents": current_cost, "cap_cents": cap}),
                 )
                 .await?;
-                self.set_session_state(&req.session_id, "SUSPENDED").await?;
+                if let Some(kind) = breaker.note_cost_and_check(current_cost as u32, cap).await {
+                    self.emit_breaker_trigger(&req.session_id, kind).await?;
+                }
                 return Ok(RunResult {
                     session_id: req.session_id,
                     completed: false,
@@ -412,9 +449,13 @@ impl AgentRunner {
                 json!({"max_steps": req.max_steps}),
             )
             .await?;
+            if let Some(kind) = breaker
+                .note_iteration_and_check(req.max_steps, req.max_steps)
+                .await
+            {
+                self.emit_breaker_trigger(&req.session_id, kind).await?;
+            }
         }
-        self.set_session_state(&req.session_id, "FINISHED").await?;
-        self.cancel_tokens.remove(&req.session_id);
         Ok(RunResult {
             session_id: req.session_id,
             completed: false,
@@ -563,12 +604,69 @@ impl AgentRunner {
                 final_message_call_id: call_id.to_string(),
             },
             triggered_at_event_id: event.id as u64,
-            context_hint: Default::default(),
+            context_hint: crate::verifier::VerifyContextHint,
         };
         if let Err(error) = self.redis.xadd_json("verify_request", &req).await {
             tracing::warn!(%error, "failed to enqueue verify_request");
         }
         Ok(())
+    }
+
+    async fn emit_breaker_trigger(
+        &self,
+        session_id: &str,
+        kind: crate::verifier::BreakerKind,
+    ) -> Result<(), AgentError> {
+        let event = self
+            .events
+            .append(NewEvent {
+                session_id: session_id.to_string(),
+                event_type: EventType::Misc,
+                source: "agent".into(),
+                data: json!({
+                    "kind":"verifier_request",
+                    "trigger":"CircuitBreaker",
+                    "breaker_kind": kind,
+                }),
+            })
+            .await?;
+        let req = crate::verifier::VerifyRequest {
+            session_id: session_id.to_string(),
+            trigger: crate::verifier::VerifyTrigger::CircuitBreaker { kind },
+            triggered_at_event_id: event.id as u64,
+            context_hint: crate::verifier::VerifyContextHint,
+        };
+        if let Err(error) = self.redis.xadd_json("verify_request", &req).await {
+            tracing::warn!(%error, "failed to enqueue breaker verify_request");
+        }
+        Ok(())
+    }
+
+    async fn latest_observation_summary(
+        &self,
+        session_id: &str,
+    ) -> Result<(u64, String), AgentError> {
+        let rows = self
+            .events
+            .query(session_id, crate::events::EventQuery::default())
+            .await?;
+        if let Some(ev) = rows
+            .iter()
+            .rev()
+            .find(|e| e.event_type == EventType::Observation)
+        {
+            let summary = ev
+                .data
+                .get("body")
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "observation".to_string());
+            return Ok((ev.id as u64, summary));
+        }
+        Ok((0, "none".to_string()))
+    }
+
+    pub async fn breaker_for_session(&self, session_id: &str) -> CircuitBreaker {
+        self.breakers.for_session(session_id).await
     }
 
     async fn set_session_state(&self, session_id: &str, state: &str) -> Result<(), AgentError> {
@@ -596,13 +694,6 @@ fn parse_args(raw: &str) -> Value {
         Ok(value) => value,
         Err(_) => Value::Null,
     }
-}
-
-fn strategy_change_prompt(count: u32) -> String {
-    format!(
-        "You have repeated the same response {count} times. Try a different strategy: consider \
-         a different tool, re-read recent observations, or call message_ask_user to clarify."
-    )
 }
 
 #[cfg(test)]

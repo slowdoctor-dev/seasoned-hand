@@ -7,6 +7,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use super::*;
+use crate::agent::breaker::BreakerRegistry;
 use crate::cost::CostClient;
 use crate::db;
 use crate::dispatch::hooks::EventEmittingHook;
@@ -161,6 +162,7 @@ slots:
         checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
         checkpoints: Arc::new(crate::checkpoint::CheckpointStore::new(db.clone())),
         redis: Arc::new(redis.clone()),
+        breakers: Arc::new(BreakerRegistry::new()),
         cancel_tokens: Arc::new(dashmap::DashMap::new()),
     });
 
@@ -343,9 +345,16 @@ async fn max_steps_terminates() {
 
     assert!(!result.completed);
     assert_eq!(result.steps, 2);
+    assert_eq!(session_state(&h.db, &h.session_id).await, "RUNNING");
     assert!(events.iter().any(|event| {
         event.event_type == EventType::Misc
             && event.data.get("kind").and_then(Value::as_str) == Some("max_steps_reached")
+    }));
+    assert!(events.iter().any(|event| {
+        event.event_type == EventType::Misc
+            && event.data.get("kind").and_then(Value::as_str) == Some("verifier_request")
+            && event.data.get("trigger").and_then(Value::as_str) == Some("CircuitBreaker")
+            && event.data.get("breaker_kind").and_then(Value::as_str) == Some("MaxSteps")
     }));
 }
 
@@ -394,20 +403,20 @@ async fn agent_runner_emits_stuck_inject_event_and_continues() {
             && event.data.get("kind").and_then(Value::as_str) == Some("stuck_inject")
             && event.data.get("duplicate_count").and_then(Value::as_u64) == Some(2)
     }));
-    let strategy_prompt_seen = requests.iter().any(|request| {
-        request
-            .get("messages")
-            .and_then(Value::as_array)
-            .is_some_and(|messages| {
-                messages.iter().any(|message| {
-                    message.get("role").and_then(Value::as_str) == Some("system")
-                        && message
-                            .get("content")
-                            .and_then(Value::as_str)
-                            .is_some_and(|content| content.contains("Try a different strategy"))
+    let strategy_prompt_seen =
+        requests.iter().any(|request| {
+            request
+                .get("messages")
+                .and_then(Value::as_array)
+                .is_some_and(|messages| {
+                    messages.iter().any(|message| {
+                        message.get("role").and_then(Value::as_str) == Some("system")
+                            && message.get("content").and_then(Value::as_str).is_some_and(
+                                |content| content.contains("Your last observation (event #"),
+                            )
+                    })
                 })
-            })
-    });
+        });
     assert!(strategy_prompt_seen);
 }
 
@@ -426,23 +435,26 @@ async fn agent_runner_terminates_on_four_duplicates() {
     ])
     .await;
 
-    let error = h
-        .runner
-        .run(req(&h.session_id, 6))
-        .await
-        .expect_err("run should terminate as stuck");
+    let result = h.runner.run(req(&h.session_id, 6)).await.expect("run");
     let events = h
         .events
         .query(&h.session_id, EventQuery::default())
         .await
         .expect("events query");
 
-    assert!(matches!(error, AgentError::StuckTerminated { count: 4 }));
-    assert_eq!(session_state(&h.db, &h.session_id).await, "ERROR");
+    assert!(!result.completed);
+    assert_eq!(result.steps, 4);
+    assert_eq!(session_state(&h.db, &h.session_id).await, "RUNNING");
     assert!(events.iter().any(|event| {
         event.event_type == EventType::Misc
             && event.data.get("kind").and_then(Value::as_str) == Some("stuck_terminate")
             && event.data.get("duplicate_count").and_then(Value::as_u64) == Some(4)
+    }));
+    assert!(events.iter().any(|event| {
+        event.event_type == EventType::Misc
+            && event.data.get("kind").and_then(Value::as_str) == Some("verifier_request")
+            && event.data.get("trigger").and_then(Value::as_str) == Some("CircuitBreaker")
+            && event.data.get("breaker_kind").and_then(Value::as_str) == Some("Stuck")
     }));
 }
 
@@ -475,12 +487,18 @@ async fn agent_runner_halts_on_cost_cap() {
 
     assert!(!result.completed);
     assert_eq!(result.steps, 1);
-    assert_eq!(session_state(&h.db, &h.session_id).await, "SUSPENDED");
+    assert_eq!(session_state(&h.db, &h.session_id).await, "RUNNING");
     assert_eq!(session_cost(&h.db, &h.session_id).await, 5);
     assert!(events.iter().any(|event| {
         event.event_type == EventType::Misc
             && event.data.get("kind").and_then(Value::as_str) == Some("cost_cap")
             && event.data.get("current_cents").and_then(Value::as_i64) == Some(5)
+    }));
+    assert!(events.iter().any(|event| {
+        event.event_type == EventType::Misc
+            && event.data.get("kind").and_then(Value::as_str) == Some("verifier_request")
+            && event.data.get("trigger").and_then(Value::as_str) == Some("CircuitBreaker")
+            && event.data.get("breaker_kind").and_then(Value::as_str) == Some("Cost")
     }));
 }
 
@@ -600,13 +618,20 @@ async fn message_notify_user_without_final_does_not_trigger() {
     // thing: with verifier ENABLED, omitting `final` still must not
     // trigger the VERIFYING transition. (Phase 1.10 trigger gate is
     // `final:true && verifier_active`.)
-    let h = harness_with_verifier(vec![completion(vec![(
-        "call-1",
-        "message_notify_user",
-        json!({"content":"not final"}),
-    )])])
+    let h = harness_with_verifier(vec![
+        completion(vec![(
+            "call-1",
+            "message_notify_user",
+            json!({"content":"not final"}),
+        )]),
+        completion(vec![(
+            "call-2",
+            "message_ask_user",
+            json!({"content":"need input"}),
+        )]),
+    ])
     .await;
-    let _ = h.runner.run(req(&h.session_id, 1)).await.expect("run");
+    let _ = h.runner.run(req(&h.session_id, 2)).await.expect("run");
     let events = h
         .events
         .query(&h.session_id, EventQuery::default())
@@ -615,6 +640,7 @@ async fn message_notify_user_without_final_does_not_trigger() {
     assert!(!events.iter().any(|event| {
         event.event_type == EventType::Misc
             && event.data.get("kind").and_then(Value::as_str) == Some("verifier_request")
+            && event.data.get("trigger").and_then(Value::as_str) == Some("TaskComplete")
     }));
 }
 
