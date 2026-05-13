@@ -529,7 +529,10 @@ No schema migration. New documented values:
 | `checkpoint_rollback` | Checkpoint Manager | `{ checkpoint_id, git_sha, reason, rolled_back_by }` |
 | `feature_done` | `feature_mark_done` tool | `{ feature_id, title }` |
 | `progress_recite` | Context Recitation | `{ progress_path, content_preview }` |
+| `browser_track_b` | 3-track hook | `{ call_id, dom_text_ref }` (story 1.16; side-channel for Observation's DOM text — see story-1.16.md execution notes) |
+| `browser_track_b_skipped` | 3-track hook | `{ call_id, reason }` |
 | `browser_track_c` | 3-track hook | `{ call_id, file_ref }` |
+| `browser_track_c_skipped` | 3-track hook | `{ call_id, reason }` |
 | `narration` (NOT a `Misc.kind`) | — | Emitted as a Message event with `ui:"narrate"`, not as Misc |
 
 ### 3.5 `feature-list.json` schema (workspace file, not DB)

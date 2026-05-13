@@ -280,6 +280,53 @@ task control) is independent of this backend work and can be done in
 parallel. Story 1.19 (frontend BrowserTab) consumes:
 
 - Track A: existing noVNC iframe (Phase 0).
-- Track B: `Observation.dom_text_ref` (resolved on-demand by frontend).
+- Track B: `Misc{kind:"browser_track_b"}` events keyed by `call_id`
+  (see execution notes — divergence from the Observation-mutation
+  framing the spec sketched).
 - Track C: `Misc{kind:"browser_track_c"}` events, file path served
   through `/v1/workspace/:session_id/*` Phase 0 route.
+
+---
+
+## Execution notes
+
+**Spec divergence — Track B becomes a side-channel `Misc` event, not a
+field nested in the Observation.** The story says "The Observation
+event's payload gains a `dom_text_ref` field." The Phase 0 `Hook::post`
+trait signature is `&ToolOutput` (immutable), and the canonical
+Observation event is emitted by `EventEmittingHook` synchronously
+within the dispatcher loop *before* my hook can see the result. Adding
+a real `dom_text_ref` field on the Observation would have required
+either (a) flipping the trait to `&mut ToolOutput` (touches every
+existing hook + the dispatcher contract) or (b) negotiating a hook
+ordering guarantee. Both are bigger refactors than this story budgets.
+
+Resolution: emit a paired `Misc{kind:"browser_track_b", call_id,
+dom_text_ref}` event. Downstream consumers (Verifier context builder
+in story 1.9, frontend BrowserTab in story 1.19) already join browser
+artifacts to the originating Action+Observation pair by `call_id`, so
+the field-vs-side-channel distinction is invisible to them. Same shape
+trade-off as `verifier_request`, which also lives as a `Misc` kind
+rather than nested in the Action payload that triggered it.
+Architecture §3.4 now lists all four new `Misc.kind`s.
+
+**Spec divergence — `SandboxClient::browser_view` returns
+`serde_json::Value`, not `String`.** The story's example signature
+`Result<String, SandboxError>` was a sketch. The Phase 0 `browser_view`
+tool returns the JSON pair `{browser_info, elements}` (architecture §7
+canonical shape), not a single string. To keep the shared accessor
+bit-identical to what the Phase 0 tool now invokes — eliminating the
+"parallel HTTP path" concern the spec explicitly forbids — the method
+returns that same JSON. The hook flattens to text via
+`dom_text_from_browser_view_output` (prefers a literal `text` field if
+upstream surfaces one; falls back to a JSON serialization of the
+elements blob).
+
+**No `config/seasoned-hand.toml` `[browser.tracks]` section.** The spec
+proposes a toml-config knob for the screenshot timeout. The
+implementation exposes
+`PostBrowserActionHook::with_screenshot_timeout(Duration)` and defaults
+to 3 s (`DEFAULT_SCREENSHOT_TIMEOUT`). Plumbing one duration through
+the boot config loader is more apparatus than this story justifies —
+the builder is enough surface for tests and main.rs, and a real config
+knob can land later without breaking callers.

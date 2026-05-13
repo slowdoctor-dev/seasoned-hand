@@ -614,14 +614,28 @@ impl Tool for BrowserView {
         obj_schema(json!({}), &[])
     }
     async fn invoke(&self, _args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
-        let info = sandbox_get(ctx, "/v1/browser/info").await?;
-        let elements = sandbox_get(ctx, "/v1/browser/page/elements").await?;
-        Ok(ToolOutput {
-            ok: info.ok && elements.ok,
-            output: json!({"browser_info": info.output, "elements": elements.output}),
-            file_ref: None,
-            error: info.error.or(elements.error),
-        })
+        // Story 1.16: this tool and the PostBrowserActionHook share one
+        // canonical accessor (`SandboxClient::browser_view`) so the DOM
+        // text captured for Track B is bit-identical to what the tool
+        // returns directly.
+        match ctx.sandbox.browser_view(&ctx.session_id).await {
+            Ok(output) => Ok(ToolOutput {
+                ok: true,
+                output,
+                file_ref: None,
+                error: None,
+            }),
+            Err(crate::sandbox::SandboxError::HttpStatus { status, path }) => Ok(ToolOutput {
+                ok: false,
+                output: Value::Null,
+                file_ref: None,
+                error: Some(ToolErrorPayload {
+                    kind: "sandbox_http".into(),
+                    message: format!("HTTP {status} from {path}"),
+                }),
+            }),
+            Err(err) => Err(ToolError::Backend(err.to_string())),
+        }
     }
 }
 

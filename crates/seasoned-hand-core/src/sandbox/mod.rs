@@ -47,6 +47,10 @@ pub enum SandboxError {
     InvalidWorkspace(String),
     #[error("workspace bootstrap: {0}")]
     WorkspaceBootstrap(String),
+    #[error("sandbox http: {0}")]
+    Http(String),
+    #[error("sandbox http status {status} from {path}")]
+    HttpStatus { status: u16, path: String },
 }
 
 #[derive(Clone, Debug)]
@@ -149,6 +153,58 @@ impl SandboxClient {
             .map_err(|e| SandboxError::WorkspaceBootstrap(format!("serialize json: {e}")))?;
         self.write_workspace_file(session_id, relative_path, &bytes)
             .await
+    }
+
+    /// Canonical accessor for the sandbox `browser_view` payload — the
+    /// `{browser_info, elements}` JSON that the Phase 0 `browser_view`
+    /// tool surfaces. Both that tool and the Phase 1
+    /// `PostBrowserActionHook` (story 1.16, Track B) call this so there
+    /// is exactly one HTTP path per logical operation.
+    ///
+    /// refs: /specs/phase-1/stories/story-1.16.md
+    pub async fn browser_view(&self, session_id: &str) -> Result<serde_json::Value, SandboxError> {
+        let handle = self
+            .get(session_id)
+            .await
+            .ok_or_else(|| SandboxError::NotFound(session_id.to_string()))?;
+        let client = reqwest::Client::new();
+        let info = sandbox_get_json(&client, &handle.api_url, "/v1/browser/info").await?;
+        let elements =
+            sandbox_get_json(&client, &handle.api_url, "/v1/browser/page/elements").await?;
+        Ok(serde_json::json!({
+            "browser_info": info,
+            "elements": elements,
+        }))
+    }
+
+    /// New in Phase 1 (story 1.16, Track C): capture a PNG screenshot
+    /// of the sandbox browser viewport. Returns raw PNG bytes.
+    ///
+    /// refs: /specs/phase-1/stories/story-1.16.md
+    pub async fn browser_screenshot(&self, session_id: &str) -> Result<Vec<u8>, SandboxError> {
+        let handle = self
+            .get(session_id)
+            .await
+            .ok_or_else(|| SandboxError::NotFound(session_id.to_string()))?;
+        let url = format!("{}/v1/browser/screenshot", handle.api_url);
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| SandboxError::Http(e.to_string()))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(SandboxError::HttpStatus {
+                status: status.as_u16(),
+                path: "/v1/browser/screenshot".into(),
+            });
+        }
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| SandboxError::Http(e.to_string()))?;
+        Ok(bytes.to_vec())
     }
 
     pub async fn create(&self, session_id: &str) -> Result<SandboxHandle, SandboxError> {
@@ -551,6 +607,32 @@ fn extract_host_ports(
         }
     }
     Ok(out)
+}
+
+/// Shared GET-as-JSON helper for the Phase 1 `browser_view` accessor.
+/// Kept private to the sandbox module — tool-side HTTP goes through
+/// `tools::builtin::sandbox_get` which carries its own error mapping.
+async fn sandbox_get_json(
+    client: &reqwest::Client,
+    api_url: &str,
+    path: &str,
+) -> Result<serde_json::Value, SandboxError> {
+    let url = format!("{api_url}{path}");
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| SandboxError::Http(e.to_string()))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(SandboxError::HttpStatus {
+            status: status.as_u16(),
+            path: path.to_string(),
+        });
+    }
+    resp.json::<serde_json::Value>()
+        .await
+        .map_err(|e| SandboxError::Http(e.to_string()))
 }
 
 #[cfg(test)]

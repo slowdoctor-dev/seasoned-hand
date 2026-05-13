@@ -16,6 +16,7 @@ use dashmap::DashMap;
 use seasoned_hand_core::agent::init::feature_list::FeatureList;
 use seasoned_hand_core::agent::init::progress;
 use seasoned_hand_core::agent::{AgentRunner, AgentRunnerDeps};
+use seasoned_hand_core::browser::tracks::PostBrowserActionHook;
 use seasoned_hand_core::capability::ModelCapabilities;
 use seasoned_hand_core::cost::{CostClient, CostSnapshot};
 use seasoned_hand_core::db::DbPool;
@@ -106,7 +107,8 @@ impl AppState {
                 .with_hook(Arc::new(InvalidationHook::new(
                     events.clone(),
                     Some(redis_arc.clone()),
-                ))),
+                )))
+                .with_hook(Arc::new(PostBrowserActionHook::new(events.clone()))),
         );
         let verifier_enabled = router.verifier_enabled();
         let verifications = Arc::new(VerificationStore::new(db.clone()));
