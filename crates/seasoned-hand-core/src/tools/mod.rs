@@ -12,7 +12,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::checkpoint::{CheckpointLabelBuffer, CheckpointStore};
-use crate::dispatch::mask::MaskContext;
+use crate::dispatch::mask::AgentMode;
 use crate::events::sqlite::SqliteEventStore;
 use crate::plan::PlanManager;
 use crate::sandbox::SandboxClient;
@@ -54,7 +54,7 @@ pub enum ToolError {
 #[derive(Clone)]
 pub struct ToolContext {
     pub session_id: String,
-    pub mask_ctx: MaskContext,
+    pub mask_mode: AgentMode,
     pub events: Arc<SqliteEventStore>,
     pub sandbox: Arc<SandboxClient>,
     pub search: Arc<SearchClient>,

@@ -38,20 +38,11 @@ impl ToolDispatcher {
         &self.registry
     }
 
-    pub fn mask_policy(&self) -> Arc<dyn ToolMaskPolicy> {
-        self.mask_policy.clone()
-    }
-
-    pub fn with_mask_policy(mut self, mask_policy: Arc<dyn ToolMaskPolicy>) -> Self {
-        self.mask_policy = mask_policy;
-        self
-    }
-
     /// Dispatch a tool call. Always returns a `ToolOutput` — internal
     /// errors are translated into `ok:false + error{kind}` payloads so
     /// the agent loop never has to catch a Rust-level error.
     pub async fn dispatch(&self, ctx: &ToolContext, tool_name: &str, args: Value) -> ToolOutput {
-        if !self.mask_policy.is_available(tool_name, &ctx.mask_ctx) {
+        if !self.mask_policy.is_available(tool_name, ctx.mask_mode) {
             if let Err(error) = ctx
                 .events
                 .append(NewEvent {
@@ -61,7 +52,7 @@ impl ToolDispatcher {
                     data: json!({
                         "kind": "tool_mask_violation",
                         "tool": tool_name,
-                        "mode": format!("{:?}", ctx.mask_ctx.mode),
+                        "mode": format!("{:?}", ctx.mask_mode),
                     }),
                 })
                 .await
@@ -76,7 +67,7 @@ impl ToolDispatcher {
                     kind: "tool_unavailable_in_iteration".into(),
                     message: format!(
                         "tool '{}' unavailable in mode {:?}",
-                        tool_name, ctx.mask_ctx.mode
+                        tool_name, ctx.mask_mode
                     ),
                 }),
             };

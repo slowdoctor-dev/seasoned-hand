@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::db;
-use crate::dispatch::mask::{AgentMode, MaskContext};
+use crate::dispatch::mask::AgentMode;
 use crate::events::payload::EventPayloadBody;
 use crate::events::sqlite::SqliteEventStore;
 use crate::events::{EventQuery, EventStore, EventType};
@@ -40,11 +40,7 @@ async fn fixture() -> (ToolDispatcher, ToolContext) {
     let search = Arc::new(SearchClient::new(SearchProvider::Brave { api_key: None }));
     let ctx = ToolContext {
         session_id: "s1".into(),
-        mask_ctx: MaskContext {
-            session_id: "s1".into(),
-            iteration: 0,
-            mode: AgentMode::Worker,
-        },
+        mask_mode: AgentMode::Worker,
         events: store,
         sandbox,
         search,
@@ -118,11 +114,7 @@ async fn fixture_with_hook() -> (ToolDispatcher, ToolContext, Arc<SqliteEventSto
     let search = Arc::new(SearchClient::new(SearchProvider::Brave { api_key: None }));
     let ctx = ToolContext {
         session_id: "s1".into(),
-        mask_ctx: MaskContext {
-            session_id: "s1".into(),
-            iteration: 0,
-            mode: AgentMode::Worker,
-        },
+        mask_mode: AgentMode::Worker,
         events: store.clone(),
         sandbox,
         search,
@@ -345,11 +337,7 @@ async fn different_content_via_shell_exec_triggers() {
     let search = Arc::new(SearchClient::new(SearchProvider::Brave { api_key: None }));
     let ctx = ToolContext {
         session_id: "s1".into(),
-        mask_ctx: MaskContext {
-            session_id: "s1".into(),
-            iteration: 0,
-            mode: AgentMode::Worker,
-        },
+        mask_mode: AgentMode::Worker,
         events: store.clone(),
         sandbox,
         search,
@@ -467,7 +455,7 @@ impl Tool for PlanCreateTool {
 async fn dispatcher_rejects_masked_tool() {
     let (mut d, mut ctx, store) = fixture_with_hook().await;
     d.registry.insert("plan_create", Arc::new(PlanCreateTool));
-    ctx.mask_ctx.mode = AgentMode::Worker;
+    ctx.mask_mode = AgentMode::Worker;
     let out = d
         .dispatch(&ctx, "plan_create", json!({"goal":"x","phases":[]}))
         .await;
@@ -488,7 +476,7 @@ async fn dispatcher_rejects_masked_tool() {
 async fn initializer_can_still_call_plan_create_directly() {
     let (mut d, mut ctx, _store) = fixture_with_hook().await;
     d.registry.insert("plan_create", Arc::new(PlanCreateTool));
-    ctx.mask_ctx.mode = AgentMode::Initializer;
+    ctx.mask_mode = AgentMode::Initializer;
     let out = d
         .dispatch(
             &ctx,

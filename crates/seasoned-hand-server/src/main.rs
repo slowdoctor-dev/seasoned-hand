@@ -254,11 +254,7 @@ impl seasoned_hand_core::verifier::gate::RollbackHandler for ProductionRollbackH
         };
         let ctx = seasoned_hand_core::tools::ToolContext {
             session_id: session_id.to_string(),
-            mask_ctx: seasoned_hand_core::dispatch::mask::MaskContext {
-                session_id: session_id.to_string(),
-                iteration: 0,
-                mode: seasoned_hand_core::dispatch::mask::AgentMode::Internal,
-            },
+            mask_mode: seasoned_hand_core::dispatch::mask::AgentMode::Internal,
             events: self.state.events.clone(),
             sandbox: self.state.sandbox.clone(),
             search: self.state.search.clone(),

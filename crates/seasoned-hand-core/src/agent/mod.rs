@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use crate::cost::{CostClient, CostSnapshot, delta_between};
 use crate::db::{DbError, DbPool};
 use crate::dispatch::ToolDispatcher;
-use crate::dispatch::mask::{AgentMode, MaskContext, ToolMaskPolicy, apply_mask};
+use crate::dispatch::mask::{AgentMode, ToolMaskPolicy, apply_mask};
 use crate::events::{EventError, EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
 use crate::llm::{ChatCompletionRequest, LlmClient, LlmError, ToolChoice, ToolSpec};
 use crate::plan::PlanManager;
@@ -245,12 +245,7 @@ impl AgentRunner {
                 );
             }
             let mut tools = self.tool_specs_from_registry();
-            let mask_ctx = MaskContext {
-                session_id: req.session_id.clone(),
-                iteration: step,
-                mode: AgentMode::Worker,
-            };
-            apply_mask(&mut tools, &*self.mask_policy, &mask_ctx);
+            apply_mask(&mut tools, &*self.mask_policy, AgentMode::Worker);
             let main_slot = self.router.resolve(SlotName::Main);
             let response = match self
                 .llm
@@ -359,7 +354,7 @@ impl AgentRunner {
             let args = parse_args(&call.function.arguments);
             let ctx = ToolContext {
                 session_id: req.session_id.clone(),
-                mask_ctx,
+                mask_mode: AgentMode::Worker,
                 events: self.events.clone(),
                 sandbox: self.sandbox.clone(),
                 search: self.search.clone(),

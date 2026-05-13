@@ -803,11 +803,7 @@ async fn post_checkpoint_rollback_handler(
     // affects only what's exposed to the LLM, so direct dispatch works.
     let ctx = seasoned_hand_core::tools::ToolContext {
         session_id: session_id.clone(),
-        mask_ctx: seasoned_hand_core::dispatch::mask::MaskContext {
-            session_id: session_id.clone(),
-            iteration: 0,
-            mode: seasoned_hand_core::dispatch::mask::AgentMode::Internal,
-        },
+        mask_mode: seasoned_hand_core::dispatch::mask::AgentMode::Internal,
         events: state.events.clone(),
         sandbox: state.sandbox.clone(),
         search: state.search.clone(),

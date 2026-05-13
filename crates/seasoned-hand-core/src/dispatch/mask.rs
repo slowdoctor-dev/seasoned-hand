@@ -14,32 +14,15 @@ pub enum AgentMode {
     Internal,
 }
 
-#[derive(Debug, Clone)]
-pub struct MaskContext {
-    pub session_id: String,
-    pub iteration: u32,
-    pub mode: AgentMode,
-}
-
-impl Default for MaskContext {
-    fn default() -> Self {
-        Self {
-            session_id: String::new(),
-            iteration: 0,
-            mode: AgentMode::Worker,
-        }
-    }
-}
-
 pub trait ToolMaskPolicy: Send + Sync {
-    fn is_available(&self, tool_name: &str, ctx: &MaskContext) -> bool;
+    fn is_available(&self, tool_name: &str, mode: AgentMode) -> bool;
 }
 
 pub struct DefaultMaskPolicy;
 
 impl ToolMaskPolicy for DefaultMaskPolicy {
-    fn is_available(&self, tool_name: &str, ctx: &MaskContext) -> bool {
-        match (tool_name, ctx.mode) {
+    fn is_available(&self, tool_name: &str, mode: AgentMode) -> bool {
+        match (tool_name, mode) {
             // `plan_create` is Initializer-only.
             ("plan_create", AgentMode::Worker | AgentMode::Verifier) => false,
             // Story 1.13b: `checkpoint_rollback` is masked from every
@@ -53,9 +36,9 @@ impl ToolMaskPolicy for DefaultMaskPolicy {
     }
 }
 
-pub fn apply_mask(specs: &mut [ToolSpec], policy: &dyn ToolMaskPolicy, ctx: &MaskContext) {
+pub fn apply_mask(specs: &mut [ToolSpec], policy: &dyn ToolMaskPolicy, mode: AgentMode) {
     for spec in specs.iter_mut() {
-        if !policy.is_available(&spec.function.name, ctx)
+        if !policy.is_available(&spec.function.name, mode)
             && !spec.function.description.starts_with(UNAVAILABLE_PREFIX)
         {
             spec.function.description =
@@ -67,16 +50,6 @@ pub fn apply_mask(specs: &mut [ToolSpec], policy: &dyn ToolMaskPolicy, ctx: &Mas
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct ToggleMaskPolicy;
-    impl ToolMaskPolicy for ToggleMaskPolicy {
-        fn is_available(&self, tool_name: &str, ctx: &MaskContext) -> bool {
-            if tool_name == "plan_create" {
-                return (ctx.iteration & 1) == 0;
-            }
-            true
-        }
-    }
 
     fn sample_specs() -> Vec<ToolSpec> {
         vec![
@@ -93,12 +66,7 @@ mod tests {
     #[test]
     fn mask_descriptions_prefix_unavailable() {
         let mut specs = sample_specs();
-        let ctx = MaskContext {
-            session_id: "s1".into(),
-            iteration: 1,
-            mode: AgentMode::Worker,
-        };
-        apply_mask(&mut specs, &DefaultMaskPolicy, &ctx);
+        apply_mask(&mut specs, &DefaultMaskPolicy, AgentMode::Worker);
         let plan_create = specs
             .iter()
             .find(|spec| spec.function.name == "plan_create")
@@ -109,36 +77,6 @@ mod tests {
                 .description
                 .starts_with(UNAVAILABLE_PREFIX)
         );
-    }
-
-    #[test]
-    fn mask_does_not_change_order() {
-        let baseline: Vec<(String, String)> = sample_specs()
-            .iter()
-            .map(|spec| {
-                let hash = serde_json::to_string(&spec.function.parameters).expect("schema json");
-                (spec.function.name.clone(), hash)
-            })
-            .collect();
-
-        for iteration in [0_u32, 1_u32, 50_u32] {
-            let mut specs = sample_specs();
-            let ctx = MaskContext {
-                session_id: "s1".into(),
-                iteration,
-                mode: AgentMode::Worker,
-            };
-            apply_mask(&mut specs, &ToggleMaskPolicy, &ctx);
-            let current: Vec<(String, String)> = specs
-                .iter()
-                .map(|spec| {
-                    let hash =
-                        serde_json::to_string(&spec.function.parameters).expect("schema json");
-                    (spec.function.name.clone(), hash)
-                })
-                .collect();
-            assert_eq!(baseline, current);
-        }
     }
 
     #[test]
@@ -154,23 +92,13 @@ mod tests {
             AgentMode::Worker,
             AgentMode::Verifier,
         ] {
-            let ctx = MaskContext {
-                session_id: "s1".into(),
-                iteration: 0,
-                mode,
-            };
             assert!(
-                !policy.is_available("checkpoint_rollback", &ctx),
+                !policy.is_available("checkpoint_rollback", mode),
                 "checkpoint_rollback must be masked from AgentMode::{mode:?}"
             );
         }
-        let internal = MaskContext {
-            session_id: "s1".into(),
-            iteration: 0,
-            mode: AgentMode::Internal,
-        };
         assert!(
-            policy.is_available("checkpoint_rollback", &internal),
+            policy.is_available("checkpoint_rollback", AgentMode::Internal),
             "checkpoint_rollback must be AVAILABLE in AgentMode::Internal"
         );
     }

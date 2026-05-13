@@ -10,7 +10,7 @@ use super::{NarrationConfig, NarratorHook};
 use crate::checkpoint::{CheckpointLabelBuffer, CheckpointStore};
 use crate::db;
 use crate::dispatch::hooks::Hook;
-use crate::dispatch::mask::{AgentMode, MaskContext};
+use crate::dispatch::mask::AgentMode;
 use crate::events::sqlite::SqliteEventStore;
 use crate::events::{EventQuery, EventStore, EventType};
 use crate::llm::{LlmClient, Role};
@@ -49,11 +49,7 @@ async fn fixture() -> Fixture {
     let search = SearchClient::new(SearchProvider::Brave { api_key: None });
     let ctx = ToolContext {
         session_id: SESSION.into(),
-        mask_ctx: MaskContext {
-            session_id: SESSION.into(),
-            iteration: 0,
-            mode: AgentMode::Worker,
-        },
+        mask_mode: AgentMode::Worker,
         events: events.clone(),
         sandbox: Arc::new(sandbox),
         search: Arc::new(search),
