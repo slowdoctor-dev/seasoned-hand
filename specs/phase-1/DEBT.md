@@ -232,7 +232,7 @@ notes) — append them below as item 14+ when the decision is made.
   feature flag (mirroring the existing `#[ignore]`'d Redis pattern
   from Phase 0). The shipped `handle_request` is unchanged.
 
-### ~~14. `SandboxGitShell::commit_phase` builds a shell string with weak quoting~~ ✅ resolved 2026-05-13 (story 2.19, commit `_this_commit_`)
+### ~~14. `SandboxGitShell::commit_phase` builds a shell string with weak quoting~~ ✅ resolved 2026-05-13 (story 2.19, commit `43a06d8`)
 - ~~**Origin**: story 1.13, surfaced by the post-Phase-1 security review
   (story 1.20b commit `e5948c2`).~~
 - ~~**Severity**: **Medium** (latent — not currently reachable in shipped
