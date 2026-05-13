@@ -1,8 +1,8 @@
 # Phase 2 — Architecture (Employee Interface, OS-shape)
 
-> **Status**: v2.0 (BMAD Architect persona output, 2026-05-13, post-OS-shape commit)
+> **Status**: v2.1 (BMAD Architect persona output, 2026-05-13, post-OS-shape commit + channel cleanup)
 > **Duration**: 5 weeks (extended from ROADMAP's 3 weeks — see §0)
-> **Base commit**: `bfaa56e` (Phase 1 hardened, Phase 2 v1.0 in place)
+> **Base commit**: `1ab1377` (Phase 1 hardened, Phase 2 v2.0 in place)
 > **Goal**: A digital employee team that lives behind an OS-shaped
 > control plane — work comes in over any channel, gets executed by a
 > fixed team of specialized roles, and leaves as the artifact form the
@@ -15,6 +15,18 @@
 ---
 
 ## 0. Inputs and methodology note
+
+This v2.1 amends v2.0 with a single architectural cleanup raised after
+v2.0 was committed: **a channel is one thing, not three adapters**.
+v2.0's separate `IntakeAdapter` / `DeliveryAdapter` / `NotifyAdapter`
+trait families were semantically correct but operationally awkward —
+the user had to register an Email channel three times, once per role.
+v2.1 collapses to **one `*Channel` struct per integration that
+implements 1, 2, or 3 trait roles**, registered once via a
+`ChannelRegistration` builder. See §2.7 for the new shape. No schema
+changes from v2.0 except column renames (`adapter` → `channel` in
+the three event-log tables); no API path changes except `/v1/adapters`
+→ `/v1/channels`; no scope changes; same 5-week budget.
 
 This v2.0 supersedes the v1.0 drafted earlier in the same architect
 session. v1.0 was a faithful translation of ROADMAP §Phase 2 + Phase 1
@@ -80,9 +92,12 @@ Forks resolved before drafting v2.0:
             │                              │                                │
             │                              │                                │
 ┌───────────▼──────────────────────────────▼────────────────────────────────▼────────┐
-│                      Intake adapters (IntakeAdapter trait)                          │
+│            Channel registry — each channel implements 1-3 role traits               │
+│              (IntakeProvider · DeliverySink · NotifySink)                           │
+│                                                                                     │
+│  Intake side of the channels (IntakeProvider impl invoked here):                    │
 │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐  ┌─────────────────┐  │
-│  │ ChatIntake     │  │ WebhookIntake  │  │ EmailIntake    │  │ CliIntake       │  │
+│  │ ChatChannel    │  │ WebhookChannel │  │ EmailChannel   │  │ CliChannel      │  │
 │  │ (existing WS)  │  │ (POST /v1/...) │  │ (IMAP poller)  │  │ (CLI commands)  │  │
 │  └────────────────┘  └────────────────┘  └────────────────┘  └─────────────────┘  │
 │        │                    │                    │                    │            │
@@ -112,20 +127,25 @@ Forks resolved before drafting v2.0:
 │         uniform Deliverable + Provenance / NotifyEvent / ServerEvent               │
 │                                       ▼                                            │
 │  ┌────────────────────────────────────────────────────────────────────────────┐   │
-│  │           Outbound adapter family (DeliveryAdapter + NotifyAdapter)        │   │
+│  │   Outbound side of the channels (DeliverySink + NotifySink impls):         │   │
 │  │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐                │   │
-│  │  │ WebhookDeliver │  │ EmailDeliver   │  │ ChatDeliver    │  (default:     │   │
-│  │  │ (POST callback)│  │ (reply to MID) │  │ (WS event)     │   route to     │   │
-│  │  └────────────────┘  └────────────────┘  └────────────────┘   intake.adapter│  │
-│  │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐                │   │
-│  │  │ NtfyNotify     │  │ WebhookNotify  │  │ EmailNotify    │                │   │
+│  │  │ WebhookChannel │  │ EmailChannel   │  │ ChatChannel    │  (default:     │   │
+│  │  │ delivery: POST │  │ delivery: SMTP │  │ delivery: WS   │   route to     │   │
+│  │  │ notify:   POST │  │ notify:   SMTP │  │  (no notify)   │   intake's     │   │
+│  │  ├────────────────┤  ├────────────────┤  ├────────────────┤   channel)     │   │
+│  │  │ NtfyChannel    │  │ CliChannel     │  │  …             │                │   │
+│  │  │ notify:  POST  │  │ delivery: stdout│ │                │                │   │
+│  │  │ (notify-only)  │  │ (no notify)    │  │                │                │   │
 │  │  └────────────────┘  └────────────────┘  └────────────────┘                │   │
 │  └────────────────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────────────────┘
 
-Phase 4+ (not in this spec, but reserved): SlackIntake/Delivery,
-NotionDelivery, GoogleDriveDelivery, GitHubDeliveryAdapter (PR creation),
-VoiceIntake (Whisper), CalendarIntake. All slot in as new Adapter impls.
+Phase 4+ (not in this spec, but reserved): SlackChannel (intake +
+delivery + notify), NotionChannel (delivery-only), GoogleDriveChannel
+(delivery-only), GitHubChannel (delivery: PR creation), VoiceChannel
+(intake via Whisper + delivery via TTS), CalendarChannel (intake +
+notify). All slot in as new `*Channel` structs implementing 1-3 of
+the IntakeProvider / DeliverySink / NotifySink role traits.
 ```
 
 ---
@@ -192,7 +212,7 @@ server-side based on the target filename's extension:
 | `.pptx` | **python-pptx** (Python script) | LLM-produced JSON `{slides: [{title, body, layout?}]}` | 2 ✅ |
 | `.png`, `.svg`, `.mmd` (diagrams) | Graphviz / Mermaid CLI | LLM-produced graph DSL | 2 🟡 stretch |
 | code (git repo + optional URL) | (no rendering — the sandbox git tree itself is the deliverable; optional `deploy_expose_port` for live URL) | Worker writes files via existing tools | 2 ✅ (basic — git repo only); Phase 4 (full deploy + PR) |
-| Slack post / Notion page / Drive upload | corresponding DeliveryAdapter | rendered file from above | Phase 4 (when those adapters land) |
+| Slack post / Notion page / Drive upload | corresponding channel's `DeliverySink` impl | rendered file from above | Phase 4 (when those channels land) |
 
 **LLM-facing tool**: `task_deliver(content, target_filename, citations)`.
 
@@ -242,8 +262,8 @@ v2.0 adds:
   deliverable was routed and the result)
 - `GET /v1/tasks/:id/provenance` → the full provenance manifest as
   one consolidated JSON
-- `GET /v1/adapters` → registered adapter names + health
-- `GET /v1/adapters/:name/health` → individual adapter health
+- `GET /v1/channels` → registered channel names, their role capabilities (intake/delivery/notify), and health
+- `GET /v1/channels/:name/health` → individual channel health (per applicable role)
 
 ### 2.5 Accountability trail
 
@@ -258,110 +278,153 @@ rebuilds from event-stream replay. The provenance manifest carries the
 full session list, so a 24h task with 3 pause/resume cycles produces a
 single Deliverable with `sessions: [S1, S2, S3, S4]` in its manifest.
 
-### 2.7 Adapter framework (NEW — the OS-shape keystone)
+### 2.7 Channel framework (NEW — the OS-shape keystone)
 
-**Module**: `seasoned-hand-core::adapter` (new).
+**Module**: `seasoned-hand-core::channel` (new).
 
-Three trait families, all `Send + Sync`, all `async_trait`:
+A **Channel** is a single integration with an external system (one
+Email account, one Slack workspace, one webhook endpoint). Each
+channel may play 1, 2, or 3 of three **role traits** depending on
+what the underlying system supports:
 
 ```rust
-// Intake — receive briefs from external channels
+// Role 1 — IntakeProvider: long-lived listener that pushes briefs
+//          into the kernel. HTTP server, IMAP poller, WS subscriber.
 #[async_trait]
-pub trait IntakeAdapter {
+pub trait IntakeProvider: Send + Sync {
     fn name(&self) -> &'static str;
-    /// Run the adapter's lifecycle: poll, push events through `sink`,
-    /// stop cleanly on `shutdown`. Each adapter owns its own loop
-    /// (HTTP server, IMAP poller, websocket subscriber, etc.).
+    /// Run the listener's lifecycle: poll/subscribe, push events
+    /// through `sink`, stop cleanly on `shutdown`.
     async fn run(
         &self,
         sink: mpsc::Sender<IntakeEvent>,
         shutdown: CancellationToken,
-    ) -> Result<(), AdapterError>;
+    ) -> Result<(), ChannelError>;
 }
 
-// Delivery — send completed deliverables back to the originating
-//            channel (or a different one if the task overrode).
+// Role 2 — DeliverySink: short-lived call-on-demand send of a
+//          completed Deliverable back to a target.
 #[async_trait]
-pub trait DeliveryAdapter {
+pub trait DeliverySink: Send + Sync {
     fn name(&self) -> &'static str;
     async fn deliver(
         &self,
         target: &DeliveryTarget,
         deliverable: &Deliverable,
-    ) -> Result<DeliveryReceipt, AdapterError>;
+    ) -> Result<DeliveryReceipt, ChannelError>;
 }
 
-// Notify — send status/event signals (not artifacts) to external channels.
-//          A subset of DeliveryAdapter in spirit but with different cardinality
-//          (many notifies per task; usually one deliverable per task).
+// Role 3 — NotifySink: short-lived send of a status signal (not an
+//          artifact). Many notifies per task; usually one delivery
+//          per task. Same shape as DeliverySink with a different
+//          payload type.
 #[async_trait]
-pub trait NotifyAdapter {
+pub trait NotifySink: Send + Sync {
     fn name(&self) -> &'static str;
     async fn notify(
         &self,
         target: &NotifyTarget,
         event: &NotifyEvent,
-    ) -> Result<NotifyReceipt, AdapterError>;
+    ) -> Result<NotifyReceipt, ChannelError>;
 }
+```
+
+The three traits intentionally stay separate at the Rust level —
+intake's `run` lifecycle vs the sinks' `deliver`/`notify` call-shape
+are different enough that a unified `Channel::handle(Operation)` would
+force runtime dispatch and lose compile-time guarantees ("ntfy can't
+do intake"). But each **concrete channel implementation is one
+struct** that implements 1-3 of the traits:
+
+```rust
+pub struct WebhookChannel { /* config, http client, ... */ }
+impl IntakeProvider for WebhookChannel { ... }   // POST /v1/intake/webhook
+impl DeliverySink   for WebhookChannel { ... }   // POST callback URL
+impl NotifySink     for WebhookChannel { ... }   // POST notify URL
+
+pub struct NtfyChannel { /* topic, host */ }
+impl NotifySink     for NtfyChannel { ... }       // notify-only — no intake/delivery
 ```
 
 **Shared types**:
 
 ```rust
 pub struct IntakeEvent {
-    pub adapter: String,                  // "webhook", "email", "chat", "cli"
-    pub intake_id: String,                // unique within adapter (e.g., HTTP req id, IMAP UID, Message-ID)
+    pub channel: String,                  // "webhook", "email", "chat", "cli"
+    pub intake_id: String,                // unique within channel (e.g., HTTP req id, IMAP UID, Message-ID)
     pub brief_input: String,              // natural-language brief
     pub reply_target: Option<DeliveryTarget>,  // for symmetric routing
     pub received_at: i64,
-    pub metadata: serde_json::Value,      // adapter-specific (sender, subject, signatures, etc.)
+    pub metadata: serde_json::Value,      // channel-specific (sender, subject, signatures, ...)
     pub tenant_id: Option<String>,        // multi-tenant ready
 }
 
 pub struct DeliveryTarget {
-    pub adapter: String,                  // matches DeliveryAdapter::name()
-    pub target_ref: String,               // adapter-specific (e.g., "thread:T01/C01/1234567890.123", "msgid:<...>", "url:https://example.com/cb")
+    pub channel: String,                  // matches the channel's name()
+    pub target_ref: String,               // channel-specific (e.g., "thread:T01/C01/1234567890.123", "msgid:<...>", "url:https://example.com/cb")
     pub metadata: serde_json::Value,
 }
 
 pub struct DeliveryReceipt {
-    pub adapter: String,
-    pub external_id: String,              // adapter-specific (e.g., posted msg id)
+    pub channel: String,
+    pub external_id: String,              // channel-side id (e.g., posted msg id)
     pub delivered_at: i64,
     pub raw_response: serde_json::Value,  // for audit
 }
 ```
 
-**Registration**: at boot, `AppState::register_intake_adapter(impl
-IntakeAdapter)`, `register_delivery_adapter(impl DeliveryAdapter)`,
-`register_notify_adapter(impl NotifyAdapter)`. Adapters are spawned
-in dedicated tokio tasks (intake adapters loop; delivery + notify are
-called on-demand). One adapter can implement multiple traits (e.g.,
-the email adapter is both Intake and Delivery).
+**Registration**: a single registration per channel, builder-style:
 
-**Phase 2 ships these concrete adapters**:
+```rust
+let webhook = Arc::new(WebhookChannel::new(config));
+state.channels().register(
+    ChannelRegistration::new("webhook")
+        .with_intake(webhook.clone())     // intake side
+        .with_delivery(webhook.clone())   // delivery side
+        .with_notify(webhook),            // notify side
+);
 
-| Adapter | Intake | Delivery | Notify | Notes |
+let ntfy = Arc::new(NtfyChannel::new(config));
+state.channels().register(
+    ChannelRegistration::new("ntfy")
+        .with_notify(ntfy),               // notify-only — that's the whole channel
+);
+```
+
+`ChannelRegistration` is a builder that takes `Arc<dyn IntakeProvider>`,
+`Arc<dyn DeliverySink>`, `Arc<dyn NotifySink>` slots (any of which can
+be `None`). Internally the registry threads each role into the matching
+operational path (IntakeRouter / DeliveryRouter / NotifyWorker). The
+implementor writes the `Arc::new(...)` once and clones the Arc for
+each role the channel supports — idiomatic Rust pattern.
+
+**Phase 2 ships these concrete channels**:
+
+| Channel | IntakeProvider | DeliverySink | NotifySink | Notes |
 |---|---|---|---|---|
-| Webhook | ✅ | ✅ | ✅ | The minimum-viable OS surface — any system can speak to us via HTTP. |
-| Email (lettre + IMAP) | ✅ | ✅ | ✅ | The most natural non-technical inbound channel. IMAP poll every 30 s default. |
-| Chat (WebSocket) | ✅ (existing) | ✅ | — | Wraps Phase 0's WS as an adapter for uniformity. Deliveries surface as a Chat-pane card. |
-| CLI | ✅ | ✅ | — | `seasoned-hand task new ...` lands as an IntakeEvent. Output goes to stdout. |
-| Ntfy | — | — | ✅ | Existing v1.0 design — generalized to a NotifyAdapter impl. |
+| `WebhookChannel` | ✅ | ✅ | ✅ | Minimum-viable OS surface — any system can speak to us via HTTP. |
+| `EmailChannel` | ✅ | ✅ | ✅ | Most natural non-technical channel. IMAP poll (intake) + lettre SMTP (delivery + notify). |
+| `ChatChannel` | ✅ (existing WS) | ✅ | — | Wraps Phase 0's WS. Delivery surfaces as a Chat-pane card. No notify (chat doesn't have push semantics distinct from messages). |
+| `CliChannel` | ✅ | ✅ | — | `seasoned-hand task new ...` is intake; stdout is delivery. No notify (terminal push is awkward; user uses ntfy/email if they want background notifies). |
+| `NtfyChannel` | — | — | ✅ | Notify-only channel — push notifications are its single purpose. |
 
-**Phase 4+ adapters** (reserved slots, not in Phase 2):
-- Slack (auth-dependent — multi-user)
-- Notion / Google Drive / SharePoint (auth-dependent)
-- GitHub PR / GitLab MR (auth-dependent)
-- Voice (Whisper + TTS — needs Phase 6 audio stack)
-- Calendar (Google Calendar / iCal — recurring tasks need Phase 5 scheduler)
+**Phase 4+ channels** (reserved slots, not in Phase 2):
+
+| Future channel | IntakeProvider | DeliverySink | NotifySink | Reason |
+|---|---|---|---|---|
+| `SlackChannel` | ✅ | ✅ | ✅ | Auth-dependent — needs multi-user (Phase 5) |
+| `NotionChannel` | — | ✅ | — | Delivery-only (push artifact to Notion page) |
+| `GoogleDriveChannel` | — | ✅ | — | Delivery-only |
+| `GitHubChannel` | (Phase 5+ webhooks) | ✅ | — | Delivery = PR creation; intake = webhook triggers |
+| `VoiceChannel` | ✅ (Whisper) | ✅ (TTS) | — | Phase 6 audio stack |
+| `CalendarChannel` | ✅ (recurring) | — | ✅ (reminders) | Phase 5 scheduler dependency |
 
 ### 2.8 Intake protocol (NEW)
 
 Inbound symmetry to the outbound NotifyWorker from v1.0.
 
 ```
-IntakeAdapter (running in its own tokio task) →
+Channel's IntakeProvider impl (running in its own tokio task) →
   emits IntakeEvent through the registered mpsc::Sender →
 IntakeRouter (one per AppState) →
   validates + persists to intake_events table →
@@ -377,7 +440,7 @@ IntakeRouter (one per AppState) →
   "brief": "Summarize Q4 board deck and email it back",
   "project_id": "default-or-inbox",      // optional
   "reply_target": {                       // optional; defaults to "callback to webhook URL with task_id + deliverable"
-    "adapter": "email",
+    "channel": "email",
     "target_ref": "msgid:<original-message-id@example.com>",
     "metadata": { "to": "user@example.com" }
   },
@@ -394,7 +457,7 @@ deliverable payload.
   `IMAP_PASSWORD`)
 - Filters by `seasoned-hand` label or `+sh@user-mailbox` sub-address
   (configurable)
-- Each new email becomes one IntakeEvent with `reply_target = {adapter:
+- Each new email becomes one IntakeEvent with `reply_target = {channel:
   "email", target_ref: "msgid:<...>"}` so the deliverable goes back as
   a reply to the same thread
 - Attachments are placed in `/workspace/.intake/<intake_id>/` for the
@@ -402,48 +465,51 @@ deliverable payload.
 
 **CLI intake** (handled by §2.10):
 `seasoned-hand task new "<brief>" [--project ID]` becomes an
-IntakeEvent with `reply_target = {adapter: "cli", target_ref:
+IntakeEvent with `reply_target = {channel: "cli", target_ref:
 "stdout:<pid>"}`. The CLI process blocks until the deliverable is
 ready (or returns the task_id with `--detach`).
 
 **Chat intake** (existing WS, now wrapped):
-The existing `cmd: "task_create"` WS verb is the chat adapter's
+The existing `cmd: "task_create"` WS verb is the chat channel's
 intake mechanism. Phase 2 doesn't change the wire; it just labels
-this stream as `IntakeEvent { adapter: "chat", ... }` internally.
+this stream as `IntakeEvent { channel: "chat", ... }` internally.
 
 ### 2.9 Delivery protocol (NEW)
 
 When a Task transitions to `completed`, the Deliverable's
 `provenance_manifest.delivered_to` is populated by routing through
-the DeliveryAdapter matching the task's `reply_target`:
+the channel's `DeliverySink` impl matching the task's `reply_target`:
 
 ```
 Task.status → completed
   → Deliverable persisted (rendered file in /workspace/.deliverables/)
   → DeliveryRouter:
       target = task.reply_target (or default = task.intake.reply_target)
-      lookup adapter by target.adapter name
-      → adapter.deliver(target, deliverable)
+      lookup channel by target.channel name → get its DeliverySink impl
+      → sink.deliver(target, deliverable)
       → on success: append DeliveryEvent { ok: true, external_id, delivered_at }
       → on failure: 1 retry after 30 s (transient case); then mark failed
                    in DeliveryEvent and emit Misc{kind:"delivery_failed"}
   → NotifyWorker fires task_finished notification (separate from delivery)
 ```
 
-**Webhook delivery**: POSTs `{task_id, deliverable_id, content_url,
-provenance_manifest, status}` to the callback URL. The callback URL
-itself can use a presigned-URL pattern to fetch the actual artifact
-bytes from `GET /v1/tasks/:id/deliverables/:did/content`.
+**Webhook delivery** (WebhookChannel as DeliverySink): POSTs
+`{task_id, deliverable_id, content_url, provenance_manifest, status}`
+to the callback URL. The callback URL itself can use a presigned-URL
+pattern to fetch the actual artifact bytes from
+`GET /v1/tasks/:id/deliverables/:did/content`.
 
-**Email delivery**: replies to the Message-ID in `reply_target` with
-the rendered artifact as an attachment. Subject prefixed with `[Re:
-Original Subject]`.
+**Email delivery** (EmailChannel as DeliverySink): replies to the
+Message-ID in `reply_target` with the rendered artifact as an
+attachment. Subject prefixed with `[Re: Original Subject]`.
 
-**Chat delivery**: emits a `Deliverable` WS event into the session
-that originated the task. Frontend renders as a downloadable card.
+**Chat delivery** (ChatChannel as DeliverySink): emits a `Deliverable`
+WS event into the session that originated the task. Frontend renders
+as a downloadable card.
 
-**CLI delivery**: writes the deliverable path to stdout and (with
-`--open` flag) shells out to the OS open command.
+**CLI delivery** (CliChannel as DeliverySink): writes the deliverable
+path to stdout and (with `--open` flag) shells out to the OS open
+command.
 
 ### 2.10 CLI (NEW)
 
@@ -479,14 +545,14 @@ seasoned-hand brief confirm BRIEFING_ID
 seasoned-hand brief edit BRIEFING_ID [--editor]
 seasoned-hand brief cancel BRIEFING_ID
 
-seasoned-hand adapter list                      # registered adapters + health
-seasoned-hand adapter test NAME                 # synthetic round-trip test
-seasoned-hand adapter logs NAME [--tail]        # adapter-specific log stream
+seasoned-hand channel list                      # registered channels + capabilities + health
+seasoned-hand channel test NAME [--role intake|delivery|notify]   # synthetic round-trip test
+seasoned-hand channel logs NAME [--tail]        # channel-specific log stream
 ```
 
 The CLI talks to the running server over HTTP (default
 `http://127.0.0.1:3000`). It is a **thin HTTP client** plus the
-inline CliIntakeAdapter for `task new`. No background daemon.
+inline `CliChannel` (acting as IntakeProvider) for `task new`. No background daemon.
 
 This is what makes Seasoned Hand an OS-layer rather than a web app:
 **every UI action has a clean CLI equivalent**. No UI-only features.
@@ -504,7 +570,7 @@ type ProvenanceManifest = {
   tenant_id?: string,                    // null in single-tenant Phase 2
 
   intake: {
-    adapter: string,
+    channel: string,
     intake_id: string,
     received_at: number,
     metadata: object,                    // redacted at audit time
@@ -542,11 +608,11 @@ type ProvenanceManifest = {
   },
 
   delivered_to: Array<{
-    adapter: string,
+    channel: string,
     delivery_id: string,                 // DeliveryEvent.id
     delivered_at: number,
     ok: boolean,
-    external_id?: string,                // adapter-side id
+    external_id?: string,                // channel-side id
   }>,
 
   // Optional / format-specific
@@ -651,14 +717,14 @@ CREATE INDEX idx_deliverables_tenant ON deliverables(tenant_id);
 CREATE TABLE intake_events (
     id              TEXT    PRIMARY KEY,
     tenant_id       TEXT,
-    adapter         TEXT    NOT NULL,
-    intake_id       TEXT    NOT NULL,         -- unique-per-adapter external id
+    channel         TEXT    NOT NULL,         -- registered Channel.name()
+    intake_id       TEXT    NOT NULL,         -- unique-per-channel external id
     brief_input     TEXT    NOT NULL,
     reply_target    TEXT,                     -- JSON DeliveryTarget
     metadata        TEXT,                     -- JSON
     task_id         TEXT REFERENCES tasks(id),  -- populated once Task is created
     received_at     INTEGER NOT NULL,
-    UNIQUE (adapter, intake_id)
+    UNIQUE (channel, intake_id)
 );
 
 CREATE TABLE delivery_events (
@@ -666,10 +732,10 @@ CREATE TABLE delivery_events (
     tenant_id       TEXT,
     task_id         TEXT    NOT NULL REFERENCES tasks(id),
     deliverable_id  TEXT    NOT NULL REFERENCES deliverables(id),
-    adapter         TEXT    NOT NULL,
+    channel         TEXT    NOT NULL,         -- registered Channel.name()
     target          TEXT    NOT NULL,         -- JSON DeliveryTarget
     ok              INTEGER NOT NULL,
-    external_id     TEXT,                     -- adapter-side id (e.g., posted msg id)
+    external_id     TEXT,                     -- channel-side id (e.g., posted msg id)
     error           TEXT,
     delivered_at    INTEGER NOT NULL
 );
@@ -679,7 +745,7 @@ CREATE TABLE notifications_sent (
     tenant_id       TEXT,
     task_id         TEXT,                     -- nullable for pre-task notifies
     trigger_kind    TEXT    NOT NULL,
-    adapter         TEXT    NOT NULL,
+    channel         TEXT    NOT NULL,         -- registered Channel.name()
     target          TEXT,                     -- JSON NotifyTarget
     payload         TEXT,                     -- JSON (redacted)
     ok              INTEGER NOT NULL,
@@ -688,7 +754,7 @@ CREATE TABLE notifications_sent (
 );
 
 CREATE INDEX idx_intake_task         ON intake_events(task_id);
-CREATE INDEX idx_intake_adapter      ON intake_events(adapter, received_at);
+CREATE INDEX idx_intake_channel      ON intake_events(channel, received_at);
 CREATE INDEX idx_delivery_task       ON delivery_events(task_id);
 CREATE INDEX idx_delivery_deliv      ON delivery_events(deliverable_id);
 CREATE INDEX idx_notifs_task         ON notifications_sent(task_id);
@@ -756,10 +822,10 @@ POST   /v1/intake/webhook                         # generic webhook intake
                                                   # body: { brief, project_id?, reply_target?, metadata? }
                                                   # 202: { task_id, briefing_call_id }
 
-# Adapters
-GET    /v1/adapters                               # list registered adapters + health
-GET    /v1/adapters/:name/health
-POST   /v1/adapters/:name/test                    # synthetic round-trip test
+# Channels
+GET    /v1/channels                               # list registered channels + their role capabilities + health
+GET    /v1/channels/:name/health
+POST   /v1/channels/:name/test                    # synthetic round-trip test (per applicable role)
 
 # Notify config
 GET    /v1/notify/config
@@ -803,17 +869,20 @@ simplicity pass.
 
 - `seasoned_hand_core::project::{ProjectStore, TaskStore, Brief, DeliverableSpec}`
 - `seasoned_hand_core::deliverable::{DeliverableStore, Deliverable, RendererDispatcher}`
-- `seasoned_hand_core::adapter::{IntakeAdapter, DeliveryAdapter,
-   NotifyAdapter, IntakeEvent, DeliveryTarget, NotifyTarget,
-   AdapterError}`
-- `seasoned_hand_core::intake::{IntakeRouter, IntakeEventStore,
-   WebhookIntakeAdapter, EmailIntakeAdapter, ChatIntakeAdapter,
-   CliIntakeAdapter}`
-- `seasoned_hand_core::delivery::{DeliveryRouter, DeliveryEventStore,
-   WebhookDeliveryAdapter, EmailDeliveryAdapter, ChatDeliveryAdapter,
-   CliDeliveryAdapter}`
-- `seasoned_hand_core::notify::{NotifyWorker, NotificationsSentStore,
-   NtfyNotifyAdapter, WebhookNotifyAdapter, EmailNotifyAdapter}`
+- `seasoned_hand_core::channel::{IntakeProvider, DeliverySink,
+   NotifySink, IntakeEvent, DeliveryTarget, NotifyTarget,
+   ChannelError, ChannelRegistration, ChannelRegistry}`
+- Concrete channels (each is one struct implementing 1-3 role traits):
+   `WebhookChannel`, `EmailChannel`, `ChatChannel`, `CliChannel`,
+   `NtfyChannel`. Live in
+   `seasoned_hand_core::channel::{webhook, email, chat, cli, ntfy}` submodules.
+- `seasoned_hand_core::intake::{IntakeRouter, IntakeEventStore}` —
+   the router that consumes IntakeEvents from registered `IntakeProvider`s.
+- `seasoned_hand_core::delivery::{DeliveryRouter, DeliveryEventStore}` —
+   the router that dispatches Deliverables to registered `DeliverySink`s.
+- `seasoned_hand_core::notify::{NotifyWorker, NotificationsSentStore}` —
+   the worker that consumes the `notify_request` Redis stream and
+   dispatches to registered `NotifySink`s.
 - `seasoned_hand_core::provenance::{ProvenanceManifest, build_manifest}`
 - `seasoned_hand_core::skill::{SkillStore, PlaybookStore}` (empty
    Phase 2 — schemas only)
@@ -831,16 +900,16 @@ See §2.10 — `seasoned-hand` binary, thin HTTP client.
 
 | Crate | Version | Used by | Justification |
 |---|---|---|---|
-| `lettre` | 0.11 | `notify::EmailNotifyAdapter`, `delivery::EmailDeliveryAdapter` | SMTP send. Pure Rust, tokio-rustls feature. |
-| `mailparse` | 0.15 | `intake::EmailIntakeAdapter` | Parse incoming RFC 5322 emails (subject, body, attachments). |
-| `async-imap` | 0.10 | `intake::EmailIntakeAdapter` | IMAP poller. Tokio-compatible. |
+| `lettre` | 0.11 | `channel::email::EmailChannel` (DeliverySink + NotifySink impls) | SMTP send. Pure Rust, tokio-rustls feature. |
+| `mailparse` | 0.15 | `channel::email::EmailChannel` (IntakeProvider impl) | Parse incoming RFC 5322 emails (subject, body, attachments). |
+| `async-imap` | 0.10 | `channel::email::EmailChannel` (IntakeProvider impl) | IMAP poller. Tokio-compatible. |
 | `clap` | 4.x | `seasoned-hand-cli` | CLI argument parsing. |
 | `colored` | 2.x | `seasoned-hand-cli` | Terminal output. |
 
 ### Reused (Phase 0/1)
 
-- `reqwest` — Webhook adapters (intake POST, delivery POST, ntfy POST)
-- `redis` — `notify_request` stream (and any future adapter that uses Redis for buffering)
+- `reqwest` — used by `WebhookChannel` (intake POST handler, delivery POST, notify POST) and `NtfyChannel`
+- `redis` — `notify_request` stream (and any future channel that uses Redis for buffering)
 - `serde` + `serde_json` — payload serialization
 - `rusqlite` — Project / Task / Deliverable / Intake / Delivery /
   Notify / Skill / Playbook persistence
@@ -872,7 +941,7 @@ The new `lettre`, `mailparse`, `async-imap`, `clap`, `colored` Rust
 deps + Pandoc / python-pptx / openpyxl sandbox-side deps trigger an
 `/specs/01-architecture/ARCHITECTURE.md` §1.1 one-line addendum per
 the AGENTS.md rule. Add it under "Component layers" as: "Phase 2
-adapter framework (lettre + mailparse + async-imap + clap + colored;
+channel framework (lettre + mailparse + async-imap + clap + colored;
 sandbox-side renderer toolchain: Pandoc + python-pptx + openpyxl)."
 One-line edit; not a re-architect.
 
@@ -913,8 +982,9 @@ Gains:
 - `Arc<ProjectStore>`, `Arc<TaskStore>`, `Arc<DeliverableStore>`,
   `Arc<NotificationsSentStore>`, `Arc<IntakeEventStore>`,
   `Arc<DeliveryEventStore>`, `Arc<SkillStore>`, `Arc<PlaybookStore>`
-- Adapter registries: `Arc<IntakeAdapterRegistry>`,
-  `Arc<DeliveryAdapterRegistry>`, `Arc<NotifyAdapterRegistry>`
+- Channel registry: `Arc<ChannelRegistry>` (one registry; introspects
+  each registered channel's role traits to populate Intake / Delivery /
+  Notify routing tables internally)
 - IntakeRouter handle, DeliveryRouter handle, NotifyWorker handle
 
 ### Frontend (Phase 0/1)
@@ -942,11 +1012,11 @@ session). Phase 0 DEBT #16 (workspace TTL cleanup) lands here:
 | Briefing event emit (Initializer parse → emit) | < 500 ms p95 |
 | User briefing-confirm round-trip | unbounded (waits for human); 5-min auto-confirm |
 | `GET /v1/projects/:id/tasks` (50 rows) | < 100 ms p95 |
-| **Intake**: webhook POST → IntakeEvent persisted | < 200 ms p95 |
-| **Intake**: IMAP poll cycle (no new mail) | < 1 s p50 |
-| **Intake**: IMAP message → IntakeEvent persisted | < 3 s p95 (including attachment download) |
-| **Delivery**: ntfy/webhook POST (success) | < 500 ms p95 |
-| **Delivery**: email reply (SMTP send) | < 5 s p95 |
+| **Intake** (WebhookChannel): POST → IntakeEvent persisted | < 200 ms p95 |
+| **Intake** (EmailChannel): IMAP poll cycle (no new mail) | < 1 s p50 |
+| **Intake** (EmailChannel): message → IntakeEvent persisted | < 3 s p95 (including attachment download) |
+| **Delivery** (WebhookChannel / NtfyChannel): POST success | < 500 ms p95 |
+| **Delivery** (EmailChannel): SMTP reply send | < 5 s p95 |
 | **Renderer**: markdown → docx (Pandoc) | < 2 s p95 (typical 5-page doc) |
 | **Renderer**: JSON → pptx (python-pptx) | < 5 s p95 (typical 10-slide deck) |
 | **Renderer**: JSON → xlsx (openpyxl) | < 2 s p95 (typical 100-row sheet) |
@@ -968,12 +1038,12 @@ session). Phase 0 DEBT #16 (workspace TTL cleanup) lands here:
 | Briefing confirmation timeout | watchdog in Initializer | Misc `briefing_auto_confirmed` + proceed. `briefing_require_confirm: true` overrides. |
 | Sandbox container GC'd while paused | `task_resume` finds no handle | Replay rebuild from event stream into fresh sandbox. New Session row, same Task. |
 | Event-stream replay corruption | replay step returns error | Task → `failed{reason:"replay_failed"}`. No silent recovery. |
-| **Intake adapter offline** (e.g., IMAP server down) | adapter's run() returns error | Adapter re-tries with exponential backoff. Other adapters keep running. `GET /v1/adapters/:name/health` reports the failure. |
+| **Channel's IntakeProvider offline** (e.g., IMAP server down) | the channel's `run()` returns error | Channel re-tries with exponential backoff. Other channels keep running. `GET /v1/channels/:name/health` reports the failure (per applicable role). |
 | **Intake brief parse failure** | Initializer LLM call returns malformed Brief | Reject with `intake_parse_failed` event; for webhook intake, respond 422 with error detail; for email intake, send a "couldn't understand your request" reply. |
-| **Renderer toolchain missing** (sandbox install failed) | renderer dispatcher returns error | Task → `failed{reason:"renderer_missing"}`. Operator alerted via NotifyAdapter. |
+| **Renderer toolchain missing** (sandbox install failed) | renderer dispatcher returns error | Task → `failed{reason:"renderer_missing"}`. Operator alerted via any registered channel's `NotifySink` impl. |
 | **Renderer rendering failure** (Pandoc / pptx broke on weird input) | renderer process non-zero exit | Re-try once with a "simplify content" LLM call to reduce content complexity. If still fails, deliverable persists as `format: "md"` fallback + warning Misc. |
-| **Delivery adapter failure** (5xx, SMTP outage) | adapter returns Err | DeliveryEvent persisted with ok=0 + error. Webhook gets 1 retry after 30 s. Email + ntfy are best-effort. Misc `delivery_failed` emitted. The deliverable itself is still in DB; user can fetch via `GET /v1/tasks/:id/deliverables/:did/content`. |
-| **Notification delivery failure** | adapter returns Err | notifications_sent row with ok=0. No retry (notifies are best-effort). |
+| **Channel's DeliverySink failure** (5xx, SMTP outage) | `deliver()` returns Err | DeliveryEvent persisted with ok=0 + error. Webhook gets 1 retry after 30 s. Email + ntfy are best-effort. Misc `delivery_failed` emitted. The deliverable itself is still in DB; user can fetch via `GET /v1/tasks/:id/deliverables/:did/content`. |
+| **Channel's NotifySink failure** | `notify()` returns Err | notifications_sent row with ok=0. No retry (notifies are best-effort). |
 | Concurrent task_pause + task_resume race | DB state machine | Existing 1.17 cancel-token serialization. |
 | Verifier Worker crash between consume + XACK | Redis PEL retains message | Next consumer picks up. `handle_request` is idempotent on `triggered_at_event_id`. |
 | Deliverable write during cancelled task | state check before write | Reject with Misc `task_deliver_after_cancel`. |
@@ -1026,13 +1096,13 @@ send to that address can submit a brief. Mitigations:
 Phase 2: operator-configured per-task (in the IntakeEvent payload).
 **SSRF risk**: untrusted webhook intake might supply a `reply_target.url`
 pointing at internal IPs (`http://10.0.0.1/admin`). Mitigation: the
-webhook DELIVERY adapter rejects `target.target_ref` URLs that resolve
-to private / link-local / loopback addresses **unless** an operator
-allow-list bypasses the check.
+`WebhookChannel::deliver` impl rejects `target.target_ref` URLs that
+resolve to private / link-local / loopback addresses **unless** an
+operator allow-list bypasses the check.
 
-Add to `phase-2/DEBT.md #1`: SSRF protection lives in the
-WebhookDeliveryAdapter and is permissive by default in Phase 2; tighten
-when multi-user lands in Phase 5.
+Add to `phase-2/DEBT.md #1`: SSRF protection lives in
+`WebhookChannel`'s DeliverySink impl and is permissive by default in
+Phase 2; tighten when multi-user lands in Phase 5.
 
 ### Email reply spoofing
 
@@ -1114,12 +1184,12 @@ Net: zero wire-level breaks. Existing test fixtures keep working.
 - `briefing::confirm_round_trip` — confirm / edit / cancel / timeout paths
 - `briefing::brief_validation` — rejects over-large briefs
 - `deliverable::renderer::{pandoc, pptx, xlsx}` — round-trip render tests with shell-out to actual binaries (sandbox tests)
-- `adapter::registry` — register / lookup / dispatch
-- `intake::WebhookIntakeAdapter` — POST → IntakeEvent
-- `intake::EmailIntakeAdapter` — IMAP fixture + parse
-- `delivery::WebhookDeliveryAdapter` — wiremock'd POST callback
-- `delivery::EmailDeliveryAdapter` — lettre stub transport
-- `notify::*Adapter` — same shape as delivery
+- `channel::registry` — register / lookup / role-introspection / dispatch
+- `channel::webhook::WebhookChannel` — IntakeProvider (POST → IntakeEvent), DeliverySink (wiremock'd POST callback), NotifySink
+- `channel::email::EmailChannel` — IntakeProvider (IMAP fixture + parse), DeliverySink (lettre stub transport), NotifySink
+- `channel::ntfy::NtfyChannel` — NotifySink (wiremock'd POST)
+- `channel::chat::ChatChannel` — IntakeProvider (existing WS test harness), DeliverySink (WS event emit)
+- `channel::cli::CliChannel` — IntakeProvider (CLI test harness), DeliverySink (stdout capture)
 - `provenance::build_manifest` — golden-file tests over a known task
 - `task::pause_durable + resume_via_replay`
 - `cli::*` — argparse + HTTP mock
@@ -1135,7 +1205,7 @@ Net: zero wire-level breaks. Existing test fixtures keep working.
 - `tests/phase2_renderer_pipeline.rs` — task_deliver call → docx + pptx + xlsx produced
 - `tests/phase2_resume_from_replay.rs` — pause → kill container → resume
 - `tests/phase2_provenance_complete.rs` — manifest contains every required field
-- `tests/phase2_adapter_health.rs` — `/v1/adapters` reports correct state
+- `tests/phase2_channel_health.rs` — `/v1/channels` reports correct state + role capabilities per registered channel
 
 ### Frontend (Playwright — closes DEBT #9)
 
@@ -1209,7 +1279,8 @@ Net: zero wire-level breaks. Existing test fixtures keep working.
 7. **Code-as-deliverable** in Phase 2 vs Phase 4: Phase 2 ships
    "the sandbox git repo as a deliverable" (operator can `git clone`
    the workspace post-completion). Phase 4 adds GitHub PR creation
-   via `GitHubDeliveryAdapter`. Confirm this split is acceptable —
+   via `GitHubChannel`'s `DeliverySink` impl. Confirm this split is
+   acceptable —
    alternative is to defer all code-deliverable to Phase 4.
 
 8. **Configuration source-of-truth location**: `~/.seasoned-hand/` for
@@ -1229,10 +1300,11 @@ The PM session will carve this into stories. Rough count for the
 | Project/Task/Deliverable persistence + V006/V007 | 2 | 6 |
 | Briefing protocol (Initializer extension + confirm) | 2 | 6 |
 | Renderer toolchain (Pandoc + pptx + xlsx) | 2 | 6 |
-| Adapter framework + traits + registry | 1 | 4 |
-| Intake adapters (webhook + email + CLI + chat-wrap) | 3 | 9 |
-| Delivery adapters (webhook + email + chat + CLI) | 2 | 6 |
-| NotifyWorker generalization + V008 + 3 adapters | 1 | 4 |
+| Channel framework (3 role traits + ChannelRegistry + ChannelRegistration builder) | 1 | 4 |
+| `WebhookChannel` (intake + delivery + notify in one struct, 3 trait impls) | 2 | 6 |
+| `EmailChannel` (intake via IMAP + delivery + notify via SMTP/lettre) | 2 | 6 |
+| `ChatChannel` (wraps existing WS) + `CliChannel` | 2 | 5 |
+| `NtfyChannel` (notify-only) + NotifyWorker generalization + V008 | 1 | 4 |
 | Durable pause/resume + workspace TTL (DEBT #16) | 2 | 6 |
 | Provenance manifest + V009 reservation | 1 | 3 |
 | CLI binary + clap surface | 2 | 6 |
@@ -1242,7 +1314,7 @@ The PM session will carve this into stories. Rough count for the
 | NarratorHook classifier-slot wiring | 1 | 2 |
 | Frontend: ProjectList + Briefing card + Deliverables tab | 3 | 9 |
 | Phase 2 E2E + retrospective | 2 | 6 |
-| **Total** | **~28** | **~85 h** |
+| **Total** | **~27** | **~81 h** |
 
 5 weeks × 3 h/day × 5 days = 75 h — tight. Either extend slightly to
 5.5 weeks OR trim the stretch goals (diagrams renderer, second-channel
