@@ -14,7 +14,7 @@ use crate::events::{EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
 use crate::pubsub::RedisPool;
 use crate::tools::{ToolContext, ToolError, ToolOutput};
 use crate::verifier::invalidation::{DEFAULT_MAX_PATHS, InvalidationDetector};
-use crate::verifier::{VerifyContextHint, VerifyRequest, VerifyTrigger};
+use crate::verifier::{VerifyRequest, VerifyTrigger};
 
 #[async_trait]
 pub trait Hook: Send + Sync {
@@ -293,7 +293,6 @@ impl Hook for InvalidationHook {
                 session_id: ctx.session_id.clone(),
                 trigger: VerifyTrigger::Invalidation { reason },
                 triggered_at_event_id,
-                context_hint: VerifyContextHint,
             };
             if let Err(error) = redis.xadd_json("verify_request", &req).await {
                 tracing::warn!(%error, "invalidation xadd verify_request failed");

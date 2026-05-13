@@ -2,7 +2,6 @@
 //! refs: /specs/phase-1/architecture.md §3.1
 //! refs: /specs/phase-1/stories/story-1.9.md
 
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::params;
@@ -11,7 +10,7 @@ use uuid::Uuid;
 
 use crate::db::DbPool;
 
-use super::{NewVerification, VerdictKind, Verification, VerifyTrigger};
+use super::{NewVerification, VerdictKind, Verification};
 
 #[derive(Debug, Error)]
 pub enum VerifierPersistenceError {
@@ -34,12 +33,6 @@ pub struct VerificationStore {
 impl VerificationStore {
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
-    }
-
-    pub fn from_arc(pool: Arc<DbPool>) -> Self {
-        Self {
-            pool: (*pool).clone(),
-        }
     }
 
     pub async fn insert(&self, new: NewVerification) -> Result<String, VerifierPersistenceError> {
@@ -225,13 +218,6 @@ fn now_micros() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_micros() as i64)
         .unwrap_or(0)
-}
-
-// Keep `VerifyTrigger` referenced for the kind_str path (compiler isn't
-// smart enough to see the trait method call through serde elsewhere).
-#[allow(dead_code)]
-fn _trigger_marker(t: &VerifyTrigger) -> &'static str {
-    t.kind_str()
 }
 
 #[cfg(test)]

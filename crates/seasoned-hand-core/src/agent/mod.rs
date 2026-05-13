@@ -605,7 +605,6 @@ impl AgentRunner {
                 final_message_call_id: call_id.to_string(),
             },
             triggered_at_event_id: event.id as u64,
-            context_hint: crate::verifier::VerifyContextHint,
         };
         if let Err(error) = self.redis.xadd_json("verify_request", &req).await {
             tracing::warn!(%error, "failed to enqueue verify_request");
@@ -635,7 +634,6 @@ impl AgentRunner {
             session_id: session_id.to_string(),
             trigger: crate::verifier::VerifyTrigger::CircuitBreaker { kind },
             triggered_at_event_id: event.id as u64,
-            context_hint: crate::verifier::VerifyContextHint,
         };
         if let Err(error) = self.redis.xadd_json("verify_request", &req).await {
             tracing::warn!(%error, "failed to enqueue breaker verify_request");

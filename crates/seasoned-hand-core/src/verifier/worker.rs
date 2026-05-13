@@ -15,13 +15,11 @@
 //!
 //! refs: /specs/phase-1/stories/story-1.9b.md
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 use thiserror::Error;
-use tokio::sync::{Mutex, Semaphore};
 
 use crate::cost::CostClient;
 use crate::events::{EventError, EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
@@ -35,11 +33,6 @@ use super::context::{ContextBuildError, build_fresh_context};
 use super::parse::{Verdict, parse_verdict};
 use super::persistence::VerifierPersistenceError;
 use super::{NewVerification, VerificationStore, VerifyRequest};
-
-/// Default global concurrency cap for the verifier worker. Mirrors
-/// `verifier.max_concurrency` in `config/seasoned-hand.toml`. Two
-/// concurrent verifications is the architecture §7 budget.
-pub const DEFAULT_MAX_CONCURRENCY: usize = 2;
 
 /// Hard wallclock cap per verification before the watchdog fires
 /// (architecture §8). Tests override via [`Worker::with_watchdog`].
@@ -114,7 +107,6 @@ impl WorkerDeps {
 #[derive(Clone)]
 pub struct Worker {
     deps: WorkerDeps,
-    max_concurrency: usize,
     watchdog: Duration,
 }
 
@@ -122,14 +114,8 @@ impl Worker {
     pub fn new(deps: WorkerDeps) -> Self {
         Self {
             deps,
-            max_concurrency: DEFAULT_MAX_CONCURRENCY,
             watchdog: DEFAULT_WATCHDOG,
         }
-    }
-
-    pub fn with_max_concurrency(mut self, n: usize) -> Self {
-        self.max_concurrency = n.max(1);
-        self
     }
 
     pub fn with_watchdog(mut self, d: Duration) -> Self {
@@ -216,9 +202,6 @@ impl Worker {
             return Ok(());
         }
         let _ = ensure_consumer_group(&redis).await;
-        let sem = Arc::new(Semaphore::new(self.max_concurrency));
-        let session_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
 
         while !shutdown.is_cancelled() {
             // Phase 1 baseline: short polling tick. Story 1.9b's intent
@@ -231,7 +214,6 @@ impl Worker {
                 _ = shutdown.cancelled() => break,
                 _ = tokio::time::sleep(Duration::from_millis(500)) => {}
             }
-            let _ = (&sem, &session_locks); // referenced for non-test build
         }
         Ok(())
     }

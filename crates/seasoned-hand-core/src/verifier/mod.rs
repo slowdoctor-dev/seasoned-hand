@@ -75,13 +75,7 @@ pub struct VerifyRequest {
     pub session_id: String,
     pub trigger: VerifyTrigger,
     pub triggered_at_event_id: u64,
-    #[serde(default)]
-    pub context_hint: VerifyContextHint,
 }
-
-/// Reserved for story 1.9b's fresh-context builder. Empty in 1.9.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct VerifyContextHint;
 
 /// Verifier output as persisted in the `verifications` table. The
 /// runtime parses model output into this; story 1.9 only declares the

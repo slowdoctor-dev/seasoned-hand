@@ -134,7 +134,6 @@ fn task_complete_req(session_id: &str) -> VerifyRequest {
             final_message_call_id: "call-1".into(),
         },
         triggered_at_event_id: 1,
-        context_hint: Default::default(),
     }
 }
 
@@ -338,7 +337,6 @@ async fn watchdog_emits_misc_and_returns_none_on_timeout() {
             final_message_call_id: "call-1".into(),
         },
         triggered_at_event_id: 1,
-        context_hint: Default::default(),
     };
     let result = handle_request_with_watchdog(&worker, &req)
         .await

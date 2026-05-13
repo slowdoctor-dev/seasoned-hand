@@ -9,7 +9,7 @@ use seasoned_hand_core::router::SlotRouter;
 use seasoned_hand_core::sandbox::SandboxClient;
 use seasoned_hand_core::search::{SearchClient, SearchProvider};
 use seasoned_hand_core::verifier::gate::VerifierGate;
-use seasoned_hand_core::verifier::{VerifyContextHint, VerifyRequest, VerifyTrigger};
+use seasoned_hand_core::verifier::{VerifyRequest, VerifyTrigger};
 use seasoned_hand_core::verifier::{Worker, WorkerDeps};
 use seasoned_hand_core::{db, pubsub};
 use seasoned_hand_server::AppState;
@@ -118,7 +118,6 @@ slots:
             final_message_call_id: "phase1-stable-final".to_string(),
         },
         triggered_at_event_id: verify_event.id as u64,
-        context_hint: VerifyContextHint,
     };
 
     let deps = WorkerDeps::from_router(
