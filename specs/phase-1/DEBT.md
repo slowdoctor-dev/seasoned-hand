@@ -195,6 +195,43 @@ notes) — append them below as item 14+ when the decision is made.
 
 ## In-phase additions (from stories 1.1–1.20b)
 
+### 15. Verifier Worker `run()` is a polling stub — no `XREADGROUP` consumer
+- **Origin**: story 1.9b, surfaced by the post-Phase-1
+  story-consistency audit (1.20b close)
+- **Severity**: **High** (blocks the Verifier feature in any
+  deployment where the producer-side `XADD verify_request` calls go
+  through Redis Streams — which is every production deployment)
+- **What**: Story 1.9b's acceptance criteria specify
+  `XREADGROUP GROUP verifier <consumer> BLOCK 5000 COUNT 16 STREAMS
+  verify_request >` + per-session FIFO via `DashMap<SessionId,
+  Arc<Mutex<()>>>` + global concurrency cap via `Semaphore`.
+  `Worker::run()` ships as a polling shim that calls
+  `ensure_consumer_group()` (a no-op) and then loops on a 500 ms
+  `tokio::time::sleep`. It does no Redis I/O. The `Semaphore` /
+  session-locks plumbing was dropped during the post-Phase-1
+  simplicity pass (`6bbb34e`) because nothing was reading from it.
+  Net: the production verifier loop reads zero entries from the
+  stream; verdicts only flow when host code calls
+  `Worker::handle_request(&req)` directly, which only test code
+  currently does. Every trigger emission path (idle-final, breaker
+  fire, file-mismatch hook) successfully `XADD`s into the stream,
+  but those entries accumulate forever.
+- **Why it shipped this way**: Story 1.9b's intent was to lock down
+  the `handle_request` pipeline (fresh context, FAIL-biased prompt,
+  watchdog, parse + persist) so that wiring the consumer loop is a
+  pure plumbing job with no algorithm risk. The `phase1_stable_50step`
+  E2E (story 1.20) drives `handle_request` directly to prove the
+  shape end-to-end. The trade-off was deliberate but never marked as
+  DEBT.
+- **Pay down**: First post-Phase-1 commit on the verifier-runtime
+  surface. Implement the XREADGROUP loop + parse + dispatch +
+  XACK + the per-session FIFO + global semaphore exactly per
+  story 1.9b's "Concurrency" section. Add the two named tests
+  (`worker_respects_per_session_fifo`,
+  `worker_respects_global_concurrency_cap`) under a live-Redis
+  feature flag (mirroring the existing `#[ignore]`'d Redis pattern
+  from Phase 0). The shipped `handle_request` is unchanged.
+
 ### 14. `SandboxGitShell::commit_phase` builds a shell string with weak quoting (`phase_title` injection)
 - **Origin**: story 1.13, surfaced by the post-Phase-1 security review
   (story 1.20b commit `e5948c2`)

@@ -268,3 +268,33 @@ can be worked in parallel.
 Future-Verifier flow: when story 1.9 wires the Verifier Worker, its
 internal `plan_update` invocation runs in `AgentMode::Verifier` and the
 mask policy already permits it.
+
+---
+
+## Execution notes (post-Phase-1 simplicity pass)
+
+**Spec divergence — `MaskContext` collapsed to bare `AgentMode`.** The
+story sketched `MaskContext { session_id, iteration, mode }` and a
+trait method `is_available(&self, tool_name: &str, ctx: &MaskContext)`.
+The post-Phase-1 simplicity pass (commit `1aacf18`) dropped
+`MaskContext` entirely:
+- `DefaultMaskPolicy` only ever read `ctx.mode`; `session_id` and
+  `iteration` were unread in production.
+- The `Iteration`-conditional `ToggleMaskPolicy` test impl was
+  tautologically proving "`iter_mut().for_each()` doesn't reorder" —
+  a property of the loop, not of the policy.
+- `ToolContext.mask_ctx: MaskContext` became `ToolContext.mask_mode:
+  AgentMode`. Trait method is now
+  `is_available(&self, tool_name: &str, mode: AgentMode)`.
+
+When a future story needs per-session or per-iteration masking, the
+trait surface can be widened then. Phase 1 does not need it.
+
+**Spec divergence — `mask_does_not_change_order` test removed.** That
+test exercised `apply_mask` with the now-deleted `ToggleMaskPolicy` to
+prove `iter_mut` order stability across iterations. Since iter_mut
+cannot reorder by construction, the test was redundant; removal at
+`1aacf18`. The shipped `tool_catalog_order_is_stable` test asserts
+catalog name-order stability over the `sample_specs()` helper, which
+is a weaker but spec-check-meta-asserted property (`scripts/spec-check.sh`
+greps for the test by name).

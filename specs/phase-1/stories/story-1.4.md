@@ -362,3 +362,18 @@ Story 1.6 (Context Recitation) will tail `/workspace/progress.txt` every
   - `GET /v1/sessions/:id/progress`
 - Added feature/progress tool tests and server route tests in
   `crates/seasoned-hand-server/tests/feature_list.rs`.
+
+## Execution notes (post-Phase-1 consistency audit)
+
+**Naming drift — workspace paths are passed without the `/workspace/`
+prefix.** The story body calls out `/workspace/feature-list.json` and
+`/workspace/progress.txt` as the on-disk paths. The implementation
+passes the workspace-relative form
+(`SandboxClient::write_workspace_file(session_id, "feature-list.json",
+...)`). `SandboxClient::normalize_workspace_relative_path` joins
+against `handle.workspace_host_path` so the host-fs result is correct
+and identical to what the spec describes. The literal `/workspace/...`
+in the spec body is the **logical** sandbox path; the convention
+everywhere in the Phase 1 code is the workspace-relative form. The
+Verifier context builder + the HTTP routes both follow this
+convention, so the on-disk reality stays self-consistent.
