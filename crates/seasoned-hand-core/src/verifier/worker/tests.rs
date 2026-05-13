@@ -503,3 +503,477 @@ async fn verifier_cancel_emits_verifier_cancelled_misc() {
         "no verification row should be persisted on cancel"
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// Story 2.18 — live-Redis XREADGROUP loop tests
+//
+// These tests require a running Redis (default redis://127.0.0.1:6379).
+// Run with `REDIS_URL=redis://127.0.0.1:6379 cargo test -p seasoned-hand-core
+// verifier::worker -- --ignored`. Each test uses a uuid-suffixed stream +
+// consumer-group name so concurrent runs don't poison each other's PEL.
+// ──────────────────────────────────────────────────────────────────────────
+
+use crate::verifier::VerifierRuntimeConfig;
+use serde::Serialize;
+
+fn redis_test_url() -> String {
+    std::env::var("REDIS_TEST_URL")
+        .ok()
+        .or_else(|| std::env::var("REDIS_URL").ok())
+        .unwrap_or_else(|| "redis://127.0.0.1:6379".into())
+}
+
+struct LiveRig {
+    worker: Worker,
+    verifications: Arc<VerificationStore>,
+    redis: Arc<RedisPool>,
+    stream: String,
+    group: String,
+}
+
+/// Build a rig backed by real Redis + a wiremock LLM/cost mock. If
+/// `seed_sessions` is empty no `sessions` rows are created (used by the
+/// error-path test to force an FK violation on `verifications.insert`).
+async fn live_rig(mock_uri: String, max_concurrency: usize, seed_sessions: &[&str]) -> LiveRig {
+    let db = db::open(":memory:").await.expect("in-memory db");
+    for sid in seed_sessions {
+        let owned = (*sid).to_string();
+        db.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO sessions (id, created_at, updated_at, state) \
+                 VALUES (?, 0, 0, 'RUNNING')",
+                rusqlite::params![owned],
+            )
+            .expect("insert session");
+        })
+        .await;
+    }
+
+    let redis = Arc::new(RedisPool::new(redis_test_url()).expect("parse redis url"));
+    let events = Arc::new(SqliteEventStore::with_redis(db.clone(), (*redis).clone()));
+    let plan_manager = Arc::new(PlanManager::new(db.clone(), events.clone()));
+    for sid in seed_sessions {
+        plan_manager
+            .create(
+                sid,
+                "live-test goal",
+                vec![Phase {
+                    id: 1,
+                    title: "do thing".into(),
+                    status: PhaseStatus::Active,
+                    capabilities: Vec::new(),
+                }],
+            )
+            .await
+            .expect("seed plan");
+    }
+    let verifications = Arc::new(VerificationStore::new(db.clone()));
+
+    let workspace = tempdir().expect("tempdir");
+    let sandbox = Arc::new(
+        SandboxClient::new("ghcr.io/agent-infra/sandbox:1.0.0.152", workspace.path())
+            .expect("sandbox client"),
+    );
+    for sid in seed_sessions {
+        sandbox
+            .insert_handle_for_test(SandboxHandle {
+                session_id: (*sid).to_string(),
+                container_id: "c1".into(),
+                api_url: "http://127.0.0.1:1".into(),
+                novnc_url: "http://127.0.0.1:2".into(),
+                ttyd_url: "ws://127.0.0.1:3".into(),
+                workspace_host_path: workspace.path().join(sid),
+            })
+            .await;
+    }
+
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    let stream = format!("verify_request_test_{id}");
+    let group = format!("verifier-workers-test-{id}");
+    // Pre-create the consumer group on the (now-empty) stream so any
+    // XADDs the test does *before* the worker boots are still visible
+    // when the worker XREADGROUPs (XGROUP CREATE ... $ would otherwise
+    // skip entries planted ahead of group creation). The worker's own
+    // xgroup_create call later returns BUSYGROUP and is swallowed.
+    redis
+        .xgroup_create_mkstream(&stream, &group)
+        .await
+        .expect("pre-create consumer group for live test");
+    let cfg = VerifierRuntimeConfig {
+        stream: stream.clone(),
+        group: group.clone(),
+        consumer_prefix: format!("worker-test-{id}"),
+        max_concurrency,
+        consumer_block_ms: 200,
+        read_count: 16,
+    };
+
+    let cost = Arc::new(CostClient::new(mock_uri.clone()));
+    let verifier_llm = LlmClient::new(mock_uri, None);
+    let worker = Worker::new(WorkerDeps {
+        plan_manager,
+        events: events.clone(),
+        sandbox,
+        verifications: verifications.clone(),
+        cost,
+        system_prompt: Arc::new("verifier test prompt".into()),
+        verifier_slot_model: "verifier-test-model".to_string(),
+        verifier_llm,
+        cancel_tokens: Arc::new(dashmap::DashMap::new()),
+    })
+    .with_runtime_config(cfg);
+
+    LiveRig {
+        worker,
+        verifications,
+        redis,
+        stream,
+        group,
+    }
+}
+
+/// Start a permanent-mock wiremock returning `canned_assistant` for
+/// every chat completion and `{"total_cents":0}` for every cost poll.
+async fn permanent_mock(canned_assistant: Value) -> MockServer {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(canned_assistant))
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/cost"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"total_cents": 0})))
+        .mount(&mock)
+        .await;
+    mock
+}
+
+/// Spawn the worker.run loop on a background task; cancel via the
+/// returned token + await the handle.
+fn spawn_worker(rig: &LiveRig) -> (CancellationToken, tokio::task::JoinHandle<()>) {
+    let worker = rig.worker.clone();
+    let redis = rig.redis.clone();
+    let shutdown = CancellationToken::new();
+    let token = shutdown.clone();
+    let handle = tokio::spawn(async move {
+        let _ = worker.run(true, redis, token).await;
+    });
+    (shutdown, handle)
+}
+
+async fn shutdown_worker(shutdown: CancellationToken, handle: tokio::task::JoinHandle<()>) {
+    shutdown.cancel();
+    let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+}
+
+fn req_for(session_id: &str, anchor: u64) -> VerifyRequest {
+    VerifyRequest {
+        session_id: session_id.to_string(),
+        trigger: VerifyTrigger::TaskComplete {
+            final_message_call_id: format!("call-{anchor}"),
+        },
+        triggered_at_event_id: anchor,
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires running Redis"]
+async fn worker_xreadgroup_consumes_one_entry() {
+    let mock = permanent_mock(assistant_response(
+        r#"{"verdict":"pass","reason":"all green","evidence_event_ids":[]}"#,
+    ))
+    .await;
+    let session_id = "live-consume-one";
+    let rig = live_rig(mock.uri(), 2, &[session_id]).await;
+    rig.redis
+        .xadd_json(&rig.stream, &req_for(session_id, 7))
+        .await
+        .expect("xadd request");
+
+    let (shutdown, handle) = spawn_worker(&rig);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut rows = Vec::new();
+    while std::time::Instant::now() < deadline {
+        rows = rig
+            .verifications
+            .list_by_session(session_id, None, 10)
+            .await
+            .expect("list rows");
+        if !rows.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    shutdown_worker(shutdown, handle).await;
+
+    assert_eq!(rows.len(), 1, "expected exactly one verifications row");
+    assert_eq!(rows[0].verdict, VerdictKind::Pass);
+    let pending = rig
+        .redis
+        .xpending_count(&rig.stream, &rig.group)
+        .await
+        .expect("xpending");
+    assert_eq!(pending, 0, "PEL must be empty after XACK");
+}
+
+#[tokio::test]
+#[ignore = "requires running Redis"]
+async fn worker_xreadgroup_per_session_fifo() {
+    // 200 ms per LLM call → 3 serial calls ≈ 600 ms; concurrent ≈ 200 ms.
+    // Global cap is 8 (lots of headroom) so the only limiter is the
+    // per-session FIFO. We assert wall-clock ≥ 500 ms to confirm serial
+    // execution.
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(assistant_response(
+                    r#"{"verdict":"pass","reason":"ok","evidence_event_ids":[]}"#,
+                ))
+                .set_delay(Duration::from_millis(200)),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/cost"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"total_cents": 0})))
+        .mount(&mock)
+        .await;
+
+    let session_id = "live-fifo";
+    let rig = live_rig(mock.uri(), 8, &[session_id]).await;
+    for anchor in [1u64, 2, 3] {
+        rig.redis
+            .xadd_json(&rig.stream, &req_for(session_id, anchor))
+            .await
+            .expect("xadd");
+    }
+
+    let started = std::time::Instant::now();
+    let (shutdown, handle) = spawn_worker(&rig);
+    let deadline = started + Duration::from_secs(8);
+    let mut rows: Vec<crate::verifier::Verification> = Vec::new();
+    while std::time::Instant::now() < deadline {
+        rows = rig
+            .verifications
+            .list_by_session(session_id, None, 10)
+            .await
+            .expect("list rows");
+        if rows.len() == 3 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let elapsed = started.elapsed();
+    shutdown_worker(shutdown, handle).await;
+
+    assert_eq!(rows.len(), 3, "expected three verifications rows");
+    assert!(
+        elapsed >= Duration::from_millis(500),
+        "per-session FIFO must serialize: 3 × 200ms LLM calls should take ≥ 500ms; got {elapsed:?}",
+    );
+    let pending = rig
+        .redis
+        .xpending_count(&rig.stream, &rig.group)
+        .await
+        .expect("xpending");
+    assert_eq!(pending, 0, "PEL must be empty after XACK");
+}
+
+#[tokio::test]
+#[ignore = "requires running Redis"]
+async fn worker_xreadgroup_global_semaphore_caps_concurrency() {
+    // 5 sessions × 1 request each, LLM delay 300 ms, global cap 2.
+    // Minimum wall-clock = ⌈5/2⌉ × 300 ms = 900 ms. We assert ≥ 700 ms
+    // (giving timing margin) — uncapped concurrency would land at ~300 ms.
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(assistant_response(
+                    r#"{"verdict":"pass","reason":"ok","evidence_event_ids":[]}"#,
+                ))
+                .set_delay(Duration::from_millis(300)),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/cost"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"total_cents": 0})))
+        .mount(&mock)
+        .await;
+
+    let sessions: Vec<String> = (0..5)
+        .map(|i| format!("live-sem-{i}-{}", uuid::Uuid::new_v4().simple()))
+        .collect();
+    let session_refs: Vec<&str> = sessions.iter().map(|s| s.as_str()).collect();
+    let rig = live_rig(mock.uri(), 2, &session_refs).await;
+    for s in &sessions {
+        rig.redis
+            .xadd_json(&rig.stream, &req_for(s, 1))
+            .await
+            .expect("xadd");
+    }
+
+    let started = std::time::Instant::now();
+    let (shutdown, handle) = spawn_worker(&rig);
+    let deadline = started + Duration::from_secs(10);
+    let mut all_done = false;
+    while std::time::Instant::now() < deadline {
+        let mut done = 0usize;
+        for s in &sessions {
+            let rows = rig
+                .verifications
+                .list_by_session(s, None, 10)
+                .await
+                .expect("list rows");
+            if !rows.is_empty() {
+                done += 1;
+            }
+        }
+        if done == sessions.len() {
+            all_done = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let elapsed = started.elapsed();
+    shutdown_worker(shutdown, handle).await;
+
+    assert!(all_done, "expected verifications row for every session");
+    assert!(
+        elapsed >= Duration::from_millis(700),
+        "global cap=2 with 5×300ms calls must serialize into batches; got {elapsed:?}",
+    );
+    let pending = rig
+        .redis
+        .xpending_count(&rig.stream, &rig.group)
+        .await
+        .expect("xpending");
+    assert_eq!(pending, 0, "PEL must be empty after XACK");
+}
+
+#[tokio::test]
+#[ignore = "requires running Redis"]
+async fn worker_xack_on_handle_request_error() {
+    // No session row → verifications.insert hits a FK constraint and
+    // returns WorkerError::Persistence. The worker must still XACK so
+    // the PEL doesn't grow forever on terminal handler errors.
+    let mock = permanent_mock(assistant_response(
+        r#"{"verdict":"pass","reason":"ok","evidence_event_ids":[]}"#,
+    ))
+    .await;
+    let rig = live_rig(mock.uri(), 2, &[]).await;
+    let ghost_session = "live-ghost-session";
+    rig.redis
+        .xadd_json(&rig.stream, &req_for(ghost_session, 1))
+        .await
+        .expect("xadd");
+
+    let (shutdown, handle) = spawn_worker(&rig);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut acked = false;
+    while std::time::Instant::now() < deadline {
+        let pending = rig
+            .redis
+            .xpending_count(&rig.stream, &rig.group)
+            .await
+            .expect("xpending");
+        if pending == 0 {
+            // Need to make sure XADD'd entry was actually delivered to
+            // the consumer (not just never-read). XLEN ≥ 1 confirms the
+            // XADD landed; pending == 0 with XLEN ≥ 1 means delivered
+            // and then ACKed.
+            let len = rig.redis.xlen(&rig.stream).await.expect("xlen");
+            if len >= 1 {
+                acked = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    shutdown_worker(shutdown, handle).await;
+
+    assert!(
+        acked,
+        "worker must XACK the message even when handle_request errors",
+    );
+    // No verifications row was inserted (the FK violation rejected it).
+    let rows = rig
+        .verifications
+        .list_by_session(ghost_session, None, 10)
+        .await
+        .expect("list rows");
+    assert!(
+        rows.is_empty(),
+        "FK-violating handle_request must not leave a verifications row",
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires running Redis"]
+async fn worker_skips_malformed_message_with_xack() {
+    #[derive(Serialize)]
+    struct NotARequest {
+        not_a_verify_request: String,
+    }
+    // Permanent mock present but should never be hit — the message
+    // never makes it past JSON parsing.
+    let mock = permanent_mock(assistant_response(
+        r#"{"verdict":"pass","reason":"ok","evidence_event_ids":[]}"#,
+    ))
+    .await;
+    let session_id = "live-malformed";
+    let rig = live_rig(mock.uri(), 2, &[session_id]).await;
+    rig.redis
+        .xadd_json(
+            &rig.stream,
+            &NotARequest {
+                not_a_verify_request: "garbage".into(),
+            },
+        )
+        .await
+        .expect("xadd");
+
+    let (shutdown, handle) = spawn_worker(&rig);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut acked = false;
+    while std::time::Instant::now() < deadline {
+        let pending = rig
+            .redis
+            .xpending_count(&rig.stream, &rig.group)
+            .await
+            .expect("xpending");
+        let len = rig.redis.xlen(&rig.stream).await.expect("xlen");
+        if len >= 1 && pending == 0 {
+            acked = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    shutdown_worker(shutdown, handle).await;
+
+    assert!(
+        acked,
+        "worker must XACK + drop unparseable messages (PEL retention would block the queue)",
+    );
+    let rows = rig
+        .verifications
+        .list_by_session(session_id, None, 10)
+        .await
+        .expect("list rows");
+    assert!(
+        rows.is_empty(),
+        "malformed messages must not yield a verifications row",
+    );
+    // We never called the LLM mock — confirm via wiremock's
+    // received_requests counter.
+    let requests = mock.received_requests().await.unwrap_or_default();
+    assert!(
+        requests.iter().all(|r| r.url.path() != "/chat/completions"),
+        "no chat-completion call should fire for a malformed message",
+    );
+}
