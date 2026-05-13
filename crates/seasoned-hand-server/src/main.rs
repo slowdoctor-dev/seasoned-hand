@@ -87,6 +87,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!(path = %prompt_path, "verifier system prompt loaded");
     }
 
+    // Phase 2 / story 2.20: wire the NarratorHook's classifier-slot LLM
+    // path. Closes the deferred plumbing from story 1.15 Execution
+    // notes. Missing prompt file is non-fatal — narration degrades to
+    // templated-only ("Invoking {tool}" for action-changing tools).
+    let narrator_prompt_path = std::env::var("NARRATOR_PROMPT_PATH")
+        .unwrap_or_else(|_| "config/prompts/narrator.system.txt".to_string());
+    match std::fs::read_to_string(&narrator_prompt_path) {
+        Ok(prompt) => {
+            use seasoned_hand_server::NarratorClassifierWiring;
+            // Snapshot the slot fields BEFORE consuming `state` — the
+            // resolver returns a borrow into `state.router`.
+            let (classifier_base_url, classifier_api_key, classifier_model) = {
+                let slot = state.router.resolve(SlotName::Classifier);
+                (
+                    slot.base_url.clone(),
+                    slot.api_key.clone(),
+                    slot.model.clone(),
+                )
+            };
+            let classifier_llm = LlmClient::new(classifier_base_url, classifier_api_key);
+            state = state.with_narrator_classifier(NarratorClassifierWiring {
+                llm: std::sync::Arc::new(classifier_llm),
+                model: classifier_model.clone(),
+                system_prompt: std::sync::Arc::new(prompt),
+            });
+            tracing::info!(
+                path = %narrator_prompt_path,
+                slot_model = %classifier_model,
+                "narrator classifier wired",
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                path = %narrator_prompt_path,
+                "narrator classifier prompt missing; narration falls through to templated-only",
+            );
+        }
+    }
+
     // Phase 1: rehydrate sandbox handle cache from Docker before binding the
     // listener so existing per-session containers from a prior boot are
     // re-attached to live sessions and orphans are logged. Non-fatal: if

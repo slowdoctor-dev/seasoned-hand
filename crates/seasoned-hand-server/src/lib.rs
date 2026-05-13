@@ -86,6 +86,21 @@ pub struct AppState {
     /// Story 1.17: per-session cancellation tokens used by ws task_cancel.
     pub cancel_tokens: Arc<DashMap<String, tokio_util::sync::CancellationToken>>,
     pub breakers: Arc<BreakerRegistry>,
+    /// Story 2.20: the same `NarratorHook` Arc that's wired into the
+    /// `dispatcher`'s hook chain. Exposed here so `with_narrator_classifier`
+    /// can call `attach_classifier(...)` on it after AppState
+    /// construction — closes Phase 1 1.15 deferred plumbing.
+    pub narrator: Arc<NarratorHook>,
+}
+
+/// Story 2.20: configuration bundle for the NarratorHook's
+/// classifier-slot LLM path. Constructed by `main.rs` after loading
+/// `config/prompts/narrator.system.txt` and resolving the Classifier
+/// slot; applied via `AppState::with_narrator_classifier`.
+pub struct NarratorClassifierWiring {
+    pub llm: Arc<LlmClient>,
+    pub model: String,
+    pub system_prompt: Arc<String>,
 }
 
 impl AppState {
@@ -101,14 +116,18 @@ impl AppState {
         let sandbox = Arc::new(sandbox);
         let search = Arc::new(search);
         let redis_arc = Arc::new(redis.clone());
+        // Story 1.15: NarratorHook runs first so the
+        // `Message{ui:"narrate"}` event lands before the Action event
+        // for clean UI ordering. Templated-only at this point;
+        // classifier-slot LLM path becomes live the moment
+        // `with_narrator_classifier` writes the OnceLock (story 2.20).
+        // The same Arc lives in both `state.narrator` and the
+        // dispatcher's hook chain, so the boot-time `attach_classifier`
+        // call mutates the in-chain hook directly.
+        let narrator = Arc::new(NarratorHook::new(events.clone()));
         let dispatcher = Arc::new(
             ToolDispatcher::new(register_builtin_tools())
-                // Story 1.15: NarratorHook runs first so the
-                // `Message{ui:"narrate"}` event lands before the Action
-                // event for clean UI ordering. Templated-only at boot;
-                // classifier-slot LLM path is opt-in (see
-                // story-1.15.md execution notes — deferred plumbing).
-                .with_hook(Arc::new(NarratorHook::new(events.clone())))
+                .with_hook(narrator.clone())
                 .with_hook(Arc::new(EventEmittingHook::new(events.clone())))
                 .with_hook(Arc::new(InvalidationHook::new(
                     events.clone(),
@@ -174,7 +193,25 @@ impl AppState {
             checkpoint_rollback_on_verifier_fail,
             cancel_tokens,
             breakers,
+            narrator,
         }
+    }
+
+    /// Story 2.20: attach the NarratorHook's classifier-slot LLM path.
+    /// Closes the deferred plumbing called out in story 1.15 Execution
+    /// notes. Called once at boot from `main.rs` after loading the
+    /// narrator system prompt from disk; tests skip it (templated-only
+    /// stays the default for the existing 6 Phase-1 narrate tests).
+    pub fn with_narrator_classifier(self, wiring: NarratorClassifierWiring) -> Self {
+        if let Err(_existing) =
+            self.narrator
+                .attach_classifier(wiring.llm, wiring.model, wiring.system_prompt)
+        {
+            tracing::warn!(
+                "narrator classifier already attached; ignoring second with_narrator_classifier call"
+            );
+        }
+        self
     }
 
     /// Story 1.9: replace the (default-empty) verifier system prompt

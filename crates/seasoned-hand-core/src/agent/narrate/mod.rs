@@ -20,7 +20,7 @@
 //! refs: /specs/phase-1/architecture.md §2.8, §4.2, §7, §8
 //! refs: /specs/phase-1/stories/story-1.15.md
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -91,7 +91,12 @@ impl NarrationConfig {
 pub struct NarratorHook {
     config: NarrationConfig,
     events: Arc<SqliteEventStore>,
-    classifier: Option<ClassifierSlot>,
+    /// `OnceLock` because the classifier is attached either at
+    /// construction time (via `with_classifier`, for tests) or at
+    /// boot time (via `attach_classifier` from `AppState::with_narrator_classifier`,
+    /// for production). After it's set the value is read-only — no
+    /// per-dispatch lock cost, no `RwLock` churn.
+    classifier: OnceLock<ClassifierSlot>,
 }
 
 impl NarratorHook {
@@ -99,7 +104,7 @@ impl NarratorHook {
         Self {
             config: NarrationConfig::default(),
             events,
-            classifier: None,
+            classifier: OnceLock::new(),
         }
     }
 
@@ -108,18 +113,46 @@ impl NarratorHook {
         self
     }
 
+    /// Construction-time classifier attachment (consumed `self`).
+    /// Used by tests + any caller that knows the classifier at
+    /// instantiation. Silently no-ops if a classifier is already
+    /// present (matches `OnceLock` semantics).
     pub fn with_classifier(
-        mut self,
+        self,
         llm: Arc<LlmClient>,
         slot_alias: impl Into<String>,
         system_prompt: Arc<String>,
     ) -> Self {
-        self.classifier = Some(ClassifierSlot {
+        let _ = self.classifier.set(ClassifierSlot {
             llm,
             model: slot_alias.into(),
             system_prompt,
         });
         self
+    }
+
+    /// Story 2.20: runtime classifier attachment via `&self`. Called by
+    /// `AppState::with_narrator_classifier` after the templated-only
+    /// `NarratorHook` is already inside the dispatcher's hook chain.
+    /// Returns `Err(slot)` if a classifier was already attached (set-once
+    /// invariant); production callers ignore the Err since the hook is
+    /// attached exactly once at boot.
+    pub fn attach_classifier(
+        &self,
+        llm: Arc<LlmClient>,
+        slot_alias: impl Into<String>,
+        system_prompt: Arc<String>,
+    ) -> Result<(), ClassifierSlot> {
+        self.classifier.set(ClassifierSlot {
+            llm,
+            model: slot_alias.into(),
+            system_prompt,
+        })
+    }
+
+    /// Test-only / read-only accessor for the classifier state.
+    pub fn classifier_is_attached(&self) -> bool {
+        self.classifier.get().is_some()
     }
 
     async fn emit_narration(&self, ctx: &ToolContext, call_id: &str, text: &str) {
@@ -163,7 +196,7 @@ impl Hook for NarratorHook {
             return;
         }
         let text = if self.config.uses_llm_path(name) {
-            match self.classifier.as_ref() {
+            match self.classifier.get() {
                 Some(slot) => match slot.classify(name, args, self.config.timeout).await {
                     Ok(text) => text,
                     Err(reason) => {
@@ -171,10 +204,11 @@ impl Hook for NarratorHook {
                         return;
                     }
                 },
-                // No classifier wired (e.g., test setup or main forgot
-                // to install one): fall through to the generic
-                // templated sentence rather than silently dropping the
-                // narration.
+                // No classifier wired (yet — e.g., before
+                // `AppState::with_narrator_classifier` runs, or test
+                // setup that never attaches one). Fall through to the
+                // generic templated sentence rather than silently
+                // dropping the narration.
                 None => templates::template_for(name, args),
             }
         } else {

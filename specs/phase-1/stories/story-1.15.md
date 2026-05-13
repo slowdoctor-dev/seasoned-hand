@@ -349,14 +349,26 @@ be apparatus for one caller. The hook builds the same JSON inline
 it would have keyed on a typed field. The shape is testable via
 serde_json round-trips already covered by the 6 acceptance tests.
 
-**Deferred — classifier-slot wiring through `AppState::new`.**
-`NarratorHook` is registered at server boot **without** a classifier
-(templated path only), so action-changing tools fall through to
+**~~Deferred — classifier-slot wiring through `AppState::new`.~~ ✅
+Closed by Phase 2 story 2.20 (2026-05-13).** `NarratorHook` now ships
+templated-only at `AppState::new`; the production `main.rs` reads
+`config/prompts/narrator.system.txt` + resolves `SlotName::Classifier`
++ calls the new `AppState::with_narrator_classifier(NarratorClassifierWiring{...})`
+builder, which writes the classifier into a `OnceLock<ClassifierSlot>`
+field on the same `Arc<NarratorHook>` that's already in the
+dispatcher's hook chain. No dispatcher rebuild needed; no per-dispatch
+lock cost. Missing prompt file is non-fatal — narration degrades to
+templated-only with a warn log. Test coverage in
+`crates/seasoned-hand-server/tests/narrator_wiring.rs`.
+
+**Historical context (deferred deferral note from Phase 1):**
+`NarratorHook` was registered at server boot **without** a classifier
+(templated path only), so action-changing tools fell through to
 `templates::template_for`'s generic `"Invoking {tool}"` sentence. The
-hook's `with_classifier(llm, model, system_prompt)` builder is fully
+hook's `with_classifier(llm, model, system_prompt)` builder was fully
 working (covered by `llm_path_calls_classifier_slot` and the timeout
 test), but plumbing the prompt + classifier-slot LlmClient through
-`AppState::new` would require restructuring the dispatcher
+`AppState::new` would have required restructuring the dispatcher
 construction order — the dispatcher is currently `Arc`d before any
 prompt-loading runs, and ToolDispatcher has no hot-swap path. A
 follow-up commit can either (a) accept `Option<ClassifierWiring>` in
