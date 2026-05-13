@@ -277,3 +277,43 @@ Two of three frontend lanes are in place. Story 1.19 adds the 3-track
 BrowserTab — backend already publishes the events (Track B via
 `Observation.dom_text_ref`, Track C via `Misc{kind:"browser_track_c"}`);
 the frontend only needs to render them.
+
+---
+
+## Execution notes
+
+**Spec divergence — file layout.** The spec used `frontend/src/panels/`
+and `frontend/src/lib/` paths from a sketch; the actual Phase 0 tree
+ships at `frontend/components/` and `frontend/lib/`. All new files were
+placed in the real tree (`components/agent-computer/verifier-tab.tsx`,
+`lib/api.ts` extensions). No `payload.ts` exists — the WS payload type
+in `ws-types.ts` is already an open `{ kind; [key: string]: unknown }`
+discriminated by `kind`, so the narration / verdict branches cast
+inline.
+
+**WS hook lifted to `HomeShell`.** Phase 0's `Chat` owned a private
+`useAgentSocket(WS_URL)`. The Verifier tab needs the same WS event
+stream to detect new `verifier_verdict` Misc events and trigger a
+re-fetch. Lifting the hook into `HomeShell` and passing `events`/`send`
+down as props was a few-line change that (a) honors the spec's
+"push-driven refresh" without opening a second WebSocket, and (b)
+gives the future 1.19 BrowserTab a free seat at the same event stream.
+Side benefit: one shared `Map<event_id, ServerEvent>` index now lives
+at the root and is passed down to the Verifier tab for synchronous
+evidence-chip lookup (architecture §12 q1 "lazy / no prefetch").
+
+**Verifier list refresh is `refreshTick`-based, not optimistic.** The
+spec sketch refreshed by re-fetching `/v1/sessions/:id/verifications`
+on every WS verifier_verdict arrival. Implementation: when the tab
+sees a new (id-keyed) verifier_verdict event, it bumps a `refreshTick`
+counter; the fetch effect is keyed on `[sessionId, refreshTick]` so it
+re-runs. Keeps the rendering path single-source-of-truth (the HTTP
+endpoint) — cheaper to reason about than reconciling a partial WS
+payload against the full Verification DTO from the DB. Cost: one HTTP
+round-trip per verdict.
+
+**Out-of-window evidence-chip stub matches spec §12 q1 verbatim.** No
+new backend route; chips that miss the client-side event index render
+as `"#<id> (older than loaded window)"` with no fetch. A Phase 2 story
+can add `GET /v1/events/:id` if the team decides lazy single-event
+resolution is worth a route.

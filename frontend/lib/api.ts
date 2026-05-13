@@ -38,3 +38,40 @@ export function getSession(id: string): Promise<SessionSummary & {
 }> {
   return get(`/v1/sessions/${encodeURIComponent(id)}`);
 }
+
+// Phase 1 / story 1.9: Verifier verdict DTO — mirrors
+// crates/seasoned-hand-core/src/verifier/mod.rs::Verification.
+export type Verdict = "pass" | "fail";
+
+export type Verification = {
+  id: string;
+  session_id: string;
+  triggered_at_event_id: number;
+  trigger_kind: string;
+  trigger_detail: unknown;
+  verdict: Verdict;
+  reason: string;
+  evidence_event_ids: number[];
+  suggested_plan_update: unknown | null;
+  model_id: string;
+  cost_cents: number;
+  created_at: number;
+};
+
+export type VerificationListResponse = {
+  rows: Verification[];
+  next_cursor: number | null;
+};
+
+export function listVerifications(
+  sessionId: string,
+  limit = 50,
+): Promise<VerificationListResponse> {
+  return get<VerificationListResponse>(
+    `/v1/sessions/${encodeURIComponent(sessionId)}/verifications?limit=${limit}`,
+  );
+}
+
+export function getVerification(id: string): Promise<Verification> {
+  return get<Verification>(`/v1/verifications/${encodeURIComponent(id)}`);
+}

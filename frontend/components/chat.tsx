@@ -2,21 +2,17 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { deriveInputMode } from "@/lib/chat-state";
-import { useAgentSocket } from "@/lib/ws";
+import type { UseAgentSocket } from "@/lib/ws";
 import type { ServerEvent } from "@/lib/ws-types";
 
 type Props = {
   sessionId: string | null;
   onSessionCreated?: (id: string) => void;
+  events: ServerEvent[];
+  send: UseAgentSocket["send"];
 };
 
-const WS_URL =
-  typeof window === "undefined"
-    ? ""
-    : process.env.NEXT_PUBLIC_WS_URL ?? `ws://${window.location.hostname}:3000/ws`;
-
-export function Chat({ sessionId, onSessionCreated }: Props) {
-  const { events, send } = useAgentSocket(WS_URL);
+export function Chat({ sessionId, onSessionCreated, events, send }: Props) {
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [stickToBottom, setStickToBottom] = useState(true);
@@ -137,6 +133,19 @@ function EventRow({ event }: { event: ServerEvent }) {
       const role = (p as { role?: string }).role;
       const content = (p as { content?: string }).content ?? "";
       const ui = (p as { ui?: string }).ui;
+      // Story 1.18: Narrator-emitted Messages (ui:"narrate") render as
+      // a lighter inline note threaded with regular messages. Phase 1
+      // narration is non-interactive; clicking is a no-op.
+      if (ui === "narrate") {
+        return (
+          <div
+            className="px-3 py-1 text-xs italic text-gray-500 opacity-70 dark:text-gray-400"
+            aria-label="narration"
+          >
+            — {content}
+          </div>
+        );
+      }
       const isUser = role === "user";
       return (
         <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>

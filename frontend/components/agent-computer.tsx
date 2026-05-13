@@ -4,17 +4,22 @@ import { useEffect, useState } from "react";
 import { BrowserTab } from "@/components/agent-computer/browser-tab";
 import { EditorTab } from "@/components/agent-computer/editor-tab";
 import { TerminalTab } from "@/components/agent-computer/terminal-tab";
+import { VerifierTab } from "@/components/agent-computer/verifier-tab";
+import type { ServerEvent } from "@/lib/ws-types";
 
-type Tab = "browser" | "terminal" | "editor" | "files";
+type Tab = "browser" | "terminal" | "editor" | "verifier" | "files";
 
 type Props = {
   sessionId: string | null;
+  events: ServerEvent[];
+  eventIndex: Map<number, ServerEvent>;
 };
 
 const TABS: { id: Tab; label: string; disabled?: boolean; note?: string }[] = [
   { id: "browser", label: "Browser" },
   { id: "terminal", label: "Terminal" },
   { id: "editor", label: "Editor" },
+  { id: "verifier", label: "Verifier" },
   { id: "files", label: "Files", disabled: true, note: "Phase 1" },
 ];
 
@@ -25,13 +30,18 @@ function storageKey(sessionId: string | null): string {
 function initialTab(sessionId: string | null): Tab {
   if (typeof window === "undefined") return "browser";
   const saved = window.sessionStorage.getItem(storageKey(sessionId));
-  if (saved === "browser" || saved === "terminal" || saved === "editor") {
+  if (
+    saved === "browser" ||
+    saved === "terminal" ||
+    saved === "editor" ||
+    saved === "verifier"
+  ) {
     return saved;
   }
   return "browser";
 }
 
-export function AgentComputer({ sessionId }: Props) {
+export function AgentComputer({ sessionId, events, eventIndex }: Props) {
   const [active, setActive] = useState<Tab>(() => initialTab(sessionId));
 
   useEffect(() => {
@@ -85,6 +95,13 @@ export function AgentComputer({ sessionId }: Props) {
         {active === "browser" && <BrowserTab sessionId={sessionId} />}
         {active === "terminal" && <TerminalTab sessionId={sessionId} />}
         {active === "editor" && <EditorTab sessionId={sessionId} />}
+        {active === "verifier" && (
+          <VerifierTab
+            sessionId={sessionId}
+            events={events}
+            eventIndex={eventIndex}
+          />
+        )}
       </div>
     </aside>
   );
