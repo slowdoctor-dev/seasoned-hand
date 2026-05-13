@@ -146,6 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             state.verifications.clone(),
             state.cost.clone(),
             state.verifier_system_prompt.clone(),
+            state.cancel_tokens.clone(),
         );
         let worker = Worker::new(deps);
         // Story 1.13b: production rollback handler — looks up the

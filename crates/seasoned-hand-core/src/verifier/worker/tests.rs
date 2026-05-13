@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tempfile::tempdir;
+use tokio_util::sync::CancellationToken;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -97,6 +98,7 @@ async fn rig_with_llm_responses(responses: Vec<Value>) -> TestRig {
         system_prompt: Arc::new("You are the verifier (test prompt).".to_string()),
         verifier_slot_model: "verifier-test-model".to_string(),
         verifier_llm,
+        cancel_tokens: Arc::new(dashmap::DashMap::new()),
     };
     let worker = Worker::new(deps);
 
@@ -328,6 +330,7 @@ async fn watchdog_emits_misc_and_returns_none_on_timeout() {
         system_prompt: Arc::new("test".into()),
         verifier_slot_model: "test-model".into(),
         verifier_llm,
+        cancel_tokens: Arc::new(dashmap::DashMap::new()),
     })
     .with_watchdog(Duration::from_millis(50));
 
@@ -361,5 +364,142 @@ async fn watchdog_emits_misc_and_returns_none_on_timeout() {
         evs.iter()
             .any(|e| e.data.get("kind").and_then(Value::as_str) == Some("verifier_watchdog")),
         "expected verifier_watchdog Misc event"
+    );
+}
+
+#[tokio::test]
+async fn verifier_cancel_emits_verifier_cancelled_misc() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(assistant_response(
+                    r#"{"verdict":"pass","reason":"ok","evidence_event_ids":[]}"#,
+                ))
+                .set_delay(Duration::from_secs(5)),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/cost"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"total_cents": 0})))
+        .mount(&mock)
+        .await;
+
+    let db = db::open(":memory:").await.expect("db");
+    let session_id = "s-verifier-cancel".to_string();
+    let sid = session_id.clone();
+    db.with_conn(move |conn| {
+        conn.execute(
+            "INSERT INTO sessions (id, created_at, updated_at, state) \
+             VALUES (?, 0, 0, 'VERIFYING')",
+            rusqlite::params![sid],
+        )
+        .expect("insert session");
+    })
+    .await;
+
+    let redis = RedisPool::new("redis://127.0.0.1:6").unwrap();
+    let events = Arc::new(SqliteEventStore::with_redis(db.clone(), redis));
+    let plan_manager = Arc::new(PlanManager::new(db.clone(), events.clone()));
+    plan_manager
+        .create(
+            &session_id,
+            "goal",
+            vec![Phase {
+                id: 1,
+                title: "phase".into(),
+                status: PhaseStatus::Active,
+                capabilities: Vec::new(),
+            }],
+        )
+        .await
+        .unwrap();
+    let verifications = Arc::new(VerificationStore::new(db.clone()));
+    let workspace = tempdir().unwrap();
+    let sandbox = Arc::new(
+        SandboxClient::new("ghcr.io/agent-infra/sandbox:1.0.0.152", workspace.path()).unwrap(),
+    );
+    sandbox
+        .insert_handle_for_test(SandboxHandle {
+            session_id: session_id.clone(),
+            container_id: "c1".into(),
+            api_url: "http://127.0.0.1:1".into(),
+            novnc_url: "http://127.0.0.1:2".into(),
+            ttyd_url: "ws://127.0.0.1:3".into(),
+            workspace_host_path: workspace.path().join(&session_id),
+        })
+        .await;
+
+    let cancel_tokens = Arc::new(dashmap::DashMap::new());
+    let token = CancellationToken::new();
+    cancel_tokens.insert(session_id.clone(), token.clone());
+
+    let worker = Worker::new(WorkerDeps {
+        plan_manager,
+        events: events.clone(),
+        sandbox,
+        verifications: verifications.clone(),
+        cost: Arc::new(CostClient::new(mock.uri())),
+        system_prompt: Arc::new("test".into()),
+        verifier_slot_model: "test-model".into(),
+        verifier_llm: LlmClient::new(mock.uri(), None),
+        cancel_tokens,
+    });
+
+    let req = VerifyRequest {
+        session_id: session_id.clone(),
+        trigger: VerifyTrigger::TaskComplete {
+            final_message_call_id: "call-1".into(),
+        },
+        triggered_at_event_id: 1,
+    };
+
+    let handle = tokio::spawn(async move { worker.handle_request(&req).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    token.cancel();
+
+    let started = std::time::Instant::now();
+    let out = tokio::time::timeout(Duration::from_secs(1), handle)
+        .await
+        .expect("handle_request should return quickly")
+        .expect("join")
+        .expect("handle_request");
+    assert_eq!(out, "cancelled");
+    assert!(started.elapsed() < Duration::from_millis(500));
+
+    let evs = events
+        .query(
+            &session_id,
+            EventQuery {
+                after_id: None,
+                event_type: Some(EventType::Misc),
+                limit: Some(100),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        evs.iter().any(|e| {
+            e.data.get("kind").and_then(Value::as_str) == Some("verifier_cancelled")
+                && e.data.get("trigger_kind") == Some(&json!("TaskComplete"))
+                && e.data.get("triggered_at_event_id") == Some(&json!(1))
+        }),
+        "expected verifier_cancelled Misc event"
+    );
+    assert!(
+        evs.iter()
+            .all(|e| e.data.get("kind").and_then(Value::as_str) != Some("verifier_verdict")),
+        "verifier_verdict must not be emitted when verifier request is cancelled"
+    );
+
+    let rows = verifications
+        .list_by_session(&session_id, None, 10)
+        .await
+        .expect("list rows");
+    assert!(
+        rows.is_empty(),
+        "no verification row should be persisted on cancel"
     );
 }

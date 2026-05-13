@@ -128,6 +128,7 @@ slots:
         state.verifications.clone(),
         state.cost.clone(),
         state.verifier_system_prompt.clone(),
+        state.cancel_tokens.clone(),
     );
     let worker = Worker::new(deps);
     let _verification_id = worker.handle_request(&req).await.expect("worker request");

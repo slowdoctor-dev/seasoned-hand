@@ -209,6 +209,7 @@ impl AgentRunner {
             }
         };
         let breaker = self.breakers.for_session(&req.session_id).await;
+        let cancel_token = self.cancel_tokens.get(&req.session_id).map(|t| t.clone());
 
         for step in start_step..req.max_steps {
             steps_run = step + 1;
@@ -247,19 +248,34 @@ impl AgentRunner {
             let mut tools = self.tool_specs_from_registry();
             apply_mask(&mut tools, &*self.mask_policy, AgentMode::Worker);
             let main_slot = self.router.resolve(SlotName::Main);
-            let response = match self
-                .llm
-                .chat_completion(ChatCompletionRequest {
-                    model: main_slot.model.clone(),
-                    messages,
-                    tools: Some(tools),
-                    tool_choice: Some(ToolChoice::required()),
-                    temperature: None,
-                    max_tokens: None,
-                    top_p: None,
-                })
-                .await
-            {
+            let llm_call = self.llm.chat_completion(ChatCompletionRequest {
+                model: main_slot.model.clone(),
+                messages,
+                tools: Some(tools),
+                tool_choice: Some(ToolChoice::required()),
+                temperature: None,
+                max_tokens: None,
+                top_p: None,
+            });
+            let llm_result = match cancel_token.clone() {
+                Some(token) => {
+                    tokio::select! {
+                        _ = token.cancelled() => {
+                            self.emit_misc(&req.session_id, "task_cancelled", json!({"reason":"user"})).await?;
+                            self.set_session_state(&req.session_id, "SUSPENDED").await?;
+                            return Ok(RunResult {
+                                session_id: req.session_id,
+                                completed: false,
+                                last_message,
+                                steps: step + 1,
+                            });
+                        }
+                        out = llm_call => out
+                    }
+                }
+                None => llm_call.await,
+            };
+            let response = match llm_result {
                 Ok(response) => {
                     status_errors = 0;
                     response
@@ -369,10 +385,25 @@ impl AgentRunner {
             // single-slot configs, test harnesses) complete directly on
             // idle / final-message without going through the gate.
             let verifier_active = self.router.verifier_enabled();
-            let output = self
-                .dispatcher
-                .dispatch(&ctx, &call.function.name, args)
-                .await;
+            let dispatch_call = self.dispatcher.dispatch(&ctx, &call.function.name, args);
+            let output = match cancel_token.clone() {
+                Some(token) => {
+                    tokio::select! {
+                        _ = token.cancelled() => {
+                            self.emit_misc(&req.session_id, "task_cancelled", json!({"reason":"user"})).await?;
+                            self.set_session_state(&req.session_id, "SUSPENDED").await?;
+                            return Ok(RunResult {
+                                session_id: req.session_id,
+                                completed: false,
+                                last_message,
+                                steps: step + 1,
+                            });
+                        }
+                        out = dispatch_call => out
+                    }
+                }
+                None => dispatch_call.await,
+            };
             if let Some(kind) = breaker.note_observation_and_check(output.ok).await {
                 self.emit_breaker_trigger(&req.session_id, kind).await?;
                 return Ok(RunResult {

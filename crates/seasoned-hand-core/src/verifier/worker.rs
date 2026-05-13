@@ -18,8 +18,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use dashmap::DashMap;
 use serde_json::{Value, json};
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 
 use crate::cost::CostClient;
 use crate::events::{EventError, EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
@@ -74,12 +76,14 @@ pub struct WorkerDeps {
     pub system_prompt: Arc<String>,
     pub verifier_slot_model: String,
     pub verifier_llm: LlmClient,
+    pub cancel_tokens: Arc<DashMap<String, CancellationToken>>,
 }
 
 impl WorkerDeps {
     /// Build from a `SlotRouter` + the shared dep arcs. Picks the
     /// verifier slot's routing target so the LLM client points at the
     /// right Bifrost alias.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_router(
         router: &SlotRouter,
         plan_manager: Arc<PlanManager>,
@@ -88,6 +92,7 @@ impl WorkerDeps {
         verifications: Arc<VerificationStore>,
         cost: Arc<CostClient>,
         system_prompt: Arc<String>,
+        cancel_tokens: Arc<DashMap<String, CancellationToken>>,
     ) -> Self {
         let v_slot = router.resolve(SlotName::Verifier);
         let verifier_llm = LlmClient::new(v_slot.base_url.clone(), v_slot.api_key.clone());
@@ -100,6 +105,7 @@ impl WorkerDeps {
             system_prompt,
             verifier_slot_model: v_slot.model.clone(),
             verifier_llm,
+            cancel_tokens,
         }
     }
 }
@@ -139,7 +145,22 @@ impl Worker {
         )
         .await?;
 
-        let verdict = self.call_with_retry(messages).await;
+        let Some(verdict) = self.call_with_retry(req, messages).await else {
+            self.deps
+                .events
+                .append(NewEvent {
+                    session_id: req.session_id.clone(),
+                    event_type: EventType::Misc,
+                    source: "verifier".to_string(),
+                    data: json!({
+                        "kind":"verifier_cancelled",
+                        "trigger_kind": req.trigger.kind_str(),
+                        "triggered_at_event_id": req.triggered_at_event_id,
+                    }),
+                })
+                .await?;
+            return Ok("cancelled".to_string());
+        };
 
         // If the verifier suggested a plan update, apply it BEFORE
         // persisting/emitting so the downstream Gate (story 1.10) sees
@@ -218,18 +239,45 @@ impl Worker {
         Ok(())
     }
 
-    async fn call_with_retry(&self, messages: Vec<Message>) -> Verdict {
-        match self.call_once(messages.clone()).await {
-            Ok(Some(v)) => return v,
+    async fn call_with_retry(
+        &self,
+        req: &VerifyRequest,
+        messages: Vec<Message>,
+    ) -> Option<Verdict> {
+        let cancel = self
+            .deps
+            .cancel_tokens
+            .get(&req.session_id)
+            .map(|t| t.clone());
+        let first = match cancel.clone() {
+            Some(token) => {
+                tokio::select! {
+                    _ = token.cancelled() => return None,
+                    out = self.call_once(messages.clone()) => out,
+                }
+            }
+            None => self.call_once(messages.clone()).await,
+        };
+        match first {
+            Ok(Some(v)) => return Some(v),
             Ok(None) => {} // unparseable, fall through to retry
             Err(e) => {
                 tracing::warn!(error = %e, "verifier LLM call failed on first attempt");
             }
         }
         let retry_messages = append_strict_suffix(messages);
-        match self.call_once(retry_messages).await {
-            Ok(Some(v)) => v,
-            Ok(None) | Err(_) => Verdict::unparseable(),
+        let second = match cancel {
+            Some(token) => {
+                tokio::select! {
+                    _ = token.cancelled() => return None,
+                    out = self.call_once(retry_messages) => out,
+                }
+            }
+            None => self.call_once(retry_messages).await,
+        };
+        match second {
+            Ok(Some(v)) => Some(v),
+            Ok(None) | Err(_) => Some(Verdict::unparseable()),
         }
     }
 

@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use tempfile::tempdir;
@@ -148,6 +149,7 @@ slots:
     let search = Arc::new(SearchClient::new(SearchProvider::Brave { api_key: None }));
     let llm = LlmClient::new(mock.uri(), None);
     let cost = Arc::new(CostClient::new(mock.uri()));
+    let cancel_tokens = Arc::new(dashmap::DashMap::new());
     let runner = AgentRunner::new(AgentRunnerDeps {
         llm,
         dispatcher,
@@ -163,7 +165,7 @@ slots:
         checkpoints: Arc::new(crate::checkpoint::CheckpointStore::new(db.clone())),
         redis: Arc::new(redis.clone()),
         breakers: Arc::new(BreakerRegistry::new()),
-        cancel_tokens: Arc::new(dashmap::DashMap::new()),
+        cancel_tokens: cancel_tokens.clone(),
     });
 
     Harness {
@@ -676,6 +678,126 @@ async fn resume_continues_iteration_counter() {
         first.steps,
         resumed.steps
     );
+}
+
+#[tokio::test]
+async fn cancel_during_llm_call_returns_quickly() {
+    let mock = MockServer::start().await;
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ScriptedResponder::new(
+                vec![json!({
+                    "id":"cmpl-planner",
+                    "object":"chat.completion",
+                    "model":"planner",
+                    "choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"{\"goal\":\"g\",\"phases\":[{\"id\":1,\"title\":\"Plan\",\"capabilities\":[]}]}"}}],
+                    "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+                })],
+                requests.clone(),
+            ),
+        )
+        .up_to_n_times(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(completion(vec![("call-1", "idle", json!({}))]))
+                .set_delay(Duration::from_secs(5)),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/cost"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"total_cents": 0})))
+        .mount(&mock)
+        .await;
+
+    let db = db::open(":memory:").await.expect("in-memory db opens");
+    let session_id = "session-cancel".to_string();
+    insert_session(&db, &session_id).await;
+    let redis = RedisPool::new("redis://127.0.0.1:6379").expect("redis url parses");
+    let events = Arc::new(SqliteEventStore::with_redis(db.clone(), redis.clone()));
+    let dispatcher = Arc::new(
+        ToolDispatcher::new(register_builtin_tools())
+            .with_hook(Arc::new(EventEmittingHook::new(events.clone()))),
+    );
+    let plan_manager = Arc::new(PlanManager::new(db.clone(), events.clone()));
+    let router = Arc::new(
+        SlotRouter::from_yaml_str(&format!(
+            r#"
+slots:
+  main:
+    provider: bifrost
+    model: agent-primary
+    base_url: {}
+"#,
+            mock.uri()
+        ))
+        .expect("router config parses"),
+    );
+    let workspace = tempdir().expect("tempdir");
+    let sandbox = Arc::new(
+        SandboxClient::new("ghcr.io/agent-infra/sandbox:1.0.0.152", workspace.path())
+            .expect("sandbox client constructs"),
+    );
+    sandbox
+        .insert_handle_for_test(crate::sandbox::SandboxHandle {
+            session_id: session_id.clone(),
+            container_id: "c1".into(),
+            api_url: "http://127.0.0.1:1".into(),
+            novnc_url: "http://127.0.0.1:2".into(),
+            ttyd_url: "ws://127.0.0.1:3".into(),
+            workspace_host_path: workspace.path().join(&session_id),
+        })
+        .await;
+    let search = Arc::new(SearchClient::new(SearchProvider::Brave { api_key: None }));
+    let cancel_tokens = Arc::new(dashmap::DashMap::new());
+    let runner = AgentRunner::new(AgentRunnerDeps {
+        llm: LlmClient::new(mock.uri(), None),
+        dispatcher,
+        events: events.clone(),
+        router,
+        sandbox,
+        search,
+        cost: Arc::new(CostClient::new(mock.uri())),
+        sessions: db.clone(),
+        plan_manager,
+        mask_policy: Arc::new(DefaultMaskPolicy),
+        checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
+        checkpoints: Arc::new(crate::checkpoint::CheckpointStore::new(db.clone())),
+        redis: Arc::new(redis),
+        breakers: Arc::new(BreakerRegistry::new()),
+        cancel_tokens: cancel_tokens.clone(),
+    });
+
+    let req = RunRequest {
+        session_id: session_id.clone(),
+        input: "cancel test".into(),
+        max_steps: 4,
+        cost_cap_cents: Some(10),
+    };
+
+    let handle = tokio::spawn(async move { runner.run(req).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let token = cancel_tokens
+        .get(&session_id)
+        .expect("runner should register session cancel token")
+        .clone();
+    token.cancel();
+
+    let started = std::time::Instant::now();
+    let out = tokio::time::timeout(Duration::from_secs(1), handle)
+        .await
+        .expect("run should return quickly")
+        .expect("join")
+        .expect("run result");
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert!(!out.completed);
+    assert_eq!(session_state(&db, &session_id).await, "SUSPENDED");
 }
 
 async fn session_state(db: &DbPool, session_id: &str) -> String {
