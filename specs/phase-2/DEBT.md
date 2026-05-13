@@ -120,6 +120,30 @@
 
 ---
 
+## Story-introduced (chronological)
+
+### 10. `Deliverable` struct lives inside `channel/delivery.rs`
+- **Origin**: story 2.4 (`93fff98`), `crates/seasoned-hand-core/src/channel/delivery.rs`
+- **Severity**: **Low**
+- **What**: The `Deliverable` placeholder struct (V007 column shape)
+  lives in `channel::delivery` instead of its eventual home in a
+  dedicated `deliverable` module. Needed there so the
+  `DeliverySink::deliver(target, deliverable)` trait signature is
+  self-contained in story 2.4 (before 2.3 lands V007 +
+  `DeliverableStore`).
+- **Why**: Avoids forward-declaration dance; keeps 2.4 as a pure
+  trait-surface story without dragging in V007 migration. Also avoids
+  defining the Deliverable type in two places (channel module + 2.3's
+  store module) and having to reconcile.
+- **Pay down**: Story 2.3 — when `DeliverableStore` lands, decide
+  whether to (a) keep `channel::Deliverable` as the canonical shape
+  and have the store wrap it, or (b) move it into a top-level
+  `deliverable` module and have `channel::delivery` re-export. Either
+  way, the existing `Deliverable` shape is the V007 column projection,
+  so no breaking change to callers.
+
+---
+
 ## Categories quick-reference (same as Phase 0 / Phase 1)
 
 | Severity | Meaning |
