@@ -1,0 +1,1 @@
+{"title":"Summarize README","briefing":"Read this repository README and provide a 2-sentence summary.","expected_in_final_message":["summary"],"max_steps":30,"cost_cap_cents":30}

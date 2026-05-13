@@ -1,0 +1,1 @@
+{"title":"Pull release date","briefing":"Find the release date of Rust 1.70.0 and report it.","expected_in_final_message":["1.70.0"],"max_steps":30,"cost_cap_cents":30}

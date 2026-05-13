@@ -1,0 +1,1 @@
+{"title":"Aggregate CSV in workspace","briefing":"Create a small CSV in /workspace and compute the sum of the numeric column.","expected_in_final_message":["sum"],"max_steps":30,"cost_cap_cents":30}

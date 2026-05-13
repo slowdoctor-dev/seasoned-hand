@@ -1,0 +1,1 @@
+{"title":"Find definition in repository","briefing":"Find where `RunRequest` is defined in this repo and report the file path.","expected_in_final_message":["RunRequest"],"max_steps":30,"cost_cap_cents":30}

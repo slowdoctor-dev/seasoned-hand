@@ -1,0 +1,1 @@
+{"title":"Locate file by pattern","briefing":"Find files in the repo matching '*gate*.rs' and report one path.","expected_in_final_message":["gate"],"max_steps":30,"cost_cap_cents":30}

@@ -1,0 +1,1 @@
+{"title":"Extract table from Wikipedia","briefing":"Open a Wikipedia page with a small table and report two rows.","expected_in_final_message":["row"],"max_steps":30,"cost_cap_cents":30}

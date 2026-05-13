@@ -1,0 +1,1 @@
+{"title":"Count occurrences in text","briefing":"Create a text file in /workspace and count the occurrences of the word 'agent'.","expected_in_final_message":["agent"],"max_steps":30,"cost_cap_cents":30}

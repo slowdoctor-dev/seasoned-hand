@@ -1,0 +1,1 @@
+{"title":"Unit conversion via browser","briefing":"Use the browser to find how many miles are in 42 kilometers and report it.","expected_in_final_message":["42","mile"],"max_steps":30,"cost_cap_cents":30}
