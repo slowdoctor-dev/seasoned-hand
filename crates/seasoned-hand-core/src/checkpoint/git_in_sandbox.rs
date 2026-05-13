@@ -11,7 +11,7 @@
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::sandbox::{SandboxClient, SandboxError};
+use crate::sandbox::SandboxClient;
 
 /// Outcome of one /v1/shell/exec call.
 #[derive(Debug, Deserialize, Default)]
@@ -26,8 +26,6 @@ pub struct ShellOutcome {
 
 #[derive(Debug, Error)]
 pub enum CheckpointGitError {
-    #[error("sandbox: {0}")]
-    Sandbox(#[from] SandboxError),
     #[error("no sandbox handle for session {0}")]
     NoSandbox(String),
     #[error("http: {0}")]
