@@ -92,7 +92,12 @@ export function AgentComputer({ sessionId, events, eventIndex }: Props) {
         })}
       </nav>
       <div className="flex-1 overflow-auto p-4 text-sm text-gray-500">
-        {active === "browser" && <BrowserTab sessionId={sessionId} />}
+        {active === "browser" && (
+          <BrowserTab
+            sessionId={sessionId}
+            events={events}
+          />
+        )}
         {active === "terminal" && <TerminalTab sessionId={sessionId} />}
         {active === "editor" && <EditorTab sessionId={sessionId} />}
         {active === "verifier" && (
@@ -106,4 +111,3 @@ export function AgentComputer({ sessionId, events, eventIndex }: Props) {
     </aside>
   );
 }
-
