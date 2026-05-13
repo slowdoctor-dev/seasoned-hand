@@ -365,6 +365,20 @@ Story 1.6 (Context Recitation) will tail `/workspace/progress.txt` every
 
 ## Execution notes (post-Phase-1 consistency audit)
 
+**Spec divergence — `progress.txt` timestamps are stringified
+microseconds, not ISO-8601.** The story body says
+`<iso8601>  user  <line>`. The shipped helper
+(`agent::init::progress::now_micros_str`) returns
+`format!("{}", now_micros)`, so lines look like
+`1715600000000000  user           ...`. Adding a `chrono` or `time`
+dep solely to format one timestamp wasn't justified for Phase 1 —
+microseconds-since-epoch is unambiguous for downstream consumers
+(Verifier context builder, frontend) and is convertible to ISO-8601
+by any reader that cares. When a real datetime dep arrives, this
+function flips to true ISO-8601 in one line. The function was named
+`now_iso8601` until the post-Phase-1 consistency audit renamed it to
+`now_micros_str` so the name stops misleading.
+
 **Naming drift — workspace paths are passed without the `/workspace/`
 prefix.** The story body calls out `/workspace/feature-list.json` and
 `/workspace/progress.txt` as the on-disk paths. The implementation

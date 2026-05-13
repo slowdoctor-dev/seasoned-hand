@@ -924,3 +924,81 @@ async fn get_verification_handler(
         get_verification(&state.verifications, &id).await,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    //! Inline unit tests for handlers whose security guards can't be
+    //! exercised through the integration harness in `tests/`
+    //! (because that harness always lands at `127.0.0.1`).
+
+    use super::*;
+    use seasoned_hand_core::router::SlotRouter;
+    use seasoned_hand_core::sandbox::SandboxClient;
+    use seasoned_hand_core::search::{SearchClient, SearchProvider};
+    use seasoned_hand_core::{db, pubsub};
+
+    async fn empty_state() -> AppState {
+        let pool = db::open(":memory:").await.expect("db");
+        let redis = pubsub::RedisPool::new("redis://127.0.0.1:6").expect("redis url");
+        let sandbox = SandboxClient::new(
+            "ghcr.io/agent-infra/sandbox:1.0.0.152",
+            std::env::temp_dir(),
+        )
+        .expect("sandbox client");
+        let search = SearchClient::new(SearchProvider::Brave { api_key: None });
+        let router = SlotRouter::default_for_bifrost();
+        AppState::new(pool, redis, sandbox, search, router, Default::default())
+    }
+
+    /// Story 1.13b regression: a non-loopback remote address must
+    /// short-circuit to 403 `forbidden_non_loopback` before the token
+    /// check runs, regardless of whether the admin token was supplied.
+    /// The integration suite always lands at 127.0.0.1, so this guard
+    /// can only be exercised at the handler level.
+    #[tokio::test]
+    async fn admin_rollback_refuses_non_loopback_remote() {
+        let state = empty_state().await.with_admin_token("any-token");
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "X-Seasoned-Hand-Admin-Token",
+            axum::http::HeaderValue::from_static("any-token"),
+        );
+        let remote: std::net::SocketAddr = "10.0.0.42:12345".parse().unwrap();
+        let outcome = post_checkpoint_rollback_handler(
+            State(state),
+            axum::extract::ConnectInfo(remote),
+            headers,
+            Path(("sess-x".to_string(), "cp-x".to_string())),
+            Json(RollbackBody { reason: "x".into() }),
+        )
+        .await;
+        let err = outcome.expect_err("non-loopback must be 403");
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        assert_eq!(err.1.0.error, "forbidden_non_loopback");
+    }
+
+    /// The 403 guard MUST run before the token comparison so that an
+    /// attacker on a remote network cannot probe token validity via
+    /// timing or 401/403 distinction.
+    #[tokio::test]
+    async fn admin_rollback_non_loopback_guard_runs_before_token_check() {
+        let state = empty_state().await.with_admin_token("real-token");
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "X-Seasoned-Hand-Admin-Token",
+            axum::http::HeaderValue::from_static("wrong-token"),
+        );
+        let remote: std::net::SocketAddr = "192.168.1.50:12345".parse().unwrap();
+        let outcome = post_checkpoint_rollback_handler(
+            State(state),
+            axum::extract::ConnectInfo(remote),
+            headers,
+            Path(("sess-x".to_string(), "cp-x".to_string())),
+            Json(RollbackBody { reason: "x".into() }),
+        )
+        .await;
+        let err = outcome.expect_err("remote + wrong token still 403, not 401");
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        assert_eq!(err.1.0.error, "forbidden_non_loopback");
+    }
+}

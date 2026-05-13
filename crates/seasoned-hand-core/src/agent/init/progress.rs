@@ -23,7 +23,12 @@ pub fn now_micros() -> i64 {
     i64::try_from(micros).unwrap_or(0)
 }
 
-pub fn now_iso8601() -> String {
+/// Stringified microseconds since the Unix epoch — the timestamp form
+/// used in progress-line prefixes. Story 1.4 called these "iso8601"
+/// timestamps; the actual on-disk format is `<i64-micros>` because
+/// adding a chrono/time dep solely to format one timestamp wasn't
+/// justified for Phase 1 (see story-1.4.md execution notes).
+pub fn now_micros_str() -> String {
     format!("{}", now_micros())
 }
 
@@ -34,7 +39,7 @@ pub fn append_line(existing: &str, line: &str) -> String {
     if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
     }
-    out.push_str(&format!("{}  user           {}\n", now_iso8601(), line));
+    out.push_str(&format!("{}  user           {}\n", now_micros_str(), line));
     out
 }
 
