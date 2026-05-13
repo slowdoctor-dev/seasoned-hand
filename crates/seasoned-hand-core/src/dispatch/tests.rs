@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -10,6 +11,7 @@ use crate::events::payload::EventPayloadBody;
 use crate::events::sqlite::SqliteEventStore;
 use crate::events::{EventQuery, EventStore, EventType};
 use crate::plan::PlanManager;
+use crate::pubsub::RedisPool;
 use crate::sandbox::SandboxClient;
 use crate::search::{SearchClient, SearchProvider};
 use crate::tools::{Tool, ToolContext, ToolError, ToolOutput, register_builtin_tools};
@@ -257,6 +259,150 @@ async fn large_payload_writes_to_eventfiles() {
         panic!("expected file ref for large payload");
     };
     assert!(path.starts_with("/workspace/.eventfiles/"));
+}
+
+struct TestFileRead {
+    content: Arc<Mutex<String>>,
+}
+
+#[async_trait]
+impl Tool for TestFileRead {
+    fn name(&self) -> &'static str {
+        "file_read"
+    }
+    fn description(&self) -> &'static str {
+        "test file_read"
+    }
+    fn schema(&self) -> Value {
+        json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})
+    }
+    async fn invoke(&self, _args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let body = self.content.lock().unwrap().clone();
+        Ok(ToolOutput {
+            ok: true,
+            output: json!({"content": body}),
+            file_ref: None,
+            error: None,
+        })
+    }
+}
+
+struct TestShellExec {
+    content: Arc<Mutex<String>>,
+}
+
+#[async_trait]
+impl Tool for TestShellExec {
+    fn name(&self) -> &'static str {
+        "shell_exec"
+    }
+    fn description(&self) -> &'static str {
+        "test shell_exec"
+    }
+    fn schema(&self) -> Value {
+        json!({"type":"object"})
+    }
+    async fn invoke(&self, _args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        *self.content.lock().unwrap() = "v2".to_string();
+        Ok(ToolOutput {
+            ok: true,
+            output: json!({"exit_code": 0}),
+            file_ref: None,
+            error: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn different_content_via_shell_exec_triggers() {
+    let redis = match RedisPool::new("redis://127.0.0.1:6") {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    if redis.ping().await.is_err() {
+        return;
+    }
+
+    let pool = db::open(":memory:").await.unwrap();
+    pool.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO sessions (id, created_at, updated_at, state) VALUES ('s1',1,1,'RUNNING')",
+            [],
+        )
+        .unwrap();
+    })
+    .await;
+    let store = Arc::new(SqliteEventStore::with_redis(pool.clone(), redis.clone()));
+    let plan_manager = Arc::new(PlanManager::new(pool.clone(), store.clone()));
+    let checkpoints = Arc::new(crate::checkpoint::CheckpointStore::new(pool));
+    let sandbox = Arc::new(
+        SandboxClient::new(
+            "ghcr.io/agent-infra/sandbox:1.0.0.152",
+            std::env::temp_dir(),
+        )
+        .unwrap(),
+    );
+    let search = Arc::new(SearchClient::new(SearchProvider::Brave { api_key: None }));
+    let ctx = ToolContext {
+        session_id: "s1".into(),
+        mask_ctx: MaskContext {
+            session_id: "s1".into(),
+            iteration: 0,
+            mode: AgentMode::Worker,
+        },
+        events: store.clone(),
+        sandbox,
+        search,
+        plan_manager,
+        checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
+        checkpoints,
+    };
+
+    let shared = Arc::new(Mutex::new("v1".to_string()));
+    let mut registry: std::collections::HashMap<&'static str, Arc<dyn Tool>> =
+        std::collections::HashMap::new();
+    registry.insert(
+        "file_read",
+        Arc::new(TestFileRead {
+            content: shared.clone(),
+        }),
+    );
+    registry.insert(
+        "shell_exec",
+        Arc::new(TestShellExec {
+            content: shared.clone(),
+        }),
+    );
+
+    let before = redis.xlen("verify_request").await.unwrap_or(0);
+    let dispatcher = ToolDispatcher::new(registry)
+        .with_hook(Arc::new(hooks::EventEmittingHook::new(store.clone())))
+        .with_hook(Arc::new(hooks::InvalidationHook::new(
+            store.clone(),
+            Some(Arc::new(redis.clone())),
+        )));
+
+    let first = dispatcher
+        .dispatch(&ctx, "file_read", json!({"path":"/workspace/a.txt"}))
+        .await;
+    assert!(first.ok);
+    let changed = dispatcher
+        .dispatch(&ctx, "shell_exec", json!({"cmd":"noop"}))
+        .await;
+    assert!(changed.ok);
+    let second = dispatcher
+        .dispatch(&ctx, "file_read", json!({"path":"/workspace/a.txt"}))
+        .await;
+    assert!(second.ok);
+
+    let rows = store.query("s1", EventQuery::default()).await.unwrap();
+    assert!(rows.iter().any(|e| {
+        e.event_type == EventType::Misc
+            && e.data.get("kind").and_then(Value::as_str) == Some("verifier_request")
+            && e.data.get("trigger").and_then(Value::as_str) == Some("Invalidation")
+    }));
+    let after = redis.xlen("verify_request").await.unwrap_or(before);
+    assert_eq!(after - before, 1);
 }
 
 #[test]

@@ -17,6 +17,7 @@ use thiserror::Error;
 
 pub mod context;
 pub mod gate;
+pub mod invalidation;
 pub mod parse;
 pub mod persistence;
 pub mod routes;

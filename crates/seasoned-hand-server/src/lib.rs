@@ -20,7 +20,10 @@ use seasoned_hand_core::capability::ModelCapabilities;
 use seasoned_hand_core::cost::{CostClient, CostSnapshot};
 use seasoned_hand_core::db::DbPool;
 use seasoned_hand_core::dispatch::mask::DefaultMaskPolicy;
-use seasoned_hand_core::dispatch::{ToolDispatcher, hooks::EventEmittingHook};
+use seasoned_hand_core::dispatch::{
+    ToolDispatcher,
+    hooks::{EventEmittingHook, InvalidationHook},
+};
 use seasoned_hand_core::events::{EventQuery, EventStore, EventType, sqlite::SqliteEventStore};
 use seasoned_hand_core::llm::LlmClient;
 use seasoned_hand_core::plan::PlanManager;
@@ -96,9 +99,14 @@ impl AppState {
         let events = Arc::new(SqliteEventStore::with_redis(db.clone(), redis.clone()));
         let sandbox = Arc::new(sandbox);
         let search = Arc::new(search);
+        let redis_arc = Arc::new(redis.clone());
         let dispatcher = Arc::new(
             ToolDispatcher::new(register_builtin_tools())
-                .with_hook(Arc::new(EventEmittingHook::new(events.clone()))),
+                .with_hook(Arc::new(EventEmittingHook::new(events.clone())))
+                .with_hook(Arc::new(InvalidationHook::new(
+                    events.clone(),
+                    Some(redis_arc.clone()),
+                ))),
         );
         let verifier_enabled = router.verifier_enabled();
         let verifications = Arc::new(VerificationStore::new(db.clone()));
@@ -132,7 +140,7 @@ impl AppState {
             mask_policy: Arc::new(DefaultMaskPolicy),
             checkpoint_labels: checkpoint_labels.clone(),
             checkpoints: checkpoints.clone(),
-            redis: Arc::new(redis.clone()),
+            redis: redis_arc.clone(),
             cancel_tokens: cancel_tokens.clone(),
         }));
         Self {

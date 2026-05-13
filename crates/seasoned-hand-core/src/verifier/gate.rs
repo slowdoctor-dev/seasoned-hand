@@ -300,6 +300,7 @@ mod tests {
     async fn insert_verdict_event(
         events: &SqliteEventStore,
         session_id: &str,
+        trigger_kind: &str,
         verdict: &str,
         suggested: Option<serde_json::Value>,
     ) {
@@ -310,7 +311,7 @@ mod tests {
                 source: "verifier".into(),
                 data: json!({
                     "kind":"verifier_verdict",
-                    "trigger_kind":"TaskComplete",
+                    "trigger_kind": trigger_kind,
                     "verdict": verdict,
                     "reason": "r",
                     "suggested_plan_update": suggested,
@@ -337,7 +338,7 @@ mod tests {
     #[tokio::test]
     async fn verdict_pass_transitions_to_finished() {
         let (gate, events, db, session_id) = fixture().await;
-        insert_verdict_event(&events, &session_id, "pass", None).await;
+        insert_verdict_event(&events, &session_id, "TaskComplete", "pass", None).await;
         let _ = gate.poll_once(0).await.unwrap();
         assert_eq!(state(&db, &session_id).await, "FINISHED");
         let rows = events
@@ -352,7 +353,7 @@ mod tests {
     #[tokio::test]
     async fn verdict_fail_without_suggestion_suspends() {
         let (gate, events, db, session_id) = fixture().await;
-        insert_verdict_event(&events, &session_id, "fail", None).await;
+        insert_verdict_event(&events, &session_id, "TaskComplete", "fail", None).await;
         let _ = gate.poll_once(0).await.unwrap();
         assert_eq!(state(&db, &session_id).await, "SUSPENDED");
     }
@@ -363,6 +364,7 @@ mod tests {
         insert_verdict_event(
             &events,
             &session_id,
+            "TaskComplete",
             "fail",
             Some(json!({"phases":[{"id":1,"title":"x"}]})),
         )
@@ -374,7 +376,7 @@ mod tests {
     #[tokio::test]
     async fn each_processed_verdict_emits_verifier_gate_ack() {
         let (gate, events, _db, session_id) = fixture().await;
-        insert_verdict_event(&events, &session_id, "pass", None).await;
+        insert_verdict_event(&events, &session_id, "TaskComplete", "pass", None).await;
         let _ = gate.poll_once(0).await.unwrap();
         let rows = events
             .query(&session_id, EventQuery::default())
@@ -422,6 +424,7 @@ mod tests {
         insert_verdict_event(
             &events,
             &session_id,
+            "TaskComplete",
             "fail",
             Some(json!({"phases":[{"id":1,"title":"x"}]})),
         )
@@ -462,6 +465,14 @@ mod tests {
             "VERIFYING",
             "post-restart poll must not re-transition the session"
         );
+    }
+
+    #[tokio::test]
+    async fn gate_does_not_transition_state_on_invalidation_verdict() {
+        let (gate, events, db, session_id) = fixture().await;
+        insert_verdict_event(&events, &session_id, "Invalidation", "pass", None).await;
+        let _ = gate.poll_once(0).await.unwrap();
+        assert_eq!(state(&db, &session_id).await, "VERIFYING");
     }
 
     // ------------------------------------------------------------------

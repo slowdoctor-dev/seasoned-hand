@@ -2,6 +2,7 @@
 //! refs: /specs/phase-0/architecture.md §4.3
 //! refs: /specs/00-philosophy/PRINCIPLES.md #3 (append-only), #10 (failure-tolerant), #11 (audit trail)
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -10,7 +11,10 @@ use serde_json::{Value, json};
 use crate::events::payload::EventPayloadBody;
 use crate::events::truncation::write_large_or_inline;
 use crate::events::{EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
+use crate::pubsub::RedisPool;
 use crate::tools::{ToolContext, ToolError, ToolOutput};
+use crate::verifier::invalidation::{DEFAULT_MAX_PATHS, InvalidationDetector};
+use crate::verifier::{VerifyContextHint, VerifyRequest, VerifyTrigger};
 
 #[async_trait]
 pub trait Hook: Send + Sync {
@@ -53,6 +57,51 @@ impl Hook for NoopHook {
 /// to record it.
 pub struct EventEmittingHook {
     pub events: Arc<SqliteEventStore>,
+}
+
+/// PostToolUse invalidation detector hook.
+///
+/// Allow-list is intentionally closed: only `file_write` and
+/// `file_str_replace`. Any other tool path that surfaces changed file
+/// content (including out-of-band shell edits discovered via a later
+/// `file_read`) emits a verifier invalidation request.
+pub struct InvalidationHook {
+    events: Arc<SqliteEventStore>,
+    detector: Arc<InvalidationDetector>,
+    redis: Option<Arc<RedisPool>>,
+}
+
+impl InvalidationHook {
+    pub fn new(events: Arc<SqliteEventStore>, redis: Option<Arc<RedisPool>>) -> Self {
+        Self {
+            events,
+            detector: Arc::new(InvalidationDetector::new(DEFAULT_MAX_PATHS)),
+            redis,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_capacity_for_test(
+        events: Arc<SqliteEventStore>,
+        redis: Option<Arc<RedisPool>>,
+        capacity: usize,
+    ) -> Self {
+        Self {
+            events,
+            detector: Arc::new(InvalidationDetector::new(capacity)),
+            redis,
+        }
+    }
+
+    fn extract_file_path(tool_name: &str, args: &Value) -> Option<PathBuf> {
+        match tool_name {
+            "file_read" | "file_write" | "file_str_replace" => args
+                .get("path")
+                .and_then(Value::as_str)
+                .map(InvalidationDetector::normalize_path),
+            _ => None,
+        }
+    }
 }
 
 impl EventEmittingHook {
@@ -185,6 +234,74 @@ impl Hook for EventEmittingHook {
         )
         .await;
     }
+}
+
+#[async_trait]
+impl Hook for InvalidationHook {
+    async fn pre(&self, _: &str, _: &str, _: &Value, _: &ToolContext) {}
+
+    async fn post(
+        &self,
+        call_id: &str,
+        name: &str,
+        args: &Value,
+        output: &ToolOutput,
+        ctx: &ToolContext,
+    ) {
+        if !output.ok {
+            return;
+        }
+        let Some(path) = Self::extract_file_path(name, args) else {
+            return;
+        };
+        let body = match serde_json::to_vec(&output.output) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(%error, tool = %name, "invalidation output serialization failed");
+                return;
+            }
+        };
+        let Some(reason) = self
+            .detector
+            .observe(&ctx.session_id, name, path, &body)
+            .await
+        else {
+            return;
+        };
+
+        let event = NewEvent {
+            session_id: ctx.session_id.clone(),
+            event_type: EventType::Misc,
+            source: format!("tool:{name}"),
+            data: json!({
+                "kind": "verifier_request",
+                "trigger": "Invalidation",
+                "call_id": call_id,
+                "reason": reason,
+            }),
+        };
+        let triggered_at_event_id = match self.events.append(event).await {
+            Ok(e) => e.id as u64,
+            Err(error) => {
+                tracing::warn!(%error, "invalidation verifier_request append failed");
+                return;
+            }
+        };
+
+        if let Some(redis) = &self.redis {
+            let req = VerifyRequest {
+                session_id: ctx.session_id.clone(),
+                trigger: VerifyTrigger::Invalidation { reason },
+                triggered_at_event_id,
+                context_hint: VerifyContextHint,
+            };
+            if let Err(error) = redis.xadd_json("verify_request", &req).await {
+                tracing::warn!(%error, "invalidation xadd verify_request failed");
+            }
+        }
+    }
+
+    async fn failure(&self, _: &str, _: &str, _: &Value, _: &ToolError, _: &ToolContext) {}
 }
 
 fn tool_error_kind(err: &ToolError) -> &'static str {
