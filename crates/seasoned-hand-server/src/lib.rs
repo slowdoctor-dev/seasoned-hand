@@ -16,6 +16,7 @@ use dashmap::DashMap;
 use seasoned_hand_core::agent::breaker::BreakerRegistry;
 use seasoned_hand_core::agent::init::feature_list::FeatureList;
 use seasoned_hand_core::agent::init::progress;
+use seasoned_hand_core::agent::narrate::NarratorHook;
 use seasoned_hand_core::agent::{AgentRunner, AgentRunnerDeps};
 use seasoned_hand_core::browser::tracks::PostBrowserActionHook;
 use seasoned_hand_core::capability::ModelCapabilities;
@@ -105,6 +106,12 @@ impl AppState {
         let redis_arc = Arc::new(redis.clone());
         let dispatcher = Arc::new(
             ToolDispatcher::new(register_builtin_tools())
+                // Story 1.15: NarratorHook runs first so the
+                // `Message{ui:"narrate"}` event lands before the Action
+                // event for clean UI ordering. Templated-only at boot;
+                // classifier-slot LLM path is opt-in (see
+                // story-1.15.md execution notes — deferred plumbing).
+                .with_hook(Arc::new(NarratorHook::new(events.clone())))
                 .with_hook(Arc::new(EventEmittingHook::new(events.clone())))
                 .with_hook(Arc::new(InvalidationHook::new(
                     events.clone(),

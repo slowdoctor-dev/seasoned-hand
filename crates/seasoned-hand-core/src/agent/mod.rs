@@ -28,6 +28,7 @@ use crate::tools::ToolContext;
 pub mod breaker;
 pub mod diversity;
 pub mod init;
+pub mod narrate;
 mod prompt;
 pub mod recite;
 pub mod stuck;

@@ -323,3 +323,49 @@ representation backend) uses the same PostBrowserAction hook pattern to
 emit Misc `browser_track_c` events with file_ref screenshots. Story
 1.18 surfaces the narration lane in the Chat panel; story 1.19 surfaces
 the 3-track view in AgentComputer's BrowserTab.
+
+---
+
+## Execution notes
+
+**Spec divergence — Narrator uses the existing `Hook` trait (story
+0.10) instead of a new `PreToolUseHook` trait.** The story example
+code wrote `impl PreToolUseHook for NarratorHook`. Phase 0 only ships
+one `Hook` trait with three lifecycle methods (`pre`/`post`/`failure`)
+and the dispatcher already iterates them in registration order; the
+NarratorHook implements `Hook::pre` and no-ops `post`/`failure`.
+Registered first in the dispatcher so the `Message{ui:"narrate"}`
+event lands before `EventEmittingHook` emits the Action event — clean
+UI ordering with no new trait surface.
+
+**Spec divergence — narration goes through the event-store JSON path,
+not a new `emit_message_narrate` helper.** The story sketched a
+`SqliteEventStore::emit_message_narrate(session_id, content, call_id)`
+helper. The existing `append(NewEvent { data: json!({...}) })` path
+already handles every Message-event shape; adding a typed helper would
+be apparatus for one caller. The hook builds the same JSON inline
+(`{role, content, ui, call_id}`); the filter in
+`agent::prompt::build_messages` keys on `ui == "narrate"` exactly as
+it would have keyed on a typed field. The shape is testable via
+serde_json round-trips already covered by the 6 acceptance tests.
+
+**Deferred — classifier-slot wiring through `AppState::new`.**
+`NarratorHook` is registered at server boot **without** a classifier
+(templated path only), so action-changing tools fall through to
+`templates::template_for`'s generic `"Invoking {tool}"` sentence. The
+hook's `with_classifier(llm, model, system_prompt)` builder is fully
+working (covered by `llm_path_calls_classifier_slot` and the timeout
+test), but plumbing the prompt + classifier-slot LlmClient through
+`AppState::new` would require restructuring the dispatcher
+construction order — the dispatcher is currently `Arc`d before any
+prompt-loading runs, and ToolDispatcher has no hot-swap path. A
+follow-up commit can either (a) accept `Option<ClassifierWiring>` in
+`AppState::new`, or (b) split AppState construction into "tools-only"
++ "tools+narrator" phases. Tracked separately so this story stays at
+hook semantics + 6 tests + sticky-context filter.
+
+**No `[narrator]` toml block.** Same rationale as story 1.16: defaults
+live in `NarrationConfig::default()` (enabled, 2 s timeout, 7-entry
+glob list). The builder `with_config` and `with_classifier` are enough
+surface for the AppState wiring and tests, and a real config knob can
+land later without breaking callers.

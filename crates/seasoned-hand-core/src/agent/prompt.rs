@@ -1,8 +1,9 @@
 //! Sticky context builder for the Phase 0 runner.
 
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::agent::AgentError;
+use crate::agent::narrate::NARRATE_UI_TAG;
 use crate::events::{Event, EventQuery, EventStore, EventType, sqlite::SqliteEventStore};
 use crate::llm::{Message, Role};
 use crate::plan::{PlanManager, render::sticky_render};
@@ -43,10 +44,25 @@ pub async fn build_messages(
     }
 
     for event in all_events {
+        if is_narrate_message(&event) {
+            // Story 1.15: narration is UI-only signal; skipping it
+            // here keeps the agent's own context free of its own
+            // outward chatter (architecture §12 q2).
+            continue;
+        }
         messages.push(event_to_message(&event));
     }
 
     Ok(messages)
+}
+
+fn is_narrate_message(event: &Event) -> bool {
+    event.event_type == EventType::Message
+        && event
+            .data
+            .get("ui")
+            .and_then(Value::as_str)
+            .is_some_and(|ui| ui == NARRATE_UI_TAG)
 }
 
 fn event_to_message(event: &Event) -> Message {
