@@ -6,6 +6,26 @@
 > Seeded at architecture phase boundary (2026-05-12). Items added during
 > story implementation get appended below the seed block.
 
+## Closeout audit (story 1.20b, 2026-05-13)
+
+All 13 seed items remain **open** at Phase 1 close. Each is scheduled
+to a specific later phase or a follow-up commit (see individual
+`Pay down` lines below). The closeout commit (story 1.20b) did not
+flip any item to `resolved` — every Phase 1 implementation either
+held the simplification deliberately (DEBT #3, #4, #5, #7, #8, #11,
+#12) or carried a doc-only fix outside the phase-close blast radius
+(#1, #2, #10). Phase 0 DEBT items closed in Phase 1 are tracked in
+`specs/phase-0/DEBT.md` strike-throughs (#18 / #21 / #22 / #25 / #27).
+
+In-phase additions from stories 1.1–1.20 surface as **execution
+notes** inside each story file (story-1.10, 1.15, 1.16, 1.18 carry
+divergence + deferred-plumbing notes that have not graduated to
+formal DEBT entries because they are either documented behavior
+choices or one-commit follow-ups, not load-bearing shortcuts). If
+any of these need to be tracked as real debt — most likely
+**classifier-slot wiring through `AppState::new`** (story-1.15 exec
+notes) — append them below as item 14+ when the decision is made.
+
 ---
 
 ## Seed (from architecture.md, 2026-05-12)

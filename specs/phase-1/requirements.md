@@ -222,35 +222,37 @@ Each story is 1-3 hours, one PR, one commit, story-relative acceptance
 criteria, executable by any AGENTS.md-compatible agent from a fresh session.
 Detailed specs at `/specs/phase-1/stories/story-1.X.md`.
 
-| ID | Story title | Est | Deps | Closes |
-|---|---|---|---|---|
-| 1.1  | Real Plan Manager (plan_create/advance/update wired; structured sticky render) | 3h | — | Phase 0 DEBT #25 |
-| 1.2  | SandboxClient handle-cache rehydration | 1.5h | — | Phase 0 DEBT #18 |
-| 1.3  | Sandbox workspace bootstrap (`git init` + identity + initial empty commit) | 2h | 1.2 | — |
-| 1.4  | Initializer + feature-list.json + progress.txt + 2 new LLM tools | 3h | 1.1, 1.3 | — |
-| 1.5  | Tool-mask layer (PRINCIPLE #2) | 2h | 1.4 | — |
-| 1.6  | Context Recitation (PRINCIPLE #4) | 2h | 1.4 | — |
-| 1.7  | Bifrost alias → provider model-ID resolution + capability fallback | 2h | — | Phase 0 DEBT #22 |
-| 1.8  | Verifier slot startup gate (verifier ≠ main resolved-model-ID) | 1h | 1.7 | — |
-| 1.9  | Verifier DB layer + V004 migration + `verifications` table + read routes | 2h | 1.8 | — |
-| 1.9b | Verifier Worker runtime — Redis Streams + concurrency + watchdog | 3h | 1.9 | — |
-| 1.10 | TaskComplete trigger + VERIFYING state + verdict handling | 3h | 1.9b, 1.1 | — |
-| 1.11 | Invalidation Detector + Invalidation trigger | 2h | 1.9b | — |
-| 1.12 | Circuit Breaker unification (4 conditions) + CircuitBreaker trigger + Diversity Injector | 3h | 1.10, 1.11 | — |
-| 1.13 | Checkpoint Manager — V005 + commit-on-advance + `checkpoint_label` | 2h | 1.10, 1.3 | — |
-| 1.13b | Checkpoint rollback — internal tool + admin endpoint + opt-in Verifier path | 2.5h | 1.13, 1.5 | — |
-| 1.14 | Hook output-truncation → sandbox file-ref path | 1.5h | 1.3 | Phase 0 DEBT #21 |
-| 1.15 | Narrator Hook (templated + classifier-slot LLM path) | 2h | 1.5, 1.14 | — |
-| 1.16 | 3-track Browser representation — backend (PostBrowserAction + DOM/screenshot/file_ref) | 2h | 1.14 | — |
-| 1.17 | WS `task_pause` / `task_resume` / `task_cancel` real | 2h | 1.10, 1.9b | Phase 0 DEBT #27 |
-| 1.18 | Frontend: narration lane + Verifier verdict pane | 2h | 1.9, 1.10, 1.15 | — |
-| 1.19 | Frontend: 3-track BrowserTab (A/B/C) | 2.5h | 1.16 | — |
-| 1.20 | Phase 1 E2E runtime verification (GAIA fixture + 50-step wiremock + workflow_dispatch job) | 2.5h | 1.1-1.19 | — |
-| 1.20b | Phase 1 closeout (retrospective + DEBT audit + status flips + BASELINE/CHANGELOG) | 1.5h | 1.20 | — |
+| ID | Story title | Est | Deps | Closes | Status |
+|---|---|---|---|---|---|
+| 1.1  | Real Plan Manager (plan_create/advance/update wired; structured sticky render) | 3h | — | Phase 0 DEBT #25 | done |
+| 1.2  | SandboxClient handle-cache rehydration | 1.5h | — | Phase 0 DEBT #18 | done |
+| 1.3  | Sandbox workspace bootstrap (`git init` + identity + initial empty commit) | 2h | 1.2 | — | done |
+| 1.4  | Initializer + feature-list.json + progress.txt + 2 new LLM tools | 3h | 1.1, 1.3 | — | done |
+| 1.5  | Tool-mask layer (PRINCIPLE #2) | 2h | 1.4 | — | done |
+| 1.6  | Context Recitation (PRINCIPLE #4) | 2h | 1.4 | — | done |
+| 1.7  | Bifrost alias → provider model-ID resolution + capability fallback | 2h | — | Phase 0 DEBT #22 | done |
+| 1.8  | Verifier slot startup gate (verifier ≠ main resolved-model-ID) | 1h | 1.7 | — | done |
+| 1.9  | Verifier DB layer + V004 migration + `verifications` table + read routes | 2h | 1.8 | — | done |
+| 1.9b | Verifier Worker runtime — Redis Streams + concurrency + watchdog | 3h | 1.9 | — | done |
+| 1.10 | TaskComplete trigger + VERIFYING state + verdict handling | 3h | 1.9b, 1.1 | — | done |
+| 1.11 | Invalidation Detector + Invalidation trigger | 2h | 1.9b | — | done |
+| 1.12 | Circuit Breaker unification (4 conditions) + CircuitBreaker trigger + Diversity Injector | 3h | 1.10, 1.11 | — | done |
+| 1.13 | Checkpoint Manager — V005 + commit-on-advance + `checkpoint_label` | 2h | 1.10, 1.3 | — | done |
+| 1.13b | Checkpoint rollback — internal tool + admin endpoint + opt-in Verifier path | 2.5h | 1.13, 1.5 | — | done |
+| 1.14 | Hook output-truncation → sandbox file-ref path | 1.5h | 1.3 | Phase 0 DEBT #21 | done |
+| 1.15 | Narrator Hook (templated + classifier-slot LLM path) | 2h | 1.5, 1.14 | — | done |
+| 1.16 | 3-track Browser representation — backend (PostBrowserAction + DOM/screenshot/file_ref) | 2h | 1.14 | — | done |
+| 1.17 | WS `task_pause` / `task_resume` / `task_cancel` real | 2h | 1.10, 1.9b | Phase 0 DEBT #27 | done |
+| 1.18 | Frontend: narration lane + Verifier verdict pane | 2h | 1.9, 1.10, 1.15 | — | done |
+| 1.19 | Frontend: 3-track BrowserTab (A/B/C) | 2.5h | 1.16 | — | done |
+| 1.20 | Phase 1 E2E runtime verification (GAIA fixture + 50-step wiremock + workflow_dispatch job) | 2.5h | 1.1-1.19 | — | done |
+| 1.20b | Phase 1 closeout (retrospective + DEBT audit + status flips + BASELINE/CHANGELOG) | 1.5h | 1.20 | — | done |
 
-**Total**: 23 stories, ~50 h, fits 4-week timebox at ~3 h/day with Codex
-pair workflow. Parallelisable seams: {1.5, 1.6, 1.14, 1.17} after 1.4 lands;
-{1.11, 1.13} after 1.10; {1.13b} after 1.13 + 1.5.
+**Total**: 23 stories, ~50 h. All stories landed; Phase 1 closed at
+the 1.20b commit. Parallelisable seams used during execution:
+{1.5, 1.6, 1.14, 1.17} after 1.4; {1.11, 1.13} after 1.10; {1.13b}
+after 1.13 + 1.5; {1.18, 1.20} ran in parallel with 1.19 while Codex
+landed the runtime-verification surface.
 
 ---
 

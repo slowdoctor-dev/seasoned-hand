@@ -15,7 +15,7 @@
 | **Repo** | `github.com/slowdoctor-dev/seasoned-hand` (개인 계정, Public, MIT) |
 | **License** | MIT |
 | **Tagline** | Every task makes the hand wiser. |
-| **Status** | Phase -1 (planning complete) → Phase 0 starting |
+| **Status** | Phase 1 complete → Phase 2 starting |
 | **Domain** | General-purpose autonomous AI agent platform (no domain assumptions) |
 | **Audience** | Developers + business users (balanced) |
 | **Philosophy** | Digital Employee (not assistant) |

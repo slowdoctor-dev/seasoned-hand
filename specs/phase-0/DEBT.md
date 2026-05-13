@@ -208,7 +208,7 @@
 - ~~Resolved by story 0.10: `EventEmittingHook` writes Action + Observation
   events for every dispatch; AppState::new registers it automatically.~~
 
-### ~~21. Hook output-truncation path falls back to inline preview~~ ✅ resolved 2026-05-13 (story 1.14, commit: this commit)
+### ~~21. Hook output-truncation path falls back to inline preview~~ ✅ resolved 2026-05-13 (story 1.14, commit `7132f16`)
 - ~~Origin: story 0.10~~
 - ~~Resolved by story 1.14: `events::truncation::write_large_or_inline`
   now writes payloads larger than 16 KB to `.eventfiles/<event_id>.<ext>`
@@ -216,7 +216,7 @@
   metadata (path/content_type/sha256/size); the inline preview fallback path
   was removed from `EventEmittingHook`.~~
 
-### ~~22. Capability table assumes Bifrost cloud aliases support tool calling~~ ✅ resolved 2026-05-13 (story 1.7)
+### ~~22. Capability table assumes Bifrost cloud aliases support tool calling~~ ✅ resolved 2026-05-13 (story 1.7, commit `fa3dacd`)
 - ~~Origin: story 0.13~~
 - ~~Resolved by story 1.7: `router::capability::Resolver` queries Bifrost
   `GET /v1/models/<alias>` at startup, learns the upstream provider model
@@ -227,7 +227,7 @@
   resolve log a warning and are recorded as unavailable; main remains
   hard-required.~~
 
-### ~~18. SandboxClient holds in-process handle cache — single-process assumption~~ ✅ resolved 2026-05-13 (story 1.2)
+### ~~18. SandboxClient holds in-process handle cache — single-process assumption~~ ✅ resolved 2026-05-13 (story 1.2, commit `c50db97`)
 - ~~Origin: story 0.8~~
 - ~~Resolved by story 1.2: `SandboxClient::rehydrate_from_docker` runs at
   server bootstrap (before the HTTP listener binds), enumerates
@@ -248,7 +248,7 @@
   `sessions.cost_cents`, and suspends the session with `Misc{kind:"cost_cap"}`
   when the configured cap is reached.~~
 
-### ~~25. Plan tools remain callable stubs~~ ✅ resolved 2026-05-12 (story 1.1, commit: this commit)
+### ~~25. Plan tools remain callable stubs~~ ✅ resolved 2026-05-13 (story 1.1, commit `5c5dec9`)
 - ~~Origin: story 0.14~~
 - ~~Resolved by story 1.1: implemented `seasoned-hand-core::plan::PlanManager`
   wired to `plans` (`create/advance/update`), replaced raw event sticky
@@ -266,7 +266,7 @@
   it, or isolate Bifrost accounting per session before concurrent sessions
   are allowed.
 
-### ~~27. WS task_pause/task_resume/task_cancel are protocol stubs~~ ✅ resolved 2026-05-13 (story 1.17, commit: this commit)
+### ~~27. WS task_pause/task_resume/task_cancel are protocol stubs~~ ✅ resolved 2026-05-13 (story 1.17, commit `d95e264`)
 - ~~Origin: story 0.17~~
 - ~~Resolved by story 1.17: `/ws` task controls now enforce session-state
   guards and execute real behavior: `task_pause` -> sandbox pause + SUSPENDED
