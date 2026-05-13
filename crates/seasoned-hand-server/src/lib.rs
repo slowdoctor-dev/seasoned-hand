@@ -37,10 +37,7 @@ use seasoned_hand_core::search::SearchClient;
 use seasoned_hand_core::tools::register_builtin_tools;
 use seasoned_hand_core::verifier::{
     VerificationStore,
-    routes::{
-        ListQuery as VerifyListQuery, RouteOutcome as VerifyRouteOutcome, get_verification,
-        list_verifications,
-    },
+    routes::{ListQuery as VerifyListQuery, get_verification, list_verifications},
 };
 use serde::{Deserialize, Serialize};
 
@@ -855,15 +852,20 @@ async fn post_checkpoint_rollback_handler(
 // Story 1.13: checkpoints list HTTP handler.
 // ---------------------------------------------------------------------------
 
-async fn list_checkpoints_handler(
-    State(state): State<AppState>,
-    Path(session_id): Path<String>,
-    Query(q): Query<seasoned_hand_core::checkpoint::routes::ListQuery>,
+/// Translate the shared `RouteOutcome<T>` into an axum response. `label`
+/// is logged on the Internal arm so the access log carries which route
+/// failed. The Ok arm hand-rolls the Response so a serde failure doesn't
+/// panic the request (we fall back to an empty body — the caller will
+/// see a 200 with no JSON, which is preferable to a 500 from a panic
+/// during error rendering).
+fn render_outcome<T: serde::Serialize>(
+    label: &'static str,
+    outcome: seasoned_hand_core::routes::RouteOutcome<T>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
     use axum::http::header;
     use axum::response::Response;
-    use seasoned_hand_core::checkpoint::routes::{RouteOutcome, list_checkpoints};
-    match list_checkpoints(&state.checkpoints, &session_id, q).await {
+    use seasoned_hand_core::routes::RouteOutcome;
+    match outcome {
         RouteOutcome::Ok(body) => {
             let bytes = serde_json::to_vec(&body).unwrap_or_default();
             Ok(Response::builder()
@@ -872,8 +874,9 @@ async fn list_checkpoints_handler(
                 .body(axum::body::Body::from(bytes))
                 .unwrap_or_else(|_| Response::new(axum::body::Body::empty())))
         }
+        RouteOutcome::NotFound(msg) => Err((StatusCode::NOT_FOUND, Json(ApiError { error: msg }))),
         RouteOutcome::Internal(msg) => {
-            tracing::error!(error = %msg, "list_checkpoints failed");
+            tracing::error!(error = %msg, route = label, "route failed");
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ApiError {
@@ -882,6 +885,18 @@ async fn list_checkpoints_handler(
             ))
         }
     }
+}
+
+async fn list_checkpoints_handler(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    Query(q): Query<seasoned_hand_core::checkpoint::routes::ListQuery>,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    use seasoned_hand_core::checkpoint::routes::list_checkpoints;
+    render_outcome(
+        "list_checkpoints",
+        list_checkpoints(&state.checkpoints, &session_id, q).await,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -894,58 +909,18 @@ async fn list_verifications_handler(
     Path(session_id): Path<String>,
     Query(q): Query<VerifyListQuery>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
-    use axum::http::header;
-    use axum::response::Response;
-    match list_verifications(&state.verifications, &session_id, q).await {
-        VerifyRouteOutcome::Ok(body) => {
-            let bytes = serde_json::to_vec(&body).unwrap_or_default();
-            Ok(Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(axum::body::Body::from(bytes))
-                .unwrap_or_else(|_| Response::new(axum::body::Body::empty())))
-        }
-        VerifyRouteOutcome::NotFound(msg) => {
-            Err((StatusCode::NOT_FOUND, Json(ApiError { error: msg })))
-        }
-        VerifyRouteOutcome::Internal(msg) => {
-            tracing::error!(error = %msg, "list_verifications failed");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
-            ))
-        }
-    }
+    render_outcome(
+        "list_verifications",
+        list_verifications(&state.verifications, &session_id, q).await,
+    )
 }
 
 async fn get_verification_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
-    use axum::http::header;
-    use axum::response::Response;
-    match get_verification(&state.verifications, &id).await {
-        VerifyRouteOutcome::Ok(body) => {
-            let bytes = serde_json::to_vec(&body).unwrap_or_default();
-            Ok(Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(axum::body::Body::from(bytes))
-                .unwrap_or_else(|_| Response::new(axum::body::Body::empty())))
-        }
-        VerifyRouteOutcome::NotFound(msg) => {
-            Err((StatusCode::NOT_FOUND, Json(ApiError { error: msg })))
-        }
-        VerifyRouteOutcome::Internal(msg) => {
-            tracing::error!(error = %msg, "get_verification failed");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
-            ))
-        }
-    }
+    render_outcome(
+        "get_verification",
+        get_verification(&state.verifications, &id).await,
+    )
 }

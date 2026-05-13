@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{Verification, VerificationStore, VerifierPersistenceError};
+pub use crate::routes::RouteOutcome;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct ListQuery {
@@ -26,16 +27,6 @@ pub struct ListResponse {
 #[derive(Debug, Serialize)]
 pub struct RouteError {
     pub error: String,
-}
-
-/// HTTP-status outcome of a route. The axum handlers in
-/// `seasoned-hand-server` wrap these in `Json<...>` + status codes; the
-/// pure outcome lives here so it can be unit-tested without an axum
-/// router.
-pub enum RouteOutcome<T> {
-    Ok(T),
-    NotFound(String),
-    Internal(String),
 }
 
 pub async fn list_verifications(

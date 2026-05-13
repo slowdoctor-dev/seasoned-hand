@@ -13,6 +13,7 @@ pub mod llm;
 pub mod plan;
 pub mod pubsub;
 pub mod router;
+pub mod routes;
 pub mod sandbox;
 pub mod search;
 pub mod tools;

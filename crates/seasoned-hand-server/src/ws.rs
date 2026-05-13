@@ -518,46 +518,58 @@ async fn attach_subscription(
     subscriptions.insert(session_key, handle);
 }
 
-fn event_envelope(event: &Event) -> ServerEnvelope {
-    let payload = match event.event_type {
-        EventType::Message => json!({
+/// Shape one of the five canonical event kinds (Message / Action /
+/// Observation / Plan / Misc) into the WS client payload. Returns
+/// `None` for any other event type — the two callers handle the
+/// default branch themselves because the DB path emits a bare
+/// `{kind, data}` envelope while the Redis-stream path also carries
+/// the originating `source`.
+fn build_payload(event_type_str: &str, data: &Value) -> Option<Value> {
+    Some(match event_type_str {
+        "Message" => json!({
             "kind": "Message",
-            "role": event.data.get("role").and_then(Value::as_str).unwrap_or("assistant"),
-            "content": event.data.get("content").cloned().unwrap_or(Value::String(String::new())),
-            "ui": event.data.get("ui").cloned().unwrap_or(Value::Null),
-            "in_reply_to_call_id": event.data.get("in_reply_to_call_id").cloned().unwrap_or(Value::Null),
+            "role": data.get("role").and_then(Value::as_str).unwrap_or("assistant"),
+            "content": data.get("content").cloned().unwrap_or(Value::String(String::new())),
+            "ui": data.get("ui").cloned().unwrap_or(Value::Null),
+            "in_reply_to_call_id": data.get("in_reply_to_call_id").cloned().unwrap_or(Value::Null),
         }),
-        EventType::Action => json!({
+        "Action" => json!({
             "kind": "Action",
-            "tool": event.data.get("tool").cloned().unwrap_or(Value::String(String::new())),
-            "args": event.data.get("args").cloned().unwrap_or(Value::Object(serde_json::Map::new())),
-            "call_id": event.data.get("call_id").cloned().unwrap_or(Value::Null),
+            "tool": data.get("tool").cloned().unwrap_or(Value::String(String::new())),
+            "args": data.get("args").cloned().unwrap_or(Value::Object(serde_json::Map::new())),
+            "call_id": data.get("call_id").cloned().unwrap_or(Value::Null),
         }),
-        EventType::Observation => json!({
+        "Observation" => json!({
             "kind": "Observation",
-            "call_id": event.data.get("call_id").cloned().unwrap_or(Value::Null),
-            "ok": event.data.get("ok").cloned().unwrap_or(Value::Bool(false)),
-            "output": event.data.get("output").cloned().unwrap_or(Value::Null),
-            "error": event.data.get("error").cloned().unwrap_or(Value::Null),
-            "file_ref": event.data.get("file_ref").cloned().unwrap_or(Value::Null),
+            "call_id": data.get("call_id").cloned().unwrap_or(Value::Null),
+            "ok": data.get("ok").cloned().unwrap_or(Value::Bool(false)),
+            "output": data.get("output").cloned().unwrap_or(Value::Null),
+            "error": data.get("error").cloned().unwrap_or(Value::Null),
+            "file_ref": data.get("file_ref").cloned().unwrap_or(Value::Null),
         }),
-        EventType::Plan => json!({
+        "Plan" => json!({
             "kind": "Plan",
-            "op": event.data.get("op").cloned().unwrap_or(Value::Null),
-            "plan_id": event.data.get("plan_id").cloned().unwrap_or(Value::Null),
-            "snapshot": event.data.get("snapshot").cloned().unwrap_or(Value::Null),
+            "op": data.get("op").cloned().unwrap_or(Value::Null),
+            "plan_id": data.get("plan_id").cloned().unwrap_or(Value::Null),
+            "snapshot": data.get("snapshot").cloned().unwrap_or(Value::Null),
         }),
-        EventType::Misc => json!({
+        "Misc" => json!({
             "kind": "Misc",
-            "kind_tag": event.data.get("kind").cloned().unwrap_or(Value::Null),
-            "data": event.data.clone(),
+            "kind_tag": data.get("kind").cloned().unwrap_or(Value::Null),
+            "data": data.clone(),
         }),
-        _ => json!({
-            "kind": event.event_type.as_str(),
-            "data": event.data.clone(),
-        }),
-    };
+        _ => return None,
+    })
+}
 
+fn event_envelope(event: &Event) -> ServerEnvelope {
+    let event_type_str = event.event_type.as_str();
+    let payload = build_payload(event_type_str, &event.data).unwrap_or_else(|| {
+        json!({
+            "kind": event_type_str,
+            "data": event.data.clone(),
+        })
+    });
     ServerEnvelope::Event {
         id: event.id.to_string(),
         session_id: event.session_id.clone(),
@@ -589,45 +601,13 @@ fn event_envelope_from_value(value: Value) -> ServerEnvelope {
         .unwrap_or("tool:unknown")
         .to_string();
     let data = value.get("data").cloned().unwrap_or(Value::Null);
-    let payload = match event_type {
-        "Message" => json!({
-            "kind": "Message",
-            "role": data.get("role").and_then(Value::as_str).unwrap_or("assistant"),
-            "content": data.get("content").cloned().unwrap_or(Value::String(String::new())),
-            "ui": data.get("ui").cloned().unwrap_or(Value::Null),
-            "in_reply_to_call_id": data.get("in_reply_to_call_id").cloned().unwrap_or(Value::Null),
-        }),
-        "Action" => json!({
-            "kind": "Action",
-            "tool": data.get("tool").cloned().unwrap_or(Value::String(String::new())),
-            "args": data.get("args").cloned().unwrap_or(Value::Object(serde_json::Map::new())),
-            "call_id": data.get("call_id").cloned().unwrap_or(Value::Null),
-        }),
-        "Observation" => json!({
-            "kind": "Observation",
-            "call_id": data.get("call_id").cloned().unwrap_or(Value::Null),
-            "ok": data.get("ok").cloned().unwrap_or(Value::Bool(false)),
-            "output": data.get("output").cloned().unwrap_or(Value::Null),
-            "error": data.get("error").cloned().unwrap_or(Value::Null),
-            "file_ref": data.get("file_ref").cloned().unwrap_or(Value::Null),
-        }),
-        "Plan" => json!({
-            "kind": "Plan",
-            "op": data.get("op").cloned().unwrap_or(Value::Null),
-            "plan_id": data.get("plan_id").cloned().unwrap_or(Value::Null),
-            "snapshot": data.get("snapshot").cloned().unwrap_or(Value::Null),
-        }),
-        "Misc" => json!({
-            "kind": "Misc",
-            "kind_tag": data.get("kind").cloned().unwrap_or(Value::Null),
-            "data": data,
-        }),
-        other => json!({
-            "kind": other,
+    let payload = build_payload(event_type, &data).unwrap_or_else(|| {
+        json!({
+            "kind": event_type,
             "source": source,
             "data": data,
-        }),
-    };
+        })
+    });
     ServerEnvelope::Event {
         id: event_id,
         session_id,

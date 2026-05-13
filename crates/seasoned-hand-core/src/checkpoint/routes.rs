@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::persistence::{Checkpoint, CheckpointPersistenceError, CheckpointStore};
+pub use crate::routes::RouteOutcome;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct ListQuery {
@@ -15,11 +16,6 @@ pub struct ListQuery {
 pub struct ListResponse {
     pub rows: Vec<Checkpoint>,
     pub next_cursor: Option<i64>,
-}
-
-pub enum RouteOutcome<T> {
-    Ok(T),
-    Internal(String),
 }
 
 pub async fn list_checkpoints(
