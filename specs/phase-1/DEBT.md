@@ -195,13 +195,35 @@ notes) — append them below as item 14+ when the decision is made.
 
 ## In-phase additions (from stories 1.1–1.20b)
 
-### 15. Verifier Worker `run()` is a polling stub — no `XREADGROUP` consumer
-- **Origin**: story 1.9b, surfaced by the post-Phase-1
-  story-consistency audit (1.20b close)
-- **Severity**: **High** (blocks the Verifier feature in any
+### ~~15. Verifier Worker `run()` is a polling stub — no `XREADGROUP` consumer~~ ✅ resolved 2026-05-13 (story 2.18, commit `8eda594`)
+- ~~**Origin**: story 1.9b, surfaced by the post-Phase-1
+  story-consistency audit (1.20b close)~~
+- ~~**Severity**: **High** (blocks the Verifier feature in any
   deployment where the producer-side `XADD verify_request` calls go
-  through Redis Streams — which is every production deployment)
-- **What**: Story 1.9b's acceptance criteria specify
+  through Redis Streams — which is every production deployment)~~
+- **Resolved by story 2.18**: `Worker::run` now bootstraps the
+  consumer group via `XGROUP CREATE verify_request verifier-workers $
+  MKSTREAM` (idempotent — BUSYGROUP swallowed) and loops on
+  `XREADGROUP GROUP verifier-workers <worker-{hostname}-{pid}> BLOCK
+  5000 COUNT 16 STREAMS verify_request >`. The Phase 1 simplicity
+  pass's deleted concurrency primitives are reintroduced: per-session
+  FIFO via `DashMap<SessionId, Arc<tokio::sync::Mutex<()>>>` + global
+  cap via `Arc<Semaphore>` (config `verifier.max_concurrency`, default
+  2). Each entry is dispatched via `handle_request_with_watchdog` and
+  XACKed on success path, terminal handler error (with
+  `verifier_verdict_error` Misc), and malformed JSON. The only
+  PEL-retention path is a crash strictly between consume and XACK;
+  the next consumer (or restart) picks it up and `handle_request`
+  dedupes on `triggered_at_event_id`. `VerifierRuntimeConfig` exposes
+  `stream` / `group` / `consumer_prefix` / `max_concurrency` /
+  `consumer_block_ms` / `read_count` (env-loadable via
+  `from_env()`). Five live-Redis tests (`#[ignore]`'d):
+  `worker_xreadgroup_consumes_one_entry`,
+  `worker_xreadgroup_per_session_fifo`,
+  `worker_xreadgroup_global_semaphore_caps_concurrency`,
+  `worker_xack_on_handle_request_error`,
+  `worker_skips_malformed_message_with_xack`.
+- ~~**What**: Story 1.9b's acceptance criteria specify
   `XREADGROUP GROUP verifier <consumer> BLOCK 5000 COUNT 16 STREAMS
   verify_request >` + per-session FIFO via `DashMap<SessionId,
   Arc<Mutex<()>>>` + global concurrency cap via `Semaphore`.
@@ -215,22 +237,22 @@ notes) — append them below as item 14+ when the decision is made.
   `Worker::handle_request(&req)` directly, which only test code
   currently does. Every trigger emission path (idle-final, breaker
   fire, file-mismatch hook) successfully `XADD`s into the stream,
-  but those entries accumulate forever.
-- **Why it shipped this way**: Story 1.9b's intent was to lock down
+  but those entries accumulate forever.~~
+- ~~**Why it shipped this way**: Story 1.9b's intent was to lock down
   the `handle_request` pipeline (fresh context, FAIL-biased prompt,
   watchdog, parse + persist) so that wiring the consumer loop is a
   pure plumbing job with no algorithm risk. The `phase1_stable_50step`
   E2E (story 1.20) drives `handle_request` directly to prove the
   shape end-to-end. The trade-off was deliberate but never marked as
-  DEBT.
-- **Pay down**: First post-Phase-1 commit on the verifier-runtime
+  DEBT.~~
+- ~~**Pay down**: First post-Phase-1 commit on the verifier-runtime
   surface. Implement the XREADGROUP loop + parse + dispatch +
   XACK + the per-session FIFO + global semaphore exactly per
   story 1.9b's "Concurrency" section. Add the two named tests
   (`worker_respects_per_session_fifo`,
   `worker_respects_global_concurrency_cap`) under a live-Redis
   feature flag (mirroring the existing `#[ignore]`'d Redis pattern
-  from Phase 0). The shipped `handle_request` is unchanged.
+  from Phase 0). The shipped `handle_request` is unchanged.~~
 
 ### ~~14. `SandboxGitShell::commit_phase` builds a shell string with weak quoting~~ ✅ resolved 2026-05-13 (story 2.19, commit `43a06d8`)
 - ~~**Origin**: story 1.13, surfaced by the post-Phase-1 security review
