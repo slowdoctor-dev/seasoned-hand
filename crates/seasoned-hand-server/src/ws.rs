@@ -254,14 +254,33 @@ async fn handle_command(
                 session_id: Some(session_id),
             });
         }
-        CommandPayload::TaskPause { session_id }
-        | CommandPayload::TaskResume { session_id }
-        | CommandPayload::TaskCancel { session_id } => {
+        CommandPayload::TaskPause { session_id } => {
+            let result = handle_task_pause(state, &session_id).await;
             let _ = tx.send(ServerEnvelope::Ack {
                 id: Uuid::new_v4().to_string(),
                 r#ref: cmd_id,
-                ok: true,
-                error: None,
+                ok: result.is_ok(),
+                error: result.err(),
+                session_id: Some(session_id),
+            });
+        }
+        CommandPayload::TaskResume { session_id } => {
+            let result = handle_task_resume(state, &session_id).await;
+            let _ = tx.send(ServerEnvelope::Ack {
+                id: Uuid::new_v4().to_string(),
+                r#ref: cmd_id,
+                ok: result.is_ok(),
+                error: result.err(),
+                session_id: Some(session_id),
+            });
+        }
+        CommandPayload::TaskCancel { session_id } => {
+            let result = handle_task_cancel(state, &session_id).await;
+            let _ = tx.send(ServerEnvelope::Ack {
+                id: Uuid::new_v4().to_string(),
+                r#ref: cmd_id,
+                ok: result.is_ok(),
+                error: result.err(),
                 session_id: Some(session_id),
             });
         }
@@ -324,6 +343,102 @@ async fn handle_command(
             });
         }
     }
+}
+
+async fn session_state(state: &AppState, session_id: &str) -> Result<Option<String>, String> {
+    let sid = session_id.to_string();
+    let found = state
+        .db
+        .with_conn(move |conn| {
+            conn.query_row(
+                "SELECT state FROM sessions WHERE id = ?",
+                rusqlite::params![sid],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+        })
+        .await;
+    Ok(found)
+}
+
+async fn handle_task_pause(state: &AppState, session_id: &str) -> Result<(), String> {
+    let current = session_state(state, session_id)
+        .await?
+        .ok_or_else(|| "unknown_session".to_string())?;
+    if current != "RUNNING" && current != "VERIFYING" {
+        return Err("wrong_state".into());
+    }
+    state
+        .sandbox
+        .pause(session_id)
+        .await
+        .map_err(|_| "internal".to_string())?;
+    set_session_state(state, session_id, "SUSPENDED").await?;
+    let _ = state
+        .events
+        .append(NewEvent {
+            session_id: session_id.to_string(),
+            event_type: EventType::Misc,
+            source: "ws".into(),
+            data: json!({"kind":"task_paused"}),
+        })
+        .await;
+    Ok(())
+}
+
+async fn handle_task_resume(state: &AppState, session_id: &str) -> Result<(), String> {
+    let current = session_state(state, session_id)
+        .await?
+        .ok_or_else(|| "unknown_session".to_string())?;
+    if current != "SUSPENDED" {
+        return Err("wrong_state".into());
+    }
+    state
+        .sandbox
+        .resume(session_id)
+        .await
+        .map_err(|_| "internal".to_string())?;
+    set_session_state(state, session_id, "RUNNING").await?;
+    let _ = state
+        .events
+        .append(NewEvent {
+            session_id: session_id.to_string(),
+            event_type: EventType::Misc,
+            source: "ws".into(),
+            data: json!({"kind":"task_resumed"}),
+        })
+        .await;
+    let runner = state.runner.clone();
+    let sid = session_id.to_string();
+    tokio::spawn(async move {
+        let _ = runner.resume_session(&sid).await;
+    });
+    Ok(())
+}
+
+async fn handle_task_cancel(state: &AppState, session_id: &str) -> Result<(), String> {
+    let current = session_state(state, session_id)
+        .await?
+        .ok_or_else(|| "unknown_session".to_string())?;
+    if current == "FINISHED" || current == "ERROR" {
+        return Err("wrong_state".into());
+    }
+    if let Some(token) = state.cancel_tokens.get(session_id) {
+        token.cancel();
+    }
+    let _ = state
+        .events
+        .append(NewEvent {
+            session_id: session_id.to_string(),
+            event_type: EventType::Misc,
+            source: "ws".into(),
+            data: json!({"kind":"task_cancelled","by":"user"}),
+        })
+        .await;
+    let _ = state.sandbox.destroy(session_id).await;
+    set_session_state(state, session_id, "FINISHED").await?;
+    state.cancel_tokens.remove(session_id);
+    Ok(())
 }
 
 async fn replay_events(
@@ -581,6 +696,12 @@ fn now_unix() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AppState;
+    use seasoned_hand_core::capability::ModelCapabilities;
+    use seasoned_hand_core::db;
+    use seasoned_hand_core::router::SlotRouter;
+    use seasoned_hand_core::sandbox::SandboxClient;
+    use seasoned_hand_core::search::SearchClient;
 
     #[test]
     fn envelope_roundtrip_event() {
@@ -595,5 +716,61 @@ mod tests {
         assert_eq!(value["type"], "event");
         assert_eq!(value["session_id"], "s1");
         assert_eq!(value["payload"]["kind"], "Message");
+    }
+
+    async fn test_state() -> AppState {
+        let db = db::open(":memory:").await.unwrap();
+        let redis = seasoned_hand_core::pubsub::RedisPool::new("redis://127.0.0.1:6").unwrap();
+        let sandbox = SandboxClient::new(
+            "ghcr.io/agent-infra/sandbox:1.0.0.152",
+            std::env::temp_dir(),
+        )
+        .unwrap();
+        AppState::new(
+            db,
+            redis,
+            sandbox,
+            SearchClient::brave_from_env(),
+            SlotRouter::default_for_bifrost(),
+            std::collections::HashMap::<String, ModelCapabilities>::new(),
+        )
+    }
+
+    #[tokio::test]
+    async fn pause_rejected_when_finished() {
+        let state = test_state().await;
+        state
+            .db
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO sessions (id, created_at, updated_at, state) VALUES ('s1',0,0,'FINISHED')",
+                    [],
+                )
+                .unwrap();
+            })
+            .await;
+        let err = handle_task_pause(&state, "s1")
+            .await
+            .expect_err("wrong_state");
+        assert_eq!(err, "wrong_state");
+    }
+
+    #[tokio::test]
+    async fn resume_rejected_when_running() {
+        let state = test_state().await;
+        state
+            .db
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO sessions (id, created_at, updated_at, state) VALUES ('s1',0,0,'RUNNING')",
+                    [],
+                )
+                .unwrap();
+            })
+            .await;
+        let err = handle_task_resume(&state, "s1")
+            .await
+            .expect_err("wrong_state");
+        assert_eq!(err, "wrong_state");
     }
 }

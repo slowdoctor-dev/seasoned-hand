@@ -12,6 +12,7 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use dashmap::DashMap;
 use seasoned_hand_core::agent::init::feature_list::FeatureList;
 use seasoned_hand_core::agent::init::progress;
 use seasoned_hand_core::agent::{AgentRunner, AgentRunnerDeps};
@@ -79,6 +80,8 @@ pub struct AppState {
     /// `rollback_required: true`. Default `false` per phase-1/DEBT.md #3
     /// — Phase 2 retrospective will decide whether to flip this.
     pub checkpoint_rollback_on_verifier_fail: bool,
+    /// Story 1.17: per-session cancellation tokens used by ws task_cancel.
+    pub cancel_tokens: Arc<DashMap<String, tokio_util::sync::CancellationToken>>,
 }
 
 impl AppState {
@@ -110,6 +113,7 @@ impl AppState {
         // process-wide environment variables.
         let admin_token = Arc::new(String::new());
         let checkpoint_rollback_on_verifier_fail = false;
+        let cancel_tokens = Arc::new(DashMap::new());
         let router = Arc::new(router);
         let plan_manager = Arc::new(PlanManager::new(db.clone(), events.clone()));
         let main_slot = router.resolve(SlotName::Main);
@@ -129,6 +133,7 @@ impl AppState {
             checkpoint_labels: checkpoint_labels.clone(),
             checkpoints: checkpoints.clone(),
             redis: Arc::new(redis.clone()),
+            cancel_tokens: cancel_tokens.clone(),
         }));
         Self {
             db,
@@ -149,6 +154,7 @@ impl AppState {
             checkpoints,
             admin_token,
             checkpoint_rollback_on_verifier_fail,
+            cancel_tokens,
         }
     }
 

@@ -161,6 +161,7 @@ slots:
         checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
         checkpoints: Arc::new(crate::checkpoint::CheckpointStore::new(db.clone())),
         redis: Arc::new(redis.clone()),
+        cancel_tokens: Arc::new(dashmap::DashMap::new()),
     });
 
     Harness {

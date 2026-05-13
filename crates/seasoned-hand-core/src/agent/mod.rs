@@ -7,8 +7,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use dashmap::DashMap;
 use serde_json::{Value, json};
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 
 use crate::cost::{CostClient, CostSnapshot, delta_between};
 use crate::db::{DbError, DbPool};
@@ -83,6 +85,7 @@ pub struct AgentRunner {
     checkpoints: Arc<crate::checkpoint::CheckpointStore>,
     redis: Arc<RedisPool>,
     run_config: Arc<tokio::sync::Mutex<HashMap<String, RunRequest>>>,
+    cancel_tokens: Arc<DashMap<String, CancellationToken>>,
 }
 
 pub struct AgentRunnerDeps {
@@ -99,6 +102,7 @@ pub struct AgentRunnerDeps {
     pub checkpoint_labels: Arc<crate::checkpoint::CheckpointLabelBuffer>,
     pub checkpoints: Arc<crate::checkpoint::CheckpointStore>,
     pub redis: Arc<RedisPool>,
+    pub cancel_tokens: Arc<DashMap<String, CancellationToken>>,
 }
 
 impl AgentRunner {
@@ -118,10 +122,13 @@ impl AgentRunner {
             checkpoints: deps.checkpoints,
             redis: deps.redis,
             run_config: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            cancel_tokens: deps.cancel_tokens,
         }
     }
 
     pub async fn run(&self, req: RunRequest) -> Result<RunResult, AgentError> {
+        self.cancel_tokens
+            .insert(req.session_id.clone(), CancellationToken::new());
         self.run_config
             .lock()
             .await
@@ -130,6 +137,9 @@ impl AgentRunner {
     }
 
     pub async fn resume(&self, req: RunRequest) -> Result<RunResult, AgentError> {
+        self.cancel_tokens
+            .entry(req.session_id.clone())
+            .or_default();
         self.run_config
             .lock()
             .await
@@ -191,6 +201,21 @@ impl AgentRunner {
 
         for step in start_step..req.max_steps {
             steps_run = step + 1;
+            if self
+                .cancel_tokens
+                .get(&req.session_id)
+                .is_some_and(|t| t.is_cancelled())
+            {
+                self.emit_misc(&req.session_id, "task_cancelled", json!({"reason":"user"}))
+                    .await?;
+                self.set_session_state(&req.session_id, "SUSPENDED").await?;
+                return Ok(RunResult {
+                    session_id: req.session_id,
+                    completed: false,
+                    last_message,
+                    steps: step + 1,
+                });
+            }
             if ReciteScheduler::should_fire(step) {
                 recite_tick(&self.sandbox, &self.events, &req.session_id).await;
             }
@@ -360,6 +385,7 @@ impl AgentRunner {
 
             if call.function.name == "idle" && output.ok {
                 self.set_session_state(&req.session_id, "FINISHED").await?;
+                self.cancel_tokens.remove(&req.session_id);
                 return Ok(RunResult {
                     session_id: req.session_id,
                     completed: true,
@@ -388,6 +414,7 @@ impl AgentRunner {
             .await?;
         }
         self.set_session_state(&req.session_id, "FINISHED").await?;
+        self.cancel_tokens.remove(&req.session_id);
         Ok(RunResult {
             session_id: req.session_id,
             completed: false,

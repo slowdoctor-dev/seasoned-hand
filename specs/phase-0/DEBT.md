@@ -266,16 +266,13 @@
   it, or isolate Bifrost accounting per session before concurrent sessions
   are allowed.
 
-### 27. WS task_pause/task_resume/task_cancel are protocol stubs
-- **Origin**: story 0.17
-- **Severity**: **Medium**
-- **What**: `/ws` accepts the three control commands and returns `ack`, but
-  it does not yet coordinate real cancellation tokens or sandbox pause/resume
-  semantics per session.
-- **Why**: Phase 0 only needs envelope compatibility and task-create/resume
-  flow; robust cooperative cancellation wiring is deferred.
-- **Pay down**: Story 0.27 or Phase 1 — add per-session cancel tokens in
-  runtime state and wire pause/resume/cancel to runner checkpoints + sandbox.
+### ~~27. WS task_pause/task_resume/task_cancel are protocol stubs~~ ✅ resolved 2026-05-13 (story 1.17, commit: this commit)
+- ~~Origin: story 0.17~~
+- ~~Resolved by story 1.17: `/ws` task controls now enforce session-state
+  guards and execute real behavior: `task_pause` -> sandbox pause + SUSPENDED
+  + `task_paused`, `task_resume` -> unpause + RUNNING + runner resume +
+  `task_resumed`, `task_cancel` -> cancellation token + sandbox destroy +
+  FINISHED + `task_cancelled`.~~
 
 ---
 
