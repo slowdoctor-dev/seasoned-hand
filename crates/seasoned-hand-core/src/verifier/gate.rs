@@ -558,6 +558,34 @@ mod tests {
         assert_eq!(state(&db, &session_id).await, "SUSPENDED");
     }
 
+    #[tokio::test]
+    async fn breaker_passes_verdict_resets_counter_for_stuck() {
+        // Story 1.12: a `pass` verdict on a `CircuitBreaker` trigger
+        // with `breaker_kind == "Stuck"` must NOT transition session
+        // state — it silently calls `breaker.reset_stuck()` and lets
+        // the runner continue. Distinct from the `Cost` / `MaxSteps`
+        // pass paths, which suspend even on pass. Pinned against
+        // accidental future change in the match arm.
+        let (gate, events, db, session_id) = fixture().await;
+        insert_breaker_verdict(&events, &session_id, "pass", "Stuck", None).await;
+        let _ = gate.poll_once(0).await.unwrap();
+        assert_eq!(state(&db, &session_id).await, "VERIFYING");
+    }
+
+    #[tokio::test]
+    async fn breaker_fail_with_suggestion_continues() {
+        // Story 1.12: a `fail` verdict on a `CircuitBreaker` trigger
+        // that ALSO carries a `suggested_plan_update` transitions the
+        // session to `RUNNING` (the gate then dispatches a resume).
+        // Distinct from the no-suggestion fail paths, which go to
+        // `ERROR` (Stuck/ErrorRate) or `SUSPENDED` (Cost/MaxSteps).
+        let (gate, events, db, session_id) = fixture().await;
+        let suggested = serde_json::json!({"phases": []});
+        insert_breaker_verdict(&events, &session_id, "fail", "Stuck", Some(suggested)).await;
+        let _ = gate.poll_once(0).await.unwrap();
+        assert_eq!(state(&db, &session_id).await, "RUNNING");
+    }
+
     // ------------------------------------------------------------------
     // Story 1.13b: Verifier-driven rollback opt-in path
     // ------------------------------------------------------------------
