@@ -193,6 +193,43 @@ notes) — append them below as item 14+ when the decision is made.
 
 ---
 
+## In-phase additions (from stories 1.1–1.20b)
+
+### 14. `SandboxGitShell::commit_phase` builds a shell string with weak quoting (`phase_title` injection)
+- **Origin**: story 1.13, surfaced by the post-Phase-1 security review
+  (story 1.20b commit `e5948c2`)
+- **Severity**: **Medium** (latent — not currently reachable in shipped
+  code; becomes exploitable the moment the Plan{op:"advance"}
+  broadcaster lands)
+- **What**:
+  `crates/seasoned-hand-core/src/checkpoint/git_in_sandbox.rs:110-114`
+  builds the sandbox `git commit -m "<phase_title>"` shell command via
+  `format!` with only `replace('"', "\\\"")` escaping. The double-quoted
+  argument leaves `` ` `` (command substitution), `$` (variable
+  expansion), and `\` open. `phase_title` is LLM-controlled via the
+  `plan_update` / `plan_advance` tool args → `Phase.title`.
+- **Why it isn't a current vuln**: The only caller path
+  (`CheckpointManager::handle_plan_advance`) has no live wiring —
+  `main.rs:108-132` spawns `CheckpointManager::run`, a polling no-op
+  stub. The Plan{op:"advance"} broadcaster is documented as deferred
+  ("real fanout lands alongside the global event bus in story 1.20
+  E2E") and story 1.20 only added tests, not the broadcaster.
+- **Why it stays open**: Whoever wires the broadcaster will reach this
+  code path on the first real `plan_advance`. The fix is small but
+  must land BEFORE the broadcaster.
+- **Pay down**: Replace the manual escape with one of:
+  - `git commit -F -` reading the title from stdin via
+    `/v1/shell/exec`'s stdin field (preferred; no quoting needed),
+  - `shell_escape::escape(...)` on `phase_title`,
+  - or move to a real argv path (`/v1/shell/exec` accepting `argv` rather
+    than a shell string) and stop building shell strings here altogether.
+  Add a regression test that feeds `` "`whoami`" ``, `$(id)`, and a
+  newline through `phase_title` and asserts the resulting sandbox
+  command does not execute them. Block the broadcaster commit on this
+  landing.
+
+---
+
 ## Categories quick-reference (same as Phase 0)
 
 | Severity | Meaning |
