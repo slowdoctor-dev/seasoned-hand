@@ -4,6 +4,7 @@
 pub mod agent;
 pub mod browser;
 pub mod capability;
+pub mod channel;
 pub mod checkpoint;
 pub mod cost;
 pub mod db;
