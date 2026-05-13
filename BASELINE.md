@@ -41,6 +41,17 @@ we're filling. See `/specs/00-philosophy/VISION.md` for full reasoning.
 
 OS metaphor: kernel = agent runtime, user-space = learning artifacts.
 
+**Architecturally an OS-layer for work**: pluggable channel adapters
+(intake / delivery / notify, all symmetric — anything that delivers
+work in is matched by something that delivers results back out),
+structured work representation (Project → Task → Session →
+Deliverable → Decision as first-class persisted entities), mandatory
+provenance trail (every deliverable traces back to evidence event IDs
++ decisions + verifier verdicts + checkpoints), persistent skills /
+playbooks (Phase 3+), multi-tenant-ready schema (every row carries a
+nullable `tenant_id`; Phase 5 flips to NOT NULL). Phase 2 lands the
+OS-shape foundation (see `/specs/phase-2/architecture.md`).
+
 | Layer | Choice | Rationale (ADR) |
 |---|---|---|
 | LLM Gateway | Bifrost (Go) | ADR-001: 50x faster than LiteLLM, single binary |
