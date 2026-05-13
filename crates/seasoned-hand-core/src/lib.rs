@@ -11,6 +11,7 @@ pub mod dispatch;
 pub mod events;
 pub mod llm;
 pub mod plan;
+pub mod project;
 pub mod pubsub;
 pub mod router;
 pub mod routes;
