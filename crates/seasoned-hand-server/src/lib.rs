@@ -23,6 +23,9 @@ use seasoned_hand_core::capability::ModelCapabilities;
 use seasoned_hand_core::channel::{
     ChannelRegistration, ChannelRegistry,
     chat::ChatChannel,
+    email::{
+        AllowList, AsyncImapFetcher, EmailChannel, ImapConfig, LettreSmtpTransport, SmtpConfig,
+    },
     webhook::{TokenCheck, WebhookChannel},
 };
 use seasoned_hand_core::cost::{CostClient, CostSnapshot};
@@ -157,6 +160,136 @@ pub struct NarratorClassifierWiring {
     pub llm: Arc<LlmClient>,
     pub model: String,
     pub system_prompt: Arc<String>,
+}
+
+/// Story 2.11: env-shaped inputs for [`AppState::register_email_channel`].
+/// `from_env()` reads the operator's environment so `main.rs` is one
+/// line; tests construct directly to avoid racing on process state.
+///
+/// IMAP_HOST / IMAP_USERNAME / IMAP_PASSWORD are mandatory — leaving any
+/// blank disables the whole channel (default-deny by absence). SMTP
+/// envs default to the IMAP host on port 587 with the same credentials
+/// (matches the common single-mailbox setup).
+pub struct EmailChannelEnv {
+    pub imap_host: String,
+    pub imap_port: u16,
+    pub imap_username: String,
+    pub imap_password: String,
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    pub smtp_username: String,
+    pub smtp_password: String,
+    pub from_address: String,
+    pub subject_prefix: String,
+    pub allowed_senders_raw: String,
+    pub poll_interval_secs: u64,
+}
+
+/// Resolved [`EmailChannel`] config. Internal — produced by
+/// [`EmailChannelEnv::into_config`] only.
+struct EmailChannelConfig {
+    imap: ImapConfig,
+    smtp: SmtpConfig,
+    from_address: String,
+    subject_prefix: String,
+    allow_list: AllowList,
+    poll_interval: std::time::Duration,
+}
+
+impl EmailChannelEnv {
+    /// Read every relevant env var. Missing IMAP_PORT / SMTP_PORT
+    /// fall to 993 / 587; missing IMAP_POLL_INTERVAL_SECS to 30.
+    /// Missing INTAKE_EMAIL_ALLOWED_SENDERS stays empty — the
+    /// `EmailChannel` itself enforces default-deny on an empty list
+    /// (architecture §9 / phase-2/DEBT.md #4).
+    pub fn from_env() -> Self {
+        let imap_host = std::env::var("IMAP_HOST").unwrap_or_default();
+        let imap_username = std::env::var("IMAP_USERNAME").unwrap_or_default();
+        let imap_password = std::env::var("IMAP_PASSWORD").unwrap_or_default();
+        let imap_port = std::env::var("IMAP_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(993);
+
+        let smtp_host = std::env::var("SMTP_HOST").unwrap_or_else(|_| imap_host.clone());
+        let smtp_username =
+            std::env::var("SMTP_USERNAME").unwrap_or_else(|_| imap_username.clone());
+        let smtp_password =
+            std::env::var("SMTP_PASSWORD").unwrap_or_else(|_| imap_password.clone());
+        let smtp_port = std::env::var("SMTP_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(587);
+
+        // FROM_ADDRESS defaults to the SMTP/IMAP username (typically
+        // the mailbox itself).
+        let from_address =
+            std::env::var("EMAIL_FROM_ADDRESS").unwrap_or_else(|_| smtp_username.clone());
+        let subject_prefix = std::env::var("EMAIL_SUBJECT_PREFIX")
+            .unwrap_or_else(|_| seasoned_hand_core::channel::email::DEFAULT_SUBJECT_PREFIX.into());
+        let allowed_senders_raw = std::env::var("INTAKE_EMAIL_ALLOWED_SENDERS").unwrap_or_default();
+        let poll_interval_secs = std::env::var("IMAP_POLL_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
+
+        Self {
+            imap_host,
+            imap_port,
+            imap_username,
+            imap_password,
+            smtp_host,
+            smtp_port,
+            smtp_username,
+            smtp_password,
+            from_address,
+            subject_prefix,
+            allowed_senders_raw,
+            poll_interval_secs,
+        }
+    }
+
+    fn into_config(self) -> Option<EmailChannelConfig> {
+        if self.imap_host.is_empty()
+            || self.imap_username.is_empty()
+            || self.imap_password.is_empty()
+        {
+            return None;
+        }
+        let allow_list = match AllowList::parse(&self.allowed_senders_raw) {
+            Ok(al) => al,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "INTAKE_EMAIL_ALLOWED_SENDERS parse failed; falling back to deny-all",
+                );
+                AllowList::default()
+            }
+        };
+        let from_address = if self.from_address.is_empty() {
+            self.imap_username.clone()
+        } else {
+            self.from_address
+        };
+        Some(EmailChannelConfig {
+            imap: ImapConfig {
+                host: self.imap_host,
+                port: self.imap_port,
+                username: self.imap_username,
+                password: self.imap_password,
+            },
+            smtp: SmtpConfig {
+                host: self.smtp_host,
+                port: self.smtp_port,
+                username: self.smtp_username,
+                password: self.smtp_password,
+            },
+            from_address,
+            subject_prefix: self.subject_prefix,
+            allow_list,
+            poll_interval: std::time::Duration::from_secs(self.poll_interval_secs.max(1)),
+        })
+    }
 }
 
 impl AppState {
@@ -380,6 +513,61 @@ impl AppState {
         self.webhook_intake_token = intake_token;
         self.register_channel(
             ChannelRegistration::new(seasoned_hand_core::channel::webhook::CHANNEL_NAME)
+                .with_intake(channel.clone())
+                .with_delivery(channel.clone())
+                .with_notify(channel),
+        )
+    }
+
+    /// Story 2.11: register the production `EmailChannel` (IMAP intake
+    /// poller + lettre SMTP delivery + lettre SMTP notify). Returns
+    /// `self` unchanged when the supplied `EmailChannelEnv` is
+    /// disabled (missing IMAP host / username — see
+    /// [`EmailChannelEnv::resolve`]) so the boot path is one-line in
+    /// `main.rs` regardless of operator config.
+    pub fn register_email_channel(self, env: EmailChannelEnv) -> Self {
+        let Some(EmailChannelConfig {
+            imap,
+            smtp,
+            from_address,
+            subject_prefix,
+            allow_list,
+            poll_interval,
+        }) = env.into_config()
+        else {
+            tracing::info!(
+                "email channel disabled (missing IMAP_HOST / IMAP_USERNAME / IMAP_PASSWORD)"
+            );
+            return self;
+        };
+
+        let smtp_transport = match LettreSmtpTransport::new(&smtp) {
+            Ok(t) => t,
+            Err(error) => {
+                tracing::warn!(%error, "email channel disabled: SMTP transport setup failed");
+                return self;
+            }
+        };
+        let fetcher = Arc::new(AsyncImapFetcher::new(imap));
+        let transport = Arc::new(smtp_transport);
+        let channel = match EmailChannel::builder()
+            .fetcher(fetcher)
+            .transport(transport)
+            .from_address(from_address)
+            .subject_prefix(subject_prefix)
+            .allow_list(allow_list)
+            .poll_interval(poll_interval)
+            .build()
+        {
+            Ok(c) => Arc::new(c),
+            Err(error) => {
+                tracing::warn!(%error, "email channel disabled: builder rejected config");
+                return self;
+            }
+        };
+
+        self.register_channel(
+            ChannelRegistration::new(seasoned_hand_core::channel::email::CHANNEL_NAME)
                 .with_intake(channel.clone())
                 .with_delivery(channel.clone())
                 .with_notify(channel),

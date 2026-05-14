@@ -112,6 +112,15 @@ tracks "where we are in the task" and prevents goal drift. See ADR-010.
     Google AI)
 ```
 
+> **Phase 2 channel-framework addendum** (per AGENTS.md §9 — net-new
+> Rust deps trigger a one-line note):
+> `lettre 0.11` (SMTP send, EmailChannel delivery + notify),
+> `mailparse 0.15` (RFC 5322 parse, EmailChannel intake),
+> `async-imap 0.10` (IMAP poll, EmailChannel intake — `tokio-rustls`
+> feature, no openssl).
+> Sandbox-side renderer toolchain: Pandoc + python-pptx + openpyxl
+> (installed at session-create time per phase-2/DEBT.md #2).
+
 ---
 
 ## 2. Data model

@@ -12,7 +12,7 @@ use seasoned_hand_core::router::{SlotName, SlotRouter};
 use seasoned_hand_core::sandbox::SandboxClient;
 use seasoned_hand_core::search::SearchClient;
 use seasoned_hand_core::{db, pubsub};
-use seasoned_hand_server::{AppState, app};
+use seasoned_hand_server::{AppState, EmailChannelEnv, app};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -94,6 +94,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(_) => Vec::new(),
     };
     state = state.register_webhook_channel(webhook_intake_token, allowlist);
+
+    // Story 2.11: register the production EmailChannel. IMAP_HOST /
+    // IMAP_USERNAME / IMAP_PASSWORD must all be set; otherwise the
+    // channel is disabled cleanly. INTAKE_EMAIL_ALLOWED_SENDERS empty
+    // → deny-all (architecture §9, phase-2/DEBT.md #4) — the channel
+    // logs `intake_sender_rejected{reason:"allowlist_empty"}` for
+    // every dropped message.
+    state = state.register_email_channel(EmailChannelEnv::from_env());
+
     let rollback_flag = std::env::var("SEASONED_HAND_ROLLBACK_ON_VERIFIER_FAIL")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);

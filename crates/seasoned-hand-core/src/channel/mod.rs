@@ -29,6 +29,7 @@
 
 pub mod chat;
 pub mod delivery;
+pub mod email;
 pub mod intake;
 pub mod notify;
 pub mod webhook;
