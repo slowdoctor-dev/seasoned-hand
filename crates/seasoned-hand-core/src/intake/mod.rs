@@ -10,8 +10,10 @@
 //! refs: /specs/phase-2/architecture.md §2.8, §3 V008
 //! refs: /specs/phase-2/stories/story-2.3.md
 
+pub mod router;
 pub mod store;
 
+pub use router::{HandleOutcome, IntakeRouter, IntakeRouterError, RejectionReason};
 pub use store::{IntakeEventRow, IntakeEventStore, IntakeStoreError};
 
 #[cfg(test)]

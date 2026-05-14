@@ -1,9 +1,17 @@
-use serde_json::json;
+use std::sync::Arc;
 
+use async_trait::async_trait;
+use serde_json::json;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+
+use super::router::{HandleOutcome, IntakeRouter, RejectionReason};
 use super::{IntakeEventStore, IntakeStoreError};
-use crate::channel::{DeliveryTarget, IntakeEvent};
+use crate::channel::{
+    ChannelError, ChannelRegistration, ChannelRegistry, DeliveryTarget, IntakeEvent, IntakeProvider,
+};
 use crate::db;
-use crate::project::{NewProject, NewTask, ProjectStore, TaskStore};
+use crate::project::{NewProject, NewTask, ProjectStore, TaskStatus, TaskStore};
 
 async fn open_pool() -> db::DbPool {
     db::open(":memory:").await.expect("open in-memory db")
@@ -163,4 +171,210 @@ async fn intake_event_list_by_channel_paginates() {
         .await
         .expect("list email");
     assert_eq!(emails.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Story 2.5: IntakeRouter tests.
+// ---------------------------------------------------------------------------
+
+/// Minimal `IntakeProvider` stub used only so the registry has a
+/// matching name registered — the router validates `event.channel`
+/// against the registry, but the provider's `run` lifecycle is the
+/// concern of story 2.10+ concrete channels.
+struct StubIntake {
+    name: &'static str,
+}
+
+#[async_trait]
+impl IntakeProvider for StubIntake {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    async fn run(
+        &self,
+        _sink: mpsc::Sender<IntakeEvent>,
+        shutdown: CancellationToken,
+    ) -> Result<(), ChannelError> {
+        shutdown.cancelled().await;
+        Ok(())
+    }
+}
+
+fn registry_with(name: &'static str) -> Arc<ChannelRegistry> {
+    let mut reg = ChannelRegistry::new();
+    let stub = Arc::new(StubIntake { name });
+    reg.register(ChannelRegistration::new(name).with_intake(stub as Arc<dyn IntakeProvider>));
+    Arc::new(reg)
+}
+
+async fn router_harness(
+    channel_name: &'static str,
+) -> (
+    IntakeRouter,
+    Arc<IntakeEventStore>,
+    Arc<TaskStore>,
+    Arc<ProjectStore>,
+) {
+    let pool = open_pool().await;
+    let intake_store = Arc::new(IntakeEventStore::new(pool.clone()));
+    let task_store = Arc::new(TaskStore::new(pool.clone()));
+    let project_store = Arc::new(ProjectStore::new(pool));
+    let registry = registry_with(channel_name);
+    let router = IntakeRouter::new(
+        intake_store.clone(),
+        task_store.clone(),
+        project_store.clone(),
+        registry,
+    );
+    (router, intake_store, task_store, project_store)
+}
+
+#[tokio::test]
+async fn intake_router_persists_and_creates_task() {
+    let (router, intake_store, task_store, project_store) = router_harness("webhook").await;
+
+    let event = sample_event("webhook", "req-001", 10_000);
+    let outcome = router.handle_event(event).await.expect("handle ok");
+    let (intake_event_id, task_id) = match outcome {
+        HandleOutcome::Created {
+            intake_event_id,
+            task_id,
+        } => (intake_event_id, task_id),
+        other => panic!("expected Created, got {other:?}"),
+    };
+
+    // intake row persisted and linked
+    let row = intake_store
+        .get_by_intake_id("webhook", "req-001")
+        .await
+        .unwrap()
+        .expect("intake row");
+    assert_eq!(row.id, intake_event_id);
+    assert_eq!(row.task_id.as_deref(), Some(task_id.as_str()));
+
+    // task created in drafted status
+    let task = task_store.get(&task_id).await.expect("task row");
+    assert_eq!(task.status, TaskStatus::Drafted);
+    assert!(task.title.starts_with("Summarize"));
+
+    // default Inbox project materialised on first miss
+    let projects = project_store
+        .list(None, None, 50)
+        .await
+        .expect("list projects");
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].title, "Inbox");
+}
+
+#[tokio::test]
+async fn intake_router_rejects_duplicate_intake_id() {
+    let (router, intake_store, _task_store, _project_store) = router_harness("webhook").await;
+
+    let evt = sample_event("webhook", "dup-x", 20_000);
+    let first = router.handle_event(evt.clone()).await.expect("first ok");
+    assert!(matches!(first, HandleOutcome::Created { .. }));
+
+    let second = router.handle_event(evt).await.expect("second ok");
+    assert_eq!(second, HandleOutcome::DuplicateSkipped);
+
+    // Still exactly one intake row.
+    let rows = intake_store
+        .list_by_channel("webhook", None, 50)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+}
+
+#[tokio::test]
+async fn intake_router_rejects_empty_brief() {
+    let (router, _intake_store, task_store, project_store) = router_harness("webhook").await;
+    let mut evt = sample_event("webhook", "empty-1", 30_000);
+    evt.brief_input = "   \n  ".into();
+
+    let outcome = router.handle_event(evt).await.expect("rejected ok");
+    assert_eq!(
+        outcome,
+        HandleOutcome::Rejected(RejectionReason::EmptyBrief)
+    );
+
+    // Nothing persisted.
+    let projects = project_store.list(None, None, 50).await.unwrap();
+    assert!(projects.is_empty());
+    let task_pages = task_store
+        .list_by_project("nope", None, None, 50)
+        .await
+        .unwrap();
+    assert!(task_pages.is_empty());
+}
+
+#[tokio::test]
+async fn intake_router_rejects_unregistered_channel() {
+    let (router, _intake_store, _task_store, _project_store) = router_harness("webhook").await;
+    let evt = sample_event("ghost", "g-1", 40_000);
+    let outcome = router.handle_event(evt).await.expect("rejected ok");
+    assert_eq!(
+        outcome,
+        HandleOutcome::Rejected(RejectionReason::UnknownChannel("ghost".into()))
+    );
+}
+
+#[tokio::test]
+async fn intake_router_uses_explicit_project_id_when_present() {
+    let (router, _intake_store, task_store, project_store) = router_harness("webhook").await;
+
+    // Pre-seed a project so the metadata.project_id lookup hits.
+    let pid = project_store
+        .insert(NewProject {
+            tenant_id: None,
+            title: "Existing".into(),
+            description: None,
+        })
+        .await
+        .unwrap();
+
+    let mut evt = sample_event("webhook", "explicit-1", 50_000);
+    evt.metadata = json!({ "project_id": pid });
+
+    let outcome = router.handle_event(evt).await.expect("ok");
+    let task_id = match outcome {
+        HandleOutcome::Created { task_id, .. } => task_id,
+        other => panic!("expected Created, got {other:?}"),
+    };
+
+    let task = task_store.get(&task_id).await.unwrap();
+    assert_eq!(task.project_id, pid);
+
+    // Inbox NOT created — only the pre-seeded "Existing" project exists.
+    let projects = project_store.list(None, None, 50).await.unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].title, "Existing");
+}
+
+/// Side-test: confirm the runner respects the shutdown token and
+/// drains in-flight events instead of dropping them. Belt-and-braces
+/// for the long-lived `run()` loop wired into `AppState`.
+#[tokio::test]
+async fn intake_router_run_drains_then_exits_on_shutdown() {
+    let (router, intake_store, _task_store, _project_store) = router_harness("webhook").await;
+    let router = Arc::new(router);
+
+    let (tx, rx) = mpsc::channel::<IntakeEvent>(8);
+    let shutdown = CancellationToken::new();
+    let runner_router = router.clone();
+    let runner_shutdown = shutdown.clone();
+    let handle = tokio::spawn(async move {
+        runner_router.run(rx, runner_shutdown).await;
+    });
+
+    tx.send(sample_event("webhook", "run-1", 1)).await.unwrap();
+    tx.send(sample_event("webhook", "run-2", 2)).await.unwrap();
+    drop(tx);
+    handle.await.expect("runner");
+    shutdown.cancel(); // no-op, runner already exited
+
+    let rows = intake_store
+        .list_by_channel("webhook", None, 50)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
 }

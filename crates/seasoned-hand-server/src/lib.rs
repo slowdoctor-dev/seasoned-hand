@@ -24,14 +24,14 @@ use seasoned_hand_core::channel::ChannelRegistry;
 use seasoned_hand_core::cost::{CostClient, CostSnapshot};
 use seasoned_hand_core::db::DbPool;
 use seasoned_hand_core::deliverable::DeliverableStore;
-use seasoned_hand_core::delivery::DeliveryEventStore;
+use seasoned_hand_core::delivery::{DeliveryEventStore, DeliveryRouter};
 use seasoned_hand_core::dispatch::mask::DefaultMaskPolicy;
 use seasoned_hand_core::dispatch::{
     ToolDispatcher,
     hooks::{EventEmittingHook, InvalidationHook},
 };
 use seasoned_hand_core::events::{EventQuery, EventStore, EventType, sqlite::SqliteEventStore};
-use seasoned_hand_core::intake::IntakeEventStore;
+use seasoned_hand_core::intake::{IntakeEventStore, IntakeRouter};
 use seasoned_hand_core::llm::LlmClient;
 use seasoned_hand_core::notify::NotificationsSentStore;
 use seasoned_hand_core::plan::PlanManager;
@@ -126,6 +126,13 @@ pub struct AppState {
     /// at boot via `with_channels` before the IntakeRouter spawns
     /// (story 2.5).
     pub channels: Arc<ChannelRegistry>,
+    /// Story 2.5: IntakeRouter consumes the channel-framework mpsc
+    /// and seeds Tasks. Built referencing `self.channels`;
+    /// `with_channels` rebuilds it so the registry Arc stays in sync.
+    pub intake_router: Arc<IntakeRouter>,
+    /// Story 2.5: DeliveryRouter dispatches completed deliverables.
+    /// Built referencing `self.channels`; rebuilt by `with_channels`.
+    pub delivery_router: Arc<DeliveryRouter>,
 }
 
 /// Story 2.20: configuration bundle for the NarratorHook's
@@ -221,6 +228,23 @@ impl AppState {
         // Story 2.4: empty registry — main.rs registers concrete
         // channels via `with_channels` after stories 2.9–2.13 land.
         let channels = Arc::new(ChannelRegistry::new());
+        // Story 2.5: routers reference the (empty for now) registry
+        // Arc. `with_channels` swaps the registry and rebuilds both
+        // routers so the slot stays consistent.
+        let intake_router = Arc::new(IntakeRouter::new(
+            intake_events.clone(),
+            tasks_store.clone(),
+            projects.clone(),
+            channels.clone(),
+        ));
+        let delivery_router = Arc::new(DeliveryRouter::new(
+            channels.clone(),
+            delivery_events.clone(),
+            deliverables.clone(),
+            intake_events.clone(),
+            events.clone(),
+            db.clone(),
+        ));
         Self {
             db,
             redis,
@@ -252,14 +276,35 @@ impl AppState {
             skills,
             playbooks,
             channels,
+            intake_router,
+            delivery_router,
         }
     }
 
     /// Story 2.4: install a populated [`ChannelRegistry`] built by
     /// main.rs at boot (after stories 2.9–2.13 register concrete
     /// channels). Tests skip this and inherit the empty default.
+    ///
+    /// Story 2.5: also rebuilds `intake_router` + `delivery_router`
+    /// so both hold the freshly-populated registry Arc. The routers
+    /// store the registry by Arc<ChannelRegistry>, so the original
+    /// (empty) Arc would otherwise stay live in their slots.
     pub fn with_channels(mut self, channels: ChannelRegistry) -> Self {
         self.channels = Arc::new(channels);
+        self.intake_router = Arc::new(IntakeRouter::new(
+            self.intake_events.clone(),
+            self.tasks.clone(),
+            self.projects.clone(),
+            self.channels.clone(),
+        ));
+        self.delivery_router = Arc::new(DeliveryRouter::new(
+            self.channels.clone(),
+            self.delivery_events.clone(),
+            self.deliverables.clone(),
+            self.intake_events.clone(),
+            self.events.clone(),
+            self.db.clone(),
+        ));
         self
     }
 
@@ -770,7 +815,116 @@ pub fn app(state: AppState) -> Router {
             "/v1/sessions/:id/checkpoints/:checkpoint_id/rollback",
             axum::routing::post(post_checkpoint_rollback_handler),
         )
+        // Story 2.5: channel introspection.
+        .route("/v1/channels", get(list_channels_handler))
+        .route("/v1/channels/:name/health", get(get_channel_health_handler))
+        .route(
+            "/v1/channels/:name/test",
+            axum::routing::post(post_channel_test_handler),
+        )
         .with_state(state)
+}
+
+// ---------------------------------------------------------------------------
+// Story 2.5: channel HTTP routes.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct ChannelHealthDto {
+    name: String,
+    capabilities: Vec<&'static str>,
+}
+
+impl From<seasoned_hand_core::channel::ChannelHealth> for ChannelHealthDto {
+    fn from(h: seasoned_hand_core::channel::ChannelHealth) -> Self {
+        Self {
+            name: h.name,
+            capabilities: h.capabilities,
+        }
+    }
+}
+
+async fn list_channels_handler(State(state): State<AppState>) -> Json<Vec<ChannelHealthDto>> {
+    let snapshot = state
+        .channels
+        .health()
+        .into_iter()
+        .map(ChannelHealthDto::from)
+        .collect();
+    Json(snapshot)
+}
+
+async fn get_channel_health_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<ChannelHealthDto>, (StatusCode, Json<ApiError>)> {
+    state
+        .channels
+        .health()
+        .into_iter()
+        .find(|h| h.name == name)
+        .map(ChannelHealthDto::from)
+        .map(Json)
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "channel_not_found".into(),
+                }),
+            )
+        })
+}
+
+#[derive(Debug, Deserialize)]
+struct ChannelTestQuery {
+    role: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ChannelTestResponse {
+    name: String,
+    role: String,
+    ok: bool,
+}
+
+/// Phase 2 stub: confirm `channel` is registered AND has the requested
+/// role implemented. Real synthetic round-trips land per-channel in
+/// stories 2.9–2.13 (each can specialise `dry-run`).
+async fn post_channel_test_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Query(q): Query<ChannelTestQuery>,
+) -> Result<Json<ChannelTestResponse>, (StatusCode, Json<ApiError>)> {
+    let role = q.role.as_deref().unwrap_or("delivery");
+    let registered = match role {
+        "intake" => state.channels.get_intake(&name).is_some(),
+        "delivery" => state.channels.get_delivery(&name).is_some(),
+        "notify" => state.channels.get_notify(&name).is_some(),
+        other => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: format!("unknown role: {other}"),
+                }),
+            ));
+        }
+    };
+    if !registered {
+        // Distinguish channel-missing from role-missing so operators
+        // know whether to fix the registration or pick a different role.
+        let channel_exists = state.channels.health().iter().any(|h| h.name == name);
+        let err = if channel_exists {
+            "role_not_implemented"
+        } else {
+            "channel_not_found"
+        };
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: err.into() })));
+    }
+    Ok(Json(ChannelTestResponse {
+        name,
+        role: role.to_string(),
+        ok: true,
+    }))
 }
 
 // ---------------------------------------------------------------------------

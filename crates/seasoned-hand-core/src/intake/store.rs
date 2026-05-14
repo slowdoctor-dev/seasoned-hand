@@ -86,6 +86,32 @@ impl IntakeEventStore {
         Ok(id)
     }
 
+    /// Look up the intake row that produced a given task. Used by the
+    /// DeliveryRouter (story 2.5) to resolve the default `reply_target`
+    /// when the task itself does not override it.
+    pub async fn get_by_task_id(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<IntakeEventRow>, IntakeStoreError> {
+        let tid = task_id.to_string();
+        let row: Option<RawRow> = self
+            .pool
+            .with_conn(move |conn| -> rusqlite::Result<Option<RawRow>> {
+                let mut stmt = conn.prepare(
+                    "SELECT id, tenant_id, channel, intake_id, brief_input, \
+                            reply_target, metadata, task_id, received_at \
+                       FROM intake_events WHERE task_id = ? LIMIT 1",
+                )?;
+                let mut rows = stmt.query_map(params![tid], RawRow::from_row)?;
+                match rows.next() {
+                    Some(row) => Ok(Some(row?)),
+                    None => Ok(None),
+                }
+            })
+            .await?;
+        row.map(RawRow::into_event).transpose()
+    }
+
     pub async fn get_by_intake_id(
         &self,
         channel: &str,

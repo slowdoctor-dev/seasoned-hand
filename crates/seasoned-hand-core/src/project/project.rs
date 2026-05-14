@@ -230,6 +230,60 @@ impl ProjectStore {
         Ok(())
     }
 
+    /// Resolve the "Inbox" fallback project for `tenant_id`, creating
+    /// it on first use. Backs the IntakeRouter's default-project path
+    /// (story 2.5) when an incoming brief carries no explicit
+    /// `metadata.project_id`. The lookup matches the canonical
+    /// `"Inbox"` title scoped to `tenant_id`; on miss we INSERT with
+    /// `status = active`. Two concurrent calls on the same tenant may
+    /// race and create two Inbox rows — Phase 2 is single-operator so
+    /// this is informational, and Phase 5 multi-tenant will add a
+    /// UNIQUE(tenant_id, title) constraint when it matters.
+    pub async fn find_or_create_inbox(
+        &self,
+        tenant_id: Option<&str>,
+    ) -> Result<String, ProjectError> {
+        let tid_owned = tenant_id.map(str::to_string);
+        let existing: Option<String> = self
+            .pool
+            .with_conn({
+                let tid = tid_owned.clone();
+                move |conn| -> rusqlite::Result<Option<String>> {
+                    let mut rows = match tid.as_deref() {
+                        Some(t) => {
+                            let mut stmt = conn.prepare(
+                                "SELECT id FROM projects \
+                                  WHERE tenant_id = ? AND title = 'Inbox' \
+                                  ORDER BY created_at ASC LIMIT 1",
+                            )?;
+                            stmt.query_map(params![t], |row| row.get::<_, String>(0))?
+                                .collect::<rusqlite::Result<Vec<_>>>()?
+                        }
+                        None => {
+                            let mut stmt = conn.prepare(
+                                "SELECT id FROM projects \
+                                  WHERE tenant_id IS NULL AND title = 'Inbox' \
+                                  ORDER BY created_at ASC LIMIT 1",
+                            )?;
+                            stmt.query_map([], |row| row.get::<_, String>(0))?
+                                .collect::<rusqlite::Result<Vec<_>>>()?
+                        }
+                    };
+                    Ok(rows.pop())
+                }
+            })
+            .await?;
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+        self.insert(NewProject {
+            tenant_id: tid_owned,
+            title: "Inbox".into(),
+            description: Some("Default fallback for briefs without a project".into()),
+        })
+        .await
+    }
+
     pub async fn set_status(&self, id: &str, status: ProjectStatus) -> Result<(), ProjectError> {
         let id_owned = id.to_string();
         let now = now_micros();

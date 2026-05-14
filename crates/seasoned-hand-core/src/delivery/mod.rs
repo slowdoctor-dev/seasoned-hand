@@ -9,8 +9,10 @@
 //! refs: /specs/phase-2/architecture.md §2.9, §3 V008
 //! refs: /specs/phase-2/stories/story-2.3.md
 
+pub mod router;
 pub mod store;
 
+pub use router::{DEFAULT_RETRY_DELAY, DeliveryRouter, DeliveryRouterError};
 pub use store::{DeliveryEventRow, DeliveryEventStore, DeliveryStoreError, NewDeliveryEvent};
 
 #[cfg(test)]

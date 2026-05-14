@@ -148,7 +148,7 @@
   columns). `channel::delivery` `pub use`s it so `DeliverySink::deliver`
   stays self-contained and 2.4 / 2.5 callers see no path change.
 
-### 11. `DeliverableStore::mark_delivered` is a row-existence stub
+### ~~11. `DeliverableStore::mark_delivered` is a row-existence stub~~ — CLOSED in story 2.5
 - **Origin**: story 2.3, `crates/seasoned-hand-core/src/deliverable/store.rs`
 - **Severity**: **Low**
 - **What**: `mark_delivered(id)` only validates the deliverable row
@@ -164,6 +164,67 @@
   the existence guard before appending a `delivery_events` row; story
   2.15 owns appending to the manifest's `delivered_to[]` array via
   `attach_provenance`. No new column needed.
+- **Resolution (story 2.5)**: `DeliveryRouter::deliver_task` calls
+  `deliverable_store.mark_delivered(deliverable.id)` immediately
+  before invoking the `DeliverySink` (see
+  `crates/seasoned-hand-core/src/delivery/router.rs`). The contract
+  is honoured — the guard returns `DeliverableError::NotFound` when
+  the row is missing, preventing a phantom `delivery_events` row from
+  being persisted against a deliverable that doesn't exist. Story
+  2.15 will still own the manifest `delivered_to[]` write.
+
+### 12. IntakeRouter cannot emit `intake_rejected` Misc or 4xx
+- **Origin**: story 2.5, `crates/seasoned-hand-core/src/intake/router.rs`
+- **Severity**: **Low**
+- **What**: Validation failures (empty brief, unregistered channel)
+  surface as `HandleOutcome::Rejected(reason)` and a
+  `tracing::warn!` line — but the spec's
+  `intake_rejected{reason}` Misc event and 4xx-back-to-source-channel
+  responses are NOT emitted.
+- **Why**: `Misc` events require an existing `sessions.id` FK target
+  (see `events::sqlite::SqliteEventStore::append`'s session-existence
+  guard at lines 62–71). Intake rejection happens *before* task /
+  session creation, so there is no anchor to attach the event to. The
+  matching 4xx response needs the `POST /v1/intake/webhook` endpoint,
+  which story 2.10 (WebhookChannel) ships.
+- **Pay down**: Story 2.10 — once `POST /v1/intake/webhook` exists,
+  validation rejections short-circuit there with the 4xx response.
+  Story 2.18+ may also introduce a per-tenant "system session" that
+  pre-task Misc events can land on (defer until a second feature
+  needs it; YAGNI for 2.5).
+
+### 13. IntakeRouter does not spawn the Initializer
+- **Origin**: story 2.5, `crates/seasoned-hand-core/src/intake/router.rs`
+- **Severity**: **Low**
+- **What**: After persisting the intake row + creating the `drafted`
+  Task + linking the two, the router *stops*. The Initializer (Phase
+  1 1.4 entry point) is never invoked, so no Brief is authored and
+  the Task sits in `drafted` forever in production.
+- **Why**: Story 2.5's spec acceptance treats Initializer spawn as
+  out-of-scope ("spawns the Initializer (legacy 1.4 entry point; the
+  confirmation gate from 2.8 lands later)") — story 2.8 introduces
+  the briefing-confirmation gate that owns the spawn surface.
+  Coupling 2.5 to 1.4's existing async-task spawn would prematurely
+  commit to a shape that 2.8 may need to refactor.
+- **Pay down**: Story 2.8 wires an `InitializerSpawn` handle through
+  the `IntakeRouter` constructor and invokes it from
+  `handle_event(...)` after the task is created.
+
+### 14. `ProjectStore::find_or_create_inbox` has no UNIQUE backstop
+- **Origin**: story 2.5, `crates/seasoned-hand-core/src/project/project.rs`
+- **Severity**: **Low**
+- **What**: V006's `projects` table has no `UNIQUE (tenant_id, title)`
+  constraint, so two concurrent `find_or_create_inbox(...)` calls on
+  the same tenant can both fall through to INSERT and create two
+  `Inbox` rows. The router treats whichever the next SELECT returns
+  as canonical, but the orphan stays.
+- **Why**: Phase 2 is single-operator, so concurrent intake at the
+  same tenant is implausible (`hand:0.1` is one human). Adding a
+  UNIQUE migration just to defend against an impossible race is
+  premature.
+- **Pay down**: Phase 5 multi-tenant — when concurrent intake at the
+  same tenant becomes realistic, ship `V0NN_unique_tenant_title.sql`
+  with a one-time dedup of any existing duplicate Inbox rows.
 
 ---
 
