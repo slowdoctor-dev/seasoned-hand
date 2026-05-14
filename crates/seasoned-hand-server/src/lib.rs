@@ -20,20 +20,27 @@ use seasoned_hand_core::agent::narrate::NarratorHook;
 use seasoned_hand_core::agent::{AgentRunner, AgentRunnerDeps};
 use seasoned_hand_core::browser::tracks::PostBrowserActionHook;
 use seasoned_hand_core::capability::ModelCapabilities;
+use seasoned_hand_core::channel::ChannelRegistry;
 use seasoned_hand_core::cost::{CostClient, CostSnapshot};
 use seasoned_hand_core::db::DbPool;
+use seasoned_hand_core::deliverable::DeliverableStore;
+use seasoned_hand_core::delivery::DeliveryEventStore;
 use seasoned_hand_core::dispatch::mask::DefaultMaskPolicy;
 use seasoned_hand_core::dispatch::{
     ToolDispatcher,
     hooks::{EventEmittingHook, InvalidationHook},
 };
 use seasoned_hand_core::events::{EventQuery, EventStore, EventType, sqlite::SqliteEventStore};
+use seasoned_hand_core::intake::IntakeEventStore;
 use seasoned_hand_core::llm::LlmClient;
+use seasoned_hand_core::notify::NotificationsSentStore;
 use seasoned_hand_core::plan::PlanManager;
+use seasoned_hand_core::project::{ProjectStore, TaskStore};
 use seasoned_hand_core::pubsub::RedisPool;
 use seasoned_hand_core::router::{SlotName, SlotRouter};
 use seasoned_hand_core::sandbox::SandboxClient;
 use seasoned_hand_core::search::SearchClient;
+use seasoned_hand_core::skill::{PlaybookStore, SkillStore};
 use seasoned_hand_core::tools::register_builtin_tools;
 use seasoned_hand_core::verifier::{
     VerificationStore,
@@ -91,6 +98,34 @@ pub struct AppState {
     /// can call `attach_classifier(...)` on it after AppState
     /// construction — closes Phase 1 1.15 deferred plumbing.
     pub narrator: Arc<NarratorHook>,
+    /// Story 2.2: V006 `projects` persistence handle.
+    pub projects: Arc<ProjectStore>,
+    /// Story 2.2: V006 `tasks` persistence handle (state-machine
+    /// guarded transitions).
+    pub tasks: Arc<TaskStore>,
+    /// Story 2.3: V007 `deliverables` persistence handle. HTTP routes
+    /// land in 2.10 / 2.15 / 2.22.
+    pub deliverables: Arc<DeliverableStore>,
+    /// Story 2.3: V008 `intake_events` persistence handle. Consumed by
+    /// the IntakeRouter (story 2.5).
+    pub intake_events: Arc<IntakeEventStore>,
+    /// Story 2.3: V008 `delivery_events` persistence handle. Consumed
+    /// by the DeliveryRouter (story 2.5).
+    pub delivery_events: Arc<DeliveryEventStore>,
+    /// Story 2.3: V008 `notifications_sent` persistence handle.
+    /// Consumed by the NotifyWorker (story 2.5).
+    pub notifications_sent: Arc<NotificationsSentStore>,
+    /// Story 2.3 / DEBT #6: V009 `skills` reservation handle. Phase 2
+    /// never writes; Phase 3 Curator populates.
+    pub skills: Arc<SkillStore>,
+    /// Story 2.3 / DEBT #6: V009 `playbooks` reservation handle.
+    /// Phase 2 never writes; Phase 3 Curator populates.
+    pub playbooks: Arc<PlaybookStore>,
+    /// Story 2.4: registered channels (intake / delivery / notify
+    /// roles). Built empty by `AppState::new`; main.rs populates it
+    /// at boot via `with_channels` before the IntakeRouter spawns
+    /// (story 2.5).
+    pub channels: Arc<ChannelRegistry>,
 }
 
 /// Story 2.20: configuration bundle for the NarratorHook's
@@ -172,6 +207,20 @@ impl AppState {
             breakers: breakers.clone(),
             cancel_tokens: cancel_tokens.clone(),
         }));
+        // Story 2.3: Phase 2 OS-shape persistence handles. All eight
+        // stores share the same pool — concurrency is gated by the
+        // pool's inner `Mutex<Connection>`, so this is safe.
+        let projects = Arc::new(ProjectStore::new(db.clone()));
+        let tasks_store = Arc::new(TaskStore::new(db.clone()));
+        let deliverables = Arc::new(DeliverableStore::new(db.clone()));
+        let intake_events = Arc::new(IntakeEventStore::new(db.clone()));
+        let delivery_events = Arc::new(DeliveryEventStore::new(db.clone()));
+        let notifications_sent = Arc::new(NotificationsSentStore::new(db.clone()));
+        let skills = Arc::new(SkillStore::new(db.clone()));
+        let playbooks = Arc::new(PlaybookStore::new(db.clone()));
+        // Story 2.4: empty registry — main.rs registers concrete
+        // channels via `with_channels` after stories 2.9–2.13 land.
+        let channels = Arc::new(ChannelRegistry::new());
         Self {
             db,
             redis,
@@ -194,7 +243,24 @@ impl AppState {
             cancel_tokens,
             breakers,
             narrator,
+            projects,
+            tasks: tasks_store,
+            deliverables,
+            intake_events,
+            delivery_events,
+            notifications_sent,
+            skills,
+            playbooks,
+            channels,
         }
+    }
+
+    /// Story 2.4: install a populated [`ChannelRegistry`] built by
+    /// main.rs at boot (after stories 2.9–2.13 register concrete
+    /// channels). Tests skip this and inherit the empty default.
+    pub fn with_channels(mut self, channels: ChannelRegistry) -> Self {
+        self.channels = Arc::new(channels);
+        self
     }
 
     /// Story 2.20: attach the NarratorHook's classifier-slot LLM path.

@@ -116,10 +116,14 @@ fn sample_deliverable() -> Deliverable {
         task_id: "task-1".into(),
         tenant_id: None,
         format: "md".into(),
+        source_content_path: None,
+        source_content_sha256: None,
         rendered_content_path: "/workspace/.deliverables/deliv-1.md".into(),
         rendered_content_sha256: "0".repeat(64),
         content_size: 0,
+        citations: None,
         provenance_manifest: json!({}),
+        created_at: 0,
     }
 }
 

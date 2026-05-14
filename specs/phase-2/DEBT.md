@@ -122,7 +122,7 @@
 
 ## Story-introduced (chronological)
 
-### 10. `Deliverable` struct lives inside `channel/delivery.rs`
+### ~~10. `Deliverable` struct lives inside `channel/delivery.rs`~~ — CLOSED in story 2.3
 - **Origin**: story 2.4 (`93fff98`), `crates/seasoned-hand-core/src/channel/delivery.rs`
 - **Severity**: **Low**
 - **What**: The `Deliverable` placeholder struct (V007 column shape)
@@ -141,6 +141,29 @@
   `deliverable` module and have `channel::delivery` re-export. Either
   way, the existing `Deliverable` shape is the V007 column projection,
   so no breaking change to callers.
+- **Resolution (story 2.3)**: Chose **option (b)** — `Deliverable`
+  now lives in `crates/seasoned-hand-core/src/deliverable/` (the
+  canonical home, co-located with `DeliverableStore` + V007). The
+  struct is expanded to the full V007 column projection (all 12
+  columns). `channel::delivery` `pub use`s it so `DeliverySink::deliver`
+  stays self-contained and 2.4 / 2.5 callers see no path change.
+
+### 11. `DeliverableStore::mark_delivered` is a row-existence stub
+- **Origin**: story 2.3, `crates/seasoned-hand-core/src/deliverable/store.rs`
+- **Severity**: **Low**
+- **What**: `mark_delivered(id)` only validates the deliverable row
+  exists; it has no side effect on the row itself. V007 has no
+  `delivered_at` column, and the audit trail lives in V008
+  `delivery_events`, so the natural per-row stamp has nowhere to land.
+- **Why**: Story 2.3's scope is *plumbing*, not behavior — non-goals
+  explicitly defer DeliveryRouter wiring to story 2.5 and the
+  provenance manifest builder to story 2.15. The minimal honest stub
+  beats inventing a column or speculatively updating the manifest
+  here.
+- **Pay down**: Story 2.5 (DeliveryRouter) calls `mark_delivered` as
+  the existence guard before appending a `delivery_events` row; story
+  2.15 owns appending to the manifest's `delivered_to[]` array via
+  `attach_provenance`. No new column needed.
 
 ---
 

@@ -1,11 +1,18 @@
-//! `DeliverySink` role trait + `DeliveryTarget` / `DeliveryReceipt` / `Deliverable`.
+//! `DeliverySink` role trait + `DeliveryTarget` / `DeliveryReceipt`.
+//!
+//! The [`Deliverable`] shape itself lives in [`crate::deliverable`]
+//! since story 2.3 (V007); it's re-exported here so the `DeliverySink`
+//! trait signature stays self-contained. Closes Phase 2 DEBT #10.
 //!
 //! refs: /specs/phase-2/architecture.md §2.7, §2.9, §2.11
 //! refs: /specs/phase-2/stories/story-2.4.md
+//! refs: /specs/phase-2/stories/story-2.3.md
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+pub use crate::deliverable::Deliverable;
 
 use super::ChannelError;
 
@@ -36,31 +43,6 @@ pub struct DeliveryReceipt {
     pub delivered_at: i64,
     /// Raw transport response, retained for audit / debugging.
     pub raw_response: Value,
-}
-
-/// Minimal Deliverable shape needed for the routing layer. Story 2.3
-/// lands the V007 `deliverables` table + persistence; this struct
-/// mirrors the columns the routing layer references so the in-memory
-/// shape and the on-disk shape stay aligned. Story 2.3 may move this
-/// type into a dedicated `deliverable` module — until then it lives
-/// here so the [`DeliverySink`] trait can be declared self-contained
-/// in story 2.4.
-///
-/// refs: /specs/phase-2/architecture.md §3 V007
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Deliverable {
-    pub id: String,
-    pub task_id: String,
-    pub tenant_id: Option<String>,
-    /// One of: `docx | pdf | html | pptx | xlsx | csv | md | json | code | url`.
-    pub format: String,
-    /// Workspace path of the rendered artifact (sandbox-relative).
-    pub rendered_content_path: String,
-    pub rendered_content_sha256: String,
-    pub content_size: i64,
-    /// Provenance manifest as defined in architecture §2.11. Stored
-    /// here as opaque JSON so 2.4 doesn't redefine the schema.
-    pub provenance_manifest: Value,
 }
 
 /// Call-on-demand send of a [`Deliverable`] to a [`DeliveryTarget`].
