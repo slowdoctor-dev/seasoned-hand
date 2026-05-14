@@ -309,6 +309,37 @@
   separately as DEBT #15 (closes when story 2.8 lands the briefing
   gate).
 
+### 18. EmailChannel discards attachment bytes after extracting metadata
+- **Origin**: story 2.11, `crates/seasoned-hand-core/src/channel/email/mod.rs`
+  (`process_message`)
+- **Severity**: **Medium**
+- **What**: Inbound email attachments are parsed (filename, content type,
+  size, sha-able bytes) and surfaced into `IntakeEvent.metadata.attachments[]`,
+  but the byte payload is **not** persisted anywhere. The architecture
+  §2.8 contract is "drop into `/workspace/.intake/<intake_id>/` via the
+  worker's first session's SandboxClient (resolved post-hoc; if no
+  session yet, defer to attachment fetch on first task action)" — Phase
+  2 has neither a sandbox at intake time (Initializer spawn is DEBT
+  #13) nor a "fetch on first action" plumbing surface, so the simplest
+  honest behaviour is to drop the bytes and surface a metadata
+  manifest. Operators replying with attachments (e.g., "summarise this
+  PDF") will get a deliverable that can't reference the original file
+  content yet.
+- **Why**: A staging dir under `data/intake/<intake_id>/` would work
+  but introduces a new lifecycle question (TTL, GC, cross-session
+  hand-off). Wiring through the SandboxClient lazily would be the
+  right fix, but that requires either a Phase 2 DEBT #13 close-out (so
+  there's a session to hand off to) or a brand-new "intake staging"
+  store that Phase 2 doesn't otherwise need. Surfacing the attachment
+  metadata while skipping bytes is the smallest honest stub.
+- **Pay down**: Story 2.15 (provenance manifest builder) is the natural
+  caller — when the manifest's evidence-event collection runs, it can
+  also rehydrate intake attachments from a staging dir into the
+  sandbox. Alternatively, story 2.8 (briefing confirm + Initializer
+  spawn) closes DEBT #13, after which the IntakeRouter has a
+  SandboxClient handle and EmailChannel can write directly into the
+  per-session workspace. Whichever lands first owns the migration.
+
 ### ~~17. `AppState::with_channels` replaces (not merges) the chat baseline~~ — CLOSED in story 2.10
 - **Origin**: story 2.9, `crates/seasoned-hand-server/src/lib.rs`
 - **Severity**: **Low**
