@@ -28,6 +28,7 @@
 //! refs: /specs/phase-2/stories/story-2.4.md
 
 pub mod chat;
+pub mod cli;
 pub mod delivery;
 pub mod email;
 pub mod intake;

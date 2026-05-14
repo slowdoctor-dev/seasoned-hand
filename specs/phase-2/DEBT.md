@@ -510,6 +510,27 @@
   confirm_timeout: Duration::from_millis(100) }` via a test-only env
   override if the manual confirm is undesirable.
 
+### 23. CliChannel not registered into the production AppState
+- **Origin**: story 2.13, `crates/seasoned-hand-core/src/channel/cli.rs`
+- **Severity**: **Low**
+- **What**: `CliChannel` is built + unit-tested but never registered
+  into `AppState.channels` — the `register_cli_channel` builder
+  doesn't exist yet. Without registration, the channel framework's
+  `DeliveryRouter` can't route a `cli` reply_target, so the only
+  consumer is in-process tests.
+- **Why**: The CLI binary itself lands in story 2.21
+  (`seasoned-hand-cli` crate). Until that binary exists nothing
+  calls `CliChannel::register_pending(...)` + pushes an IntakeEvent,
+  so registering the channel now would leave dead routing slots
+  visible at `GET /v1/channels`. Story 2.13's spec ACs treat
+  registration as "when CLI subcommand launches the server" —
+  meaning the future binary's main(), not the current
+  headless-server main.rs.
+- **Pay down**: Story 2.21 adds `AppState::register_cli_channel()` +
+  calls it from the CLI binary's `task new` path. The same
+  `Arc<CliChannel>` is shared between the in-process IntakeEvent
+  push site and the registered `DeliverySink` slot.
+
 ---
 
 ## Categories quick-reference (same as Phase 0 / Phase 1)
