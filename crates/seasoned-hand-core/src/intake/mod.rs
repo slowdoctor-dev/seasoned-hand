@@ -11,9 +11,11 @@
 //! refs: /specs/phase-2/stories/story-2.3.md
 
 pub mod router;
+pub mod spawner;
 pub mod store;
 
 pub use router::{HandleOutcome, IntakeRouter, IntakeRouterError, RejectionReason};
+pub use spawner::{InitializerSpawner, SpawnError, SpawnReceipt, SpawnSpec};
 pub use store::{IntakeEventRow, IntakeEventStore, IntakeStoreError};
 
 #[cfg(test)]

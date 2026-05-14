@@ -124,6 +124,17 @@ async fn bad_json_does_not_close_connection() {
     assert_eq!(value["type"], "ack");
 }
 
+/// Story 2.8b: contract pin for the WS `task_create` Ack.
+///
+/// New flow (post-DEBT #15 close-out): the handler pushes the brief
+/// through the IntakeRouter, the attached `WsInitializerSpawner`
+/// inserts the sessions row + fires a tokio task that runs the
+/// confirm-gate Initializer, and the Ack hands back the pre-allocated
+/// `session_id`. The runner itself only starts once a `briefing_confirm`
+/// arrives — see [`ws_task_create_emits_briefing_then_confirm_acks_started`]
+/// for the full happy path. This test stays focused on the synchronous
+/// post-Ack contract (session row exists) so existing chat clients keep
+/// working unchanged.
 #[tokio::test]
 async fn task_create_returns_session_id_and_starts_runner() {
     let (url, state) = boot().await;
@@ -157,6 +168,156 @@ async fn task_create_returns_session_id_and_starts_runner() {
         })
         .await;
     assert!(exists);
+}
+
+/// Story 2.8b: full happy-path round-trip across the new wiring.
+/// 1. `task_create` Acks with a session_id and triggers the IntakeRouter
+///    + WsInitializerSpawner pipeline.
+/// 2. The Initializer's confirm gate emits `briefing_pending` + `briefing`
+///    Misc events into the session — verify they land in the events store.
+/// 3. The per-task briefing sender is registered in
+///    `AppState::briefing_senders` keyed by the new task_id.
+/// 4. `briefing_confirm` with `action: "confirm"` Acks ok=true; the
+///    forward into the per-task mpsc unblocks the confirm gate.
+/// 5. After cleanup the briefing sender slot is removed (drop guard
+///    inside the spawner's tokio task).
+#[tokio::test]
+async fn ws_task_create_emits_briefing_then_confirm_acks_started() {
+    let (url, state) = boot().await;
+    let (mut ws, _) = connect_async(url).await.unwrap();
+    ws.send(Message::Text(
+        json!({
+            "type": "command",
+            "id": "create-2",
+            "ts": 1,
+            "payload": { "cmd": "task_create", "input": "Plan my week" }
+        })
+        .to_string(),
+    ))
+    .await
+    .unwrap();
+    let value = recv_envelope(&mut ws).await;
+    assert_eq!(value["type"], "ack");
+    assert_eq!(value["ok"], true);
+    let session_id = value["session_id"].as_str().unwrap().to_string();
+
+    // Poll the events table until the briefing_pending Misc lands —
+    // the spawner's tokio task is fire-and-forget so the wall-clock
+    // gap depends on scheduler + planner-fallback latency.
+    let mut briefing_call_id: Option<String> = None;
+    let mut task_id: Option<String> = None;
+    for _ in 0..50 {
+        let session = session_id.clone();
+        let rows = state
+            .events
+            .query(
+                &session,
+                seasoned_hand_core::events::EventQuery {
+                    event_type: Some(seasoned_hand_core::events::EventType::Misc),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        for ev in rows {
+            let kind = ev.data.get("kind").and_then(|v| v.as_str());
+            if kind == Some("briefing_pending") {
+                briefing_call_id = ev
+                    .data
+                    .get("briefing_call_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                task_id = ev
+                    .data
+                    .get("task_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                break;
+            }
+        }
+        if briefing_call_id.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let call_id = briefing_call_id.expect("briefing_pending event did not arrive");
+    let task_id = task_id.expect("briefing_pending Misc carries task_id");
+
+    // The spawner registered a per-task briefing sender — `forward_briefing_confirm`
+    // will find it.
+    assert!(
+        state.briefing_senders.contains_key(&task_id),
+        "briefing_senders has entry for task_id while gate is waiting"
+    );
+
+    // Confirm the briefing — the Ack must be ok=true.
+    ws.send(Message::Text(
+        json!({
+            "type": "command",
+            "id": "confirm-1",
+            "ts": 2,
+            "payload": {
+                "cmd": "briefing_confirm",
+                "task_id": task_id,
+                "in_reply_to_call_id": call_id,
+                "action": "confirm",
+            }
+        })
+        .to_string(),
+    ))
+    .await
+    .unwrap();
+    let value = recv_envelope(&mut ws).await;
+    assert_eq!(value["type"], "ack");
+    assert_eq!(
+        value["ok"], true,
+        "briefing_confirm ack ok=true (sender found and message forwarded)"
+    );
+
+    // The spawner's tokio task removes the sender from the map after
+    // the gate returns. The Initializer's `seed_plan_and_run` failure
+    // (no sandbox in the test) drops the gate with Err, which still
+    // triggers the cleanup branch.
+    for _ in 0..40 {
+        if !state.briefing_senders.contains_key(&task_id) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        !state.briefing_senders.contains_key(&task_id),
+        "briefing sender removed after gate returns"
+    );
+}
+
+/// Story 2.8b: confirming a task with no pending briefing surfaces a
+/// descriptive error instead of silently 200'ing. The chat UI uses
+/// this to stop showing the briefing card if the user double-clicks
+/// confirm or arrives via deep link after auto-confirm fired.
+#[tokio::test]
+async fn ws_briefing_confirm_unknown_task_acks_not_pending() {
+    let (url, _state) = boot().await;
+    let (mut ws, _) = connect_async(url).await.unwrap();
+    ws.send(Message::Text(
+        json!({
+            "type": "command",
+            "id": "cf-x",
+            "ts": 1,
+            "payload": {
+                "cmd": "briefing_confirm",
+                "task_id": "no-such-task",
+                "in_reply_to_call_id": "no-such-call",
+                "action": "confirm",
+            }
+        })
+        .to_string(),
+    ))
+    .await
+    .unwrap();
+    let value = recv_envelope(&mut ws).await;
+    assert_eq!(value["type"], "ack");
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["error"], "no_pending_briefing");
 }
 
 /// Story 2.9: the WS `task_create` command now routes through the

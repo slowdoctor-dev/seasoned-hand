@@ -235,13 +235,17 @@ async fn intake_router_persists_and_creates_task() {
 
     let event = sample_event("webhook", "req-001", 10_000);
     let outcome = router.handle_event(event).await.expect("handle ok");
-    let (intake_event_id, task_id) = match outcome {
+    let (intake_event_id, task_id, session_id) = match outcome {
         HandleOutcome::Created {
             intake_event_id,
             task_id,
-        } => (intake_event_id, task_id),
+            session_id,
+        } => (intake_event_id, task_id, session_id),
         other => panic!("expected Created, got {other:?}"),
     };
+    // No spawner attached in this test harness, so the spawner-derived
+    // session_id stays `None` — task lands in `drafted` and never moves.
+    assert!(session_id.is_none(), "no spawner → no session_id");
 
     // intake row persisted and linked
     let row = intake_store
@@ -348,6 +352,130 @@ async fn intake_router_uses_explicit_project_id_when_present() {
     let projects = project_store.list(None, None, 50).await.unwrap();
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0].title, "Existing");
+}
+
+/// Story 2.8b: when an `InitializerSpawner` is attached, the router
+/// invokes it after persisting the drafted task and reflects the
+/// returned `session_id` in `HandleOutcome::Created`. Also confirms the
+/// spawner sees the canonical `task_id` (matching the DB row) and the
+/// raw `brief_input`, so the WS / webhook handlers can trust the
+/// surface for the briefing-confirm round-trip.
+#[tokio::test]
+async fn intake_router_invokes_spawner_on_created() {
+    use crate::intake::spawner::{InitializerSpawner, SpawnError, SpawnReceipt, SpawnSpec};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct CapturingSpawner {
+        seen: Mutex<Vec<SpawnSpec>>,
+        next_session_id: &'static str,
+    }
+    #[async_trait]
+    impl InitializerSpawner for CapturingSpawner {
+        async fn spawn(&self, spec: SpawnSpec) -> Result<SpawnReceipt, SpawnError> {
+            self.seen.lock().unwrap().push(spec);
+            Ok(SpawnReceipt {
+                session_id: self.next_session_id.into(),
+            })
+        }
+    }
+
+    let (router, _intake_store, task_store, _project_store) = router_harness("chat").await;
+    let spawner = Arc::new(CapturingSpawner {
+        next_session_id: "sess-fresh",
+        ..CapturingSpawner::default()
+    });
+    if router
+        .attach_initializer_spawner(spawner.clone() as Arc<dyn InitializerSpawner>)
+        .is_err()
+    {
+        panic!("first attach should succeed");
+    }
+    assert!(router.has_initializer_spawner());
+
+    // Double-attach is rejected (OnceLock semantics).
+    let alt = Arc::new(CapturingSpawner {
+        next_session_id: "sess-other",
+        ..CapturingSpawner::default()
+    });
+    assert!(
+        router
+            .attach_initializer_spawner(alt as Arc<dyn InitializerSpawner>)
+            .is_err()
+    );
+
+    let event = sample_event("chat", "ws:abc", 9_000);
+    let outcome = router.handle_event(event).await.expect("ok");
+    let (task_id, session_id) = match outcome {
+        HandleOutcome::Created {
+            task_id,
+            session_id,
+            ..
+        } => (task_id, session_id),
+        other => panic!("expected Created, got {other:?}"),
+    };
+    assert_eq!(session_id.as_deref(), Some("sess-fresh"));
+
+    {
+        let seen = spawner.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].task_id, task_id);
+        assert_eq!(seen[0].brief_input, "Summarize Q4 board deck");
+        assert!(seen[0].reply_target.is_some());
+    }
+
+    // Drafted task survives — the spawn is fire-and-forget; the
+    // confirm-gate run is what later moves it to `briefed → running`.
+    let task = task_store.get(&task_id).await.unwrap();
+    assert_eq!(task.status, TaskStatus::Drafted);
+}
+
+/// Story 2.8b: spawner errors do NOT tear the intake path down. The
+/// intake row + drafted task stay persisted; `Created.session_id` is
+/// `None` so the caller can surface "task accepted, but briefing didn't
+/// start" without losing the work.
+#[tokio::test]
+async fn intake_router_tolerates_spawner_error() {
+    use crate::intake::spawner::{InitializerSpawner, SpawnError, SpawnReceipt, SpawnSpec};
+
+    struct FailingSpawner;
+    #[async_trait]
+    impl InitializerSpawner for FailingSpawner {
+        async fn spawn(&self, _spec: SpawnSpec) -> Result<SpawnReceipt, SpawnError> {
+            Err(SpawnError::Other("simulated".into()))
+        }
+    }
+
+    let (router, intake_store, task_store, _project_store) = router_harness("chat").await;
+    if router
+        .attach_initializer_spawner(Arc::new(FailingSpawner) as Arc<dyn InitializerSpawner>)
+        .is_err()
+    {
+        panic!("attach should succeed");
+    }
+
+    let outcome = router
+        .handle_event(sample_event("chat", "ws:zzz", 1234))
+        .await
+        .expect("router does not propagate the spawner error");
+    match outcome {
+        HandleOutcome::Created {
+            session_id,
+            task_id,
+            ..
+        } => {
+            assert!(session_id.is_none(), "spawner failure → no session_id");
+            // Drafted task IS persisted and linked.
+            let task = task_store.get(&task_id).await.unwrap();
+            assert_eq!(task.status, TaskStatus::Drafted);
+        }
+        other => panic!("expected Created, got {other:?}"),
+    }
+    let rows = intake_store
+        .list_by_channel("chat", None, 50)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
 }
 
 /// Side-test: confirm the runner respects the shutdown token and

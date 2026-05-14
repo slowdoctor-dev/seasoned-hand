@@ -211,7 +211,7 @@
   exists. Email / Slack / other future intake channels will route
   rejection through the same 4xx surface.
 
-### 13. IntakeRouter does not spawn the Initializer
+### ~~13. IntakeRouter does not spawn the Initializer~~ — CLOSED in story 2.8b
 - **Origin**: story 2.5, `crates/seasoned-hand-core/src/intake/router.rs`
 - **Severity**: **Low**
 - **What**: After persisting the intake row + creating the `drafted`
@@ -227,17 +227,27 @@
 - **Pay down**: Story 2.8 wires an `InitializerSpawn` handle through
   the `IntakeRouter` constructor and invokes it from
   `handle_event(...)` after the task is created.
-- **Status (story 2.8)**: **Still open.** Story 2.8 landed
+- **Status (story 2.8)**: ~~Still open.~~ Story 2.8 landed
   `Initializer::run_with_confirmation` (Briefing emit + confirm gate +
   edit cap + auto-confirm) as a self-contained method with 6 unit
-  tests, but explicitly DID NOT wire the per-`briefing_call_id`
-  sender map onto `AppState` or hook the IntakeRouter into a spawn
-  path. The wiring (DashMap of `briefing_call_id →
-  mpsc::Sender<UserResponse>` on AppState, IntakeRouter ctor change,
-  WS `briefing_confirm` cmd handler, WS `task_create` refactor to
-  drop the legacy direct-spawn shim) is the larger half of the
-  blast-radius and overflowed the 2-hour solo budget. Tracked as
-  story 2.8b (or rolled into 2.14 deliverable-pipeline prep).
+  tests but deferred the IntakeRouter wiring to story 2.8b.
+- **Resolution (story 2.8b)**: A new
+  `InitializerSpawner` trait lives in
+  `crates/seasoned-hand-core/src/intake/spawner.rs`. The `IntakeRouter`
+  holds an `OnceLock<Arc<dyn InitializerSpawner>>` attached by
+  `attach_initializer_spawner(...)` and invoked from
+  `handle_event(...)` immediately after the drafted task is persisted +
+  linked. `HandleOutcome::Created` grew a `session_id: Option<String>`
+  that carries the spawner's receipt back to the caller. The
+  server-side concrete impl
+  [`WsInitializerSpawner`](../../crates/seasoned-hand-server/src/initializer_spawner.rs)
+  inserts the sessions row, registers the per-task
+  `mpsc::Sender<UserResponse>` in `AppState::briefing_senders`, and
+  fires a fire-and-forget tokio task that runs
+  `Initializer::run_with_confirmation` followed (on
+  `RunOutcome::Started`) by `AgentRunner::resume(...)`. Spawner errors
+  are non-fatal — the intake row + drafted task survive so the
+  operator can retry without losing the original brief.
 
 ### 14. `ProjectStore::find_or_create_inbox` has no UNIQUE backstop
 - **Origin**: story 2.5, `crates/seasoned-hand-core/src/project/project.rs`
@@ -255,7 +265,7 @@
   same tenant becomes realistic, ship `V0NN_unique_tenant_title.sql`
   with a one-time dedup of any existing duplicate Inbox rows.
 
-### 15. WS `task_create` still spawns the runner directly (Phase 0/1 shim)
+### ~~15. WS `task_create` still spawns the runner directly (Phase 0/1 shim)~~ — CLOSED in story 2.8b
 - **Origin**: story 2.9, `crates/seasoned-hand-server/src/ws.rs`
 - **Severity**: **Low**
 - **What**: The WS `task_create` handler now pushes an
@@ -282,10 +292,25 @@
   shells through to the Initializer). The
   `task_create_returns_session_id_and_starts_runner` test is updated
   or split.
-- **Status (story 2.8)**: **Still open** — see DEBT #13 status note
-  for the same reason. Story 2.8 landed the Initializer's
-  `run_with_confirmation` surface but not the WS / AppState wiring;
-  the legacy direct-spawn shim still owns chat-originated tasks.
+- **Resolution (story 2.8b)**: The WS `task_create` handler in
+  `crates/seasoned-hand-server/src/ws.rs` no longer inserts the
+  sessions row or spawns `AgentRunner::run` directly. It pre-allocates
+  a `session_id` (passed through `IntakeEvent.metadata.session_id_hint`
+  so the chat reply_target `session:<id>` resolves to the same id),
+  pushes the intake event into the `IntakeRouter`, and Acks with the
+  spawner-derived session_id once `HandleOutcome::Created` returns.
+  `max_steps` and `cost_cap_cents` ride along the same metadata
+  envelope so the spawner's eventual `AgentRunner::resume(req)` call
+  preserves the original chat-client knobs. The
+  `task_create_returns_session_id_and_starts_runner` test was kept
+  (still pins "session row exists post-Ack") and a new
+  `ws_task_create_emits_briefing_then_confirm_acks_started` test
+  exercises the briefing-emit → `briefing_confirm` → sender-removed
+  loop end-to-end. The new `BriefingConfirm` WS verb (`{cmd:
+  "briefing_confirm", task_id, in_reply_to_call_id, action, edits?}`)
+  routes through `forward_briefing_confirm(...)` which reads
+  `AppState::briefing_senders` keyed by task_id; unknown tasks Ack
+  with `error: "no_pending_briefing"`.
 
 ### ~~16. IntakeRouter `run` loop + shared mpsc not yet spawned in `main.rs`~~ — CLOSED in story 2.10
 - **Origin**: story 2.9, `crates/seasoned-hand-server/src/main.rs`
@@ -411,6 +436,79 @@
   pinned-table test (`task_state_machine_legal_transitions`) was
   updated to assert the new shape. No new column or migration — this
   is a code-level state machine refinement.
+
+### 20. Initializer confirm gate uses loose `in_reply_to_call_id` match
+- **Origin**: story 2.8b, `crates/seasoned-hand-core/src/agent/init/mod.rs`
+  (`run_confirm_gate`)
+- **Severity**: **Low**
+- **What**: The confirm gate consumes any `UserResponse` that arrives
+  on the per-task mpsc, regardless of whether
+  `response.in_reply_to_call_id` matches the current
+  `briefing_call_id`. If the operator submits `confirm` on a card whose
+  briefing was already superseded by an `edit` (and a fresh
+  `briefing_call_id` minted), the stale confirm still progresses the
+  gate.
+- **Why**: Story 2.8 chose the loose match to keep the 6-test surface
+  focused on action semantics; story 2.8b inherited that surface and
+  preserved it to avoid expanding the keystone wiring beyond DEBT
+  #13 / #15. A bounded mpsc with depth 8 caps the worst-case backlog
+  but doesn't enforce ordering.
+- **Pay down**: A future story tightens `run_confirm_gate` to drop
+  responses with `in_reply_to_call_id != current_call_id`, looping
+  back into `wait_for_response` instead of consuming them. Probably
+  bundled with story 2.23 (FE emits the cmd) so the FE + BE
+  call-id discipline ships together.
+
+### 21. Non-chat channels don't forward briefing events to the user
+- **Origin**: story 2.8b — webhook + email intake paths flow through
+  the same `IntakeRouter` + `WsInitializerSpawner` but the
+  `Briefing` / `briefing_pending` Misc events only surface to the WS
+  chat subscriber.
+- **Severity**: **Medium** (functional gap for non-chat intake)
+- **What**: The Initializer emits `briefing` + `briefing_pending` Misc
+  events into the per-session events stream. The ChatChannel
+  subscriber receives them via the existing WS subscribe mechanism
+  (the session_id matches). Webhook intake currently has no
+  back-channel for these events — the 202 Accepted response is the
+  only signal the caller sees. Email intake doesn't reply with a
+  briefing card either; the user can't confirm / edit until the
+  5-minute auto-confirm fires.
+- **Why**: Story 2.8b's scope is the wiring keystone (router →
+  spawner → mpsc). Adding per-channel briefing-forwarding for
+  webhook (POST to `reply_target.url` with a render of the brief +
+  return URL for confirm) and email (compose a reply with a
+  confirmation link) is its own pair of stories.
+- **Pay down**: Either (a) Phase 2 stretch story to add
+  briefing-forward hooks on each `DeliverySink` impl, or (b) accept
+  the 5-minute auto-confirm as the Phase 2 contract for non-chat
+  intake and defer the interactive flow to Phase 4/5 with
+  multi-user. Architecture §2.2 +
+  `specs/phase-2/stories/story-2.8.md` "Non-goals" section both
+  signpost this as out-of-scope for 2.8 itself.
+
+### 22. e2e + phase1_gaia tests don't send `briefing_confirm`
+- **Origin**: story 2.8b — pre-existing `#[ignore]` tests
+  (`crates/seasoned-hand-server/tests/e2e_phase0.rs`,
+  `tests/phase1_gaia.rs`) assume `task_create` auto-starts the runner.
+- **Severity**: **Low** (CI-green; only affects opt-in live runs)
+- **What**: Both tests send `task_create` and then wait for `Action` /
+  Message events. Under the post-2.8b flow the runner only starts
+  after a `briefing_confirm` arrives (or the 5-minute auto-confirm
+  fires). Both tests have shorter deadlines (180 s + per-step
+  timeouts), so a live run would hang on the briefing gate until
+  auto-confirm.
+- **Why**: The tests are gated `#[ignore]` and only run with explicit
+  env opt-in (`SH_E2E_WS_URL`, `SEASONED_HAND_PHASE1_SMOKE=1`). The
+  default `cargo test --workspace` skips them, so CI stays green.
+  Fixing them properly means reading the `briefing_pending` Misc
+  event and replying with a `briefing_confirm` cmd — a one-block
+  diff per test, but not in this story's keystone scope.
+- **Pay down**: Next time either test is run live, the operator (or a
+  Phase 2 closeout story) sends a `briefing_confirm` cmd between
+  receiving the first Misc event and waiting on Action events. The
+  test can also opt into `RunConfig { require_confirm: false,
+  confirm_timeout: Duration::from_millis(100) }` via a test-only env
+  override if the manual confirm is undesirable.
 
 ---
 

@@ -10,11 +10,13 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use seasoned_hand_core::agent::RunRequest;
+use seasoned_hand_core::agent::init::briefing::{BriefingAction, PartialBrief, UserResponse};
 use seasoned_hand_core::channel::{
     DeliveryTarget, IntakeEvent, chat::CHANNEL_NAME as CHAT_CHANNEL,
     chat::TARGET_SESSION_PREFIX as CHAT_TARGET_SESSION_PREFIX,
 };
 use seasoned_hand_core::events::{Event, EventQuery, EventStore, EventType, NewEvent};
+use seasoned_hand_core::intake::router::{HandleOutcome, RejectionReason};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -68,6 +70,38 @@ pub enum CommandPayload {
         in_reply_to_call_id: String,
         content: String,
     },
+    /// Story 2.8b: the briefing-confirm verb the chat client emits in
+    /// response to a `Briefing` Misc event. The Initializer's
+    /// per-task `mpsc::Receiver<UserResponse>` (registered in
+    /// [`AppState::briefing_senders`](crate::AppState::briefing_senders)
+    /// at `task_create` time) consumes the forwarded envelope and the
+    /// confirm gate progresses to `seed_plan_and_run` / `cancelled` /
+    /// next briefing emit.
+    ///
+    /// Wire shape mirrors architecture §4 — `{action: "confirm" |
+    /// "edit" | "cancel", edits?: PartialBrief}` — flattened so the
+    /// JSON form is `{cmd:"briefing_confirm", task_id, in_reply_to_call_id,
+    /// action, edits?}`. The `edits` field is only consulted when
+    /// `action == "edit"`.
+    BriefingConfirm {
+        task_id: String,
+        in_reply_to_call_id: String,
+        action: BriefingActionTag,
+        #[serde(default)]
+        edits: Option<PartialBrief>,
+    },
+}
+
+/// Wire-side tag for the `briefing_confirm` cmd's `action` field.
+/// Distinct from [`BriefingAction`] because the JSON payload pulls
+/// `edits` out into a sibling field rather than nesting under
+/// `Edit { edits }`; we convert in the WS handler.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BriefingActionTag {
+    Confirm,
+    Edit,
+    Cancel,
 }
 
 #[derive(Debug, Serialize)]
@@ -227,68 +261,137 @@ async fn handle_command(
             max_steps,
             cost_cap_cents,
         } => {
+            // Story 2.8b: chat task_create now flows through the
+            // IntakeRouter, which hands the drafted task off to the
+            // confirm-gate Initializer via the attached
+            // [`WsInitializerSpawner`]. The session_id is pre-allocated
+            // here so:
+            // 1. The Ack carries the same session_id the client must
+            //    subscribe to (preserves the Phase 0/1 contract).
+            // 2. The chat reply_target (`session:<id>`) encodes the same
+            //    id, so the DeliveryRouter can fan a Deliverable event
+            //    back to this exact subscriber.
+            //
+            // The spawner uses `session_id_hint` to reuse this id rather
+            // than mint a fresh one. Plan seeding + runner kickoff
+            // happen inside the spawner's tokio task once the user
+            // confirms the briefing — see Phase 2 DEBT #13 / #15.
             let session_id = Uuid::new_v4().to_string();
-            if let Err(error) = insert_session_row(state, &session_id, "RUNNING").await {
-                let _ = tx.send(ServerEnvelope::Ack {
-                    id: Uuid::new_v4().to_string(),
-                    r#ref: cmd_id,
-                    ok: false,
-                    error: Some(error.to_string()),
-                    session_id: None,
-                });
-                return;
+            let mut metadata = json!({ "ws_cmd_id": cmd_id, "session_id_hint": session_id });
+            if let Some(v) = max_steps
+                && let Some(obj) = metadata.as_object_mut()
+            {
+                obj.insert("max_steps".into(), serde_json::Value::Number(v.into()));
             }
-
-            // Story 2.9: route the brief through the channel framework's
-            // IntakeRouter so the chat panel participates uniformly with
-            // other intake channels. The router persists an
-            // `intake_events` row, finds/creates the tenant's Inbox
-            // project, and creates a `drafted` Task linked to the intake
-            // id. The Initializer spawn that turns the drafted Task into
-            // a running session is deferred to story 2.8 (Phase 2 DEBT
-            // #13); until that lands the legacy runner-spawn below is a
-            // backward-compatibility shim so existing chat clients keep
-            // working.
+            if let Some(v) = cost_cap_cents
+                && let Some(obj) = metadata.as_object_mut()
+            {
+                obj.insert("cost_cap_cents".into(), serde_json::Value::Number(v.into()));
+            }
             let intake_event = IntakeEvent {
                 channel: CHAT_CHANNEL.into(),
                 intake_id: format!("ws:{}", Uuid::new_v4()),
-                brief_input: input.clone(),
+                brief_input: input,
                 reply_target: Some(DeliveryTarget {
                     channel: CHAT_CHANNEL.into(),
                     target_ref: format!("{CHAT_TARGET_SESSION_PREFIX}{session_id}"),
                     metadata: json!({}),
                 }),
-                metadata: json!({ "ws_cmd_id": cmd_id }),
+                metadata,
                 tenant_id: None,
                 received_at: now_unix(),
             };
-            if let Err(error) = state.intake_router.handle_event(intake_event).await {
-                // Non-fatal: the legacy session+runner still proceeds so
-                // the WS contract (synchronous session_id) is preserved.
-                // The intake_events row is the only loss, and we record
-                // it as a warning for observability.
-                tracing::warn!(error = %error, %session_id,
-                    "ws task_create: IntakeRouter rejected event; falling back to legacy direct-run");
+            match state.intake_router.handle_event(intake_event).await {
+                Ok(HandleOutcome::Created {
+                    task_id,
+                    session_id: spawn_session_id,
+                    ..
+                }) => {
+                    let session_id = spawn_session_id.unwrap_or(session_id);
+                    let _ = tx.send(ServerEnvelope::Ack {
+                        id: Uuid::new_v4().to_string(),
+                        r#ref: cmd_id,
+                        ok: true,
+                        error: None,
+                        session_id: Some(session_id),
+                    });
+                    // Surface task_id alongside ack via an extra
+                    // event so frontend can correlate briefings to
+                    // this command. Architecture §4 reserves
+                    // task_create's Ack for session_id; task_id flows
+                    // via the briefing_pending Misc event the
+                    // Initializer emits.
+                    tracing::debug!(%task_id, "ws task_create accepted by IntakeRouter");
+                }
+                Ok(HandleOutcome::DuplicateSkipped) => {
+                    let _ = tx.send(ServerEnvelope::Ack {
+                        id: Uuid::new_v4().to_string(),
+                        r#ref: cmd_id,
+                        ok: false,
+                        error: Some("duplicate_intake_id".into()),
+                        session_id: None,
+                    });
+                }
+                Ok(HandleOutcome::Rejected(reason)) => {
+                    let reason_code = match reason {
+                        RejectionReason::EmptyBrief => "empty_brief",
+                        RejectionReason::UnknownChannel(_) => "unknown_channel",
+                    };
+                    let _ = tx.send(ServerEnvelope::Ack {
+                        id: Uuid::new_v4().to_string(),
+                        r#ref: cmd_id,
+                        ok: false,
+                        error: Some(format!("intake_rejected:{reason_code}")),
+                        session_id: None,
+                    });
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error,
+                        "ws task_create: IntakeRouter error");
+                    let _ = tx.send(ServerEnvelope::Ack {
+                        id: Uuid::new_v4().to_string(),
+                        r#ref: cmd_id,
+                        ok: false,
+                        error: Some(error.to_string()),
+                        session_id: None,
+                    });
+                }
             }
-
-            let runner = state.runner.clone();
-            let run_session = session_id.clone();
-            tokio::spawn(async move {
-                let _ = runner
-                    .run(RunRequest {
-                        session_id: run_session,
-                        input,
-                        max_steps: max_steps.unwrap_or(24),
-                        cost_cap_cents,
-                    })
-                    .await;
-            });
+        }
+        CommandPayload::BriefingConfirm {
+            task_id,
+            in_reply_to_call_id,
+            action,
+            edits,
+        } => {
+            // Story 2.8b: forward the user's confirm/edit/cancel action
+            // into the per-task mpsc the Initializer's confirm gate is
+            // waiting on. Missing sender → the gate already returned
+            // (Started / Cancelled / auto-confirmed) or the task_id was
+            // never spawned — the client gets `no_pending_briefing` so
+            // it can stop showing the briefing card.
+            let resolved_action = match action {
+                BriefingActionTag::Confirm => BriefingAction::Confirm,
+                BriefingActionTag::Cancel => BriefingAction::Cancel,
+                BriefingActionTag::Edit => BriefingAction::Edit {
+                    edits: edits.unwrap_or_default(),
+                },
+            };
+            let response = UserResponse {
+                in_reply_to_call_id,
+                action: resolved_action,
+            };
+            let outcome = forward_briefing_confirm(state, &task_id, response).await;
+            let (ok, error) = match outcome {
+                Ok(()) => (true, None),
+                Err(e) => (false, Some(e)),
+            };
             let _ = tx.send(ServerEnvelope::Ack {
                 id: Uuid::new_v4().to_string(),
                 r#ref: cmd_id,
-                ok: true,
-                error: None,
-                session_id: Some(session_id),
+                ok,
+                error,
+                session_id: None,
             });
         }
         CommandPayload::TaskPause { session_id } => {
@@ -668,25 +771,22 @@ fn event_envelope_from_value(value: Value) -> ServerEnvelope {
     }
 }
 
-async fn insert_session_row(
+async fn forward_briefing_confirm(
     state: &AppState,
-    session_id: &str,
-    state_name: &str,
+    task_id: &str,
+    response: UserResponse,
 ) -> Result<(), String> {
-    let session_id = session_id.to_string();
-    let state_name = state_name.to_string();
-    let now = now_micros();
-    state
-        .db
-        .with_conn(move |conn| {
-            conn.execute(
-                "INSERT INTO sessions (id, created_at, updated_at, state) VALUES (?, ?, ?, ?)",
-                (session_id, now, now, state_name),
-            )
-        })
+    let Some(sender) = state
+        .briefing_senders
+        .get(task_id)
+        .map(|entry| entry.value().clone())
+    else {
+        return Err("no_pending_briefing".into());
+    };
+    sender
+        .send(response)
         .await
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+        .map_err(|_| "briefing_receiver_closed".to_string())
 }
 
 async fn set_session_state(

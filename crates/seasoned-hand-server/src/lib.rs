@@ -14,6 +14,7 @@ use axum::{
 };
 use dashmap::DashMap;
 use seasoned_hand_core::agent::breaker::BreakerRegistry;
+use seasoned_hand_core::agent::init::briefing::UserResponse;
 use seasoned_hand_core::agent::init::feature_list::FeatureList;
 use seasoned_hand_core::agent::init::progress;
 use seasoned_hand_core::agent::narrate::NarratorHook;
@@ -55,7 +56,10 @@ use seasoned_hand_core::verifier::{
 };
 use serde::{Deserialize, Serialize};
 
+pub mod initializer_spawner;
 pub mod ws;
+
+pub use initializer_spawner::WsInitializerSpawner;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -150,6 +154,19 @@ pub struct AppState {
     /// Story 2.5: DeliveryRouter dispatches completed deliverables.
     /// Built referencing `self.channels`; rebuilt by `with_channels`.
     pub delivery_router: Arc<DeliveryRouter>,
+    /// Story 2.8b (Phase 2 DEBT #13 close-out): per-task mpsc sender
+    /// map keyed by `task_id`. The
+    /// [`WsInitializerSpawner`](crate::WsInitializerSpawner) inserts on
+    /// briefing-gate spawn; the WS `briefing_confirm` cmd handler
+    /// reads to forward `UserResponse` envelopes; the spawner's
+    /// background task removes once the confirm gate returns.
+    ///
+    /// Key choice: **task_id**, not `briefing_call_id`. The Initializer
+    /// holds one `mpsc::Receiver<UserResponse>` per task — each `edit`
+    /// action mints a fresh `briefing_call_id` but reuses the same
+    /// receiver, so per-call-id keying would require an additional
+    /// indirection without buying anything.
+    pub briefing_senders: Arc<DashMap<String, tokio::sync::mpsc::Sender<UserResponse>>>,
 }
 
 /// Story 2.20: configuration bundle for the NarratorHook's
@@ -409,7 +426,8 @@ impl AppState {
             events.clone(),
             db.clone(),
         ));
-        Self {
+        let briefing_senders = Arc::new(DashMap::new());
+        let state = Self {
             db,
             redis,
             events,
@@ -443,7 +461,15 @@ impl AppState {
             intake_router,
             delivery_router,
             webhook_intake_token: Arc::new(String::new()),
-        }
+            briefing_senders,
+        };
+        // Story 2.8b: attach the confirm-gate Initializer spawner so
+        // every Created intake event flows through to the briefing
+        // protocol. The spawner clones `state` for its own use — that's
+        // safe because `AppState` is `Clone` (all fields are `Arc`-shaped)
+        // and `OnceLock::set` is atomic.
+        attach_initializer_spawner(&state);
+        state
     }
 
     /// Story 2.10 / DEBT #17: merge one channel registration on top of
@@ -493,6 +519,11 @@ impl AppState {
             self.events.clone(),
             self.db.clone(),
         ));
+        // Story 2.8b: the IntakeRouter we just rebuilt has a fresh
+        // (empty) OnceLock for the spawner — re-attach so chat-baseline
+        // + every subsequent channel registration keep flowing through
+        // the briefing-confirm Initializer path.
+        attach_initializer_spawner(&self);
         self
     }
 
@@ -614,6 +645,29 @@ impl AppState {
     pub fn with_rollback_on_verifier_fail(mut self, enabled: bool) -> Self {
         self.checkpoint_rollback_on_verifier_fail = enabled;
         self
+    }
+}
+
+/// Story 2.8b: attach the production [`WsInitializerSpawner`] to a
+/// freshly-built [`AppState::intake_router`]. Called once from
+/// `AppState::new` and again after every `register_channel`, since
+/// both code paths swap in a brand-new `IntakeRouter` whose `OnceLock`
+/// starts empty.
+fn attach_initializer_spawner(state: &AppState) {
+    let spawner = Arc::new(WsInitializerSpawner::new(state.clone()))
+        as Arc<dyn seasoned_hand_core::intake::InitializerSpawner>;
+    if state
+        .intake_router
+        .attach_initializer_spawner(spawner)
+        .is_err()
+    {
+        // Belt-and-braces — `attach_initializer_spawner` is only called
+        // immediately after `IntakeRouter::new`, so the OnceLock should
+        // always be empty here. Logging keeps the symptom visible if
+        // a future refactor reuses the same router.
+        tracing::warn!(
+            "intake_router: initializer_spawner already attached — possible double-init"
+        );
     }
 }
 

@@ -24,13 +24,15 @@
 //!
 //! refs: /specs/phase-2/architecture.md §2.7, §2.8
 //! refs: /specs/phase-2/stories/story-2.5.md
+//! refs: /specs/phase-2/stories/story-2.8.md (DEBT #13 close-out: spawner attachment)
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use super::spawner::{InitializerSpawner, SpawnSpec};
 use super::store::{IntakeEventStore, IntakeStoreError};
 use crate::channel::{ChannelRegistry, IntakeEvent};
 use crate::project::{NewTask, ProjectError, ProjectStore, TaskError, TaskStore};
@@ -39,9 +41,15 @@ use crate::project::{NewTask, ProjectError, ProjectStore, TaskError, TaskStore};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HandleOutcome {
     /// Brand-new intake event → persisted, task created, link wired.
+    /// `session_id` is `Some` when an [`InitializerSpawner`] was
+    /// attached (story 2.8b — DEBT #13 close-out) and successfully
+    /// minted the per-task session row; `None` otherwise (router
+    /// without spawner, or spawner failed and was downgraded to a
+    /// `tracing::warn!`).
     Created {
         intake_event_id: String,
         task_id: String,
+        session_id: Option<String>,
     },
     /// A row with the same `(channel, intake_id)` already exists. The
     /// V008 UNIQUE constraint short-circuits the insert so the drain
@@ -74,6 +82,13 @@ pub struct IntakeRouter {
     task_store: Arc<TaskStore>,
     project_store: Arc<ProjectStore>,
     registry: Arc<ChannelRegistry>,
+    /// Story 2.8b: optional handoff to the Phase 2 confirm-gate
+    /// Initializer. Stays empty for routers built before AppState wires
+    /// the spawner (and for the core unit tests that don't need the
+    /// Initializer). `OnceLock` so attachment is single-shot and
+    /// safely shared across the spawned drain loop without mutex
+    /// contention.
+    initializer_spawner: OnceLock<Arc<dyn InitializerSpawner>>,
 }
 
 impl IntakeRouter {
@@ -88,7 +103,25 @@ impl IntakeRouter {
             task_store,
             project_store,
             registry,
+            initializer_spawner: OnceLock::new(),
         }
+    }
+
+    /// Story 2.8b: attach the AppState-side spawner exactly once.
+    /// Returns `Err(existing)` if a spawner is already attached so the
+    /// caller can decide whether to log + ignore or panic on double-init.
+    /// Production wiring calls this from
+    /// `AppState::new`'s tail; the chat / webhook integration tests
+    /// rely on it being set before `task_create` lands.
+    pub fn attach_initializer_spawner(
+        &self,
+        spawner: Arc<dyn InitializerSpawner>,
+    ) -> Result<(), Arc<dyn InitializerSpawner>> {
+        self.initializer_spawner.set(spawner)
+    }
+
+    pub fn has_initializer_spawner(&self) -> bool {
+        self.initializer_spawner.get().is_some()
     }
 
     /// Drain `rx` until either the senders are dropped or `shutdown` is
@@ -188,9 +221,54 @@ impl IntakeRouter {
             .link_to_task(&intake_event_id, &task_id)
             .await?;
 
+        // Story 2.8b: hand the freshly-created task off to the confirm-gate
+        // Initializer if a spawner is wired. Spawner failures stay
+        // non-fatal — the intake row + drafted task are already
+        // persisted, so we log and surface `session_id: None` instead of
+        // tearing down the intake path. The caller can probe
+        // `HandleOutcome::Created.session_id` to decide whether to retry.
+        let session_id_hint = event
+            .metadata
+            .get("session_id_hint")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let max_steps = event
+            .metadata
+            .get("max_steps")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|v| u32::try_from(v).ok());
+        let cost_cap_cents = event
+            .metadata
+            .get("cost_cap_cents")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|v| u32::try_from(v).ok());
+        let session_id = match self.initializer_spawner.get() {
+            Some(spawner) => {
+                let spec = SpawnSpec {
+                    task_id: task_id.clone(),
+                    brief_input: event.brief_input.clone(),
+                    reply_target: event.reply_target.clone(),
+                    session_id_hint,
+                    max_steps,
+                    cost_cap_cents,
+                };
+                match spawner.spawn(spec).await {
+                    Ok(receipt) => Some(receipt.session_id),
+                    Err(error) => {
+                        tracing::warn!(%error, channel = %event.channel,
+                            task_id = %task_id,
+                            "intake_router: initializer spawner failed; task remains drafted");
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+
         Ok(HandleOutcome::Created {
             intake_event_id,
             task_id,
+            session_id,
         })
     }
 }
