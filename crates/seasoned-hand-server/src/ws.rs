@@ -10,6 +10,10 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use seasoned_hand_core::agent::RunRequest;
+use seasoned_hand_core::channel::{
+    DeliveryTarget, IntakeEvent, chat::CHANNEL_NAME as CHAT_CHANNEL,
+    chat::TARGET_SESSION_PREFIX as CHAT_TARGET_SESSION_PREFIX,
+};
 use seasoned_hand_core::events::{Event, EventQuery, EventStore, EventType, NewEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -234,6 +238,39 @@ async fn handle_command(
                 });
                 return;
             }
+
+            // Story 2.9: route the brief through the channel framework's
+            // IntakeRouter so the chat panel participates uniformly with
+            // other intake channels. The router persists an
+            // `intake_events` row, finds/creates the tenant's Inbox
+            // project, and creates a `drafted` Task linked to the intake
+            // id. The Initializer spawn that turns the drafted Task into
+            // a running session is deferred to story 2.8 (Phase 2 DEBT
+            // #13); until that lands the legacy runner-spawn below is a
+            // backward-compatibility shim so existing chat clients keep
+            // working.
+            let intake_event = IntakeEvent {
+                channel: CHAT_CHANNEL.into(),
+                intake_id: format!("ws:{}", Uuid::new_v4()),
+                brief_input: input.clone(),
+                reply_target: Some(DeliveryTarget {
+                    channel: CHAT_CHANNEL.into(),
+                    target_ref: format!("{CHAT_TARGET_SESSION_PREFIX}{session_id}"),
+                    metadata: json!({}),
+                }),
+                metadata: json!({ "ws_cmd_id": cmd_id }),
+                tenant_id: None,
+                received_at: now_unix(),
+            };
+            if let Err(error) = state.intake_router.handle_event(intake_event).await {
+                // Non-fatal: the legacy session+runner still proceeds so
+                // the WS contract (synchronous session_id) is preserved.
+                // The intake_events row is the only loss, and we record
+                // it as a warning for observability.
+                tracing::warn!(error = %error, %session_id,
+                    "ws task_create: IntakeRouter rejected event; falling back to legacy direct-run");
+            }
+
             let runner = state.runner.clone();
             let run_session = session_id.clone();
             tokio::spawn(async move {
@@ -524,7 +561,22 @@ async fn attach_subscription(
 /// default branch themselves because the DB path emits a bare
 /// `{kind, data}` envelope while the Redis-stream path also carries
 /// the originating `source`.
+///
+/// Story 2.9 special-cases `Misc{kind:"Deliverable"}` — the ChatChannel
+/// `DeliverySink` impl appends a Misc event with that shape, and the
+/// architecture §4 ServerEvent payload contract renders it as a
+/// dedicated `{kind:"Deliverable", deliverable_id, format, file_ref,
+/// citations}` payload (frontend story 2.22 filters on this kind).
 fn build_payload(event_type_str: &str, data: &Value) -> Option<Value> {
+    if event_type_str == "Misc" && data.get("kind").and_then(Value::as_str) == Some("Deliverable") {
+        return Some(json!({
+            "kind": "Deliverable",
+            "deliverable_id": data.get("deliverable_id").cloned().unwrap_or(Value::Null),
+            "format": data.get("format").cloned().unwrap_or(Value::Null),
+            "file_ref": data.get("file_ref").cloned().unwrap_or(Value::Null),
+            "citations": data.get("citations").cloned().unwrap_or_else(|| json!([])),
+        }));
+    }
     Some(match event_type_str {
         "Message" => json!({
             "kind": "Message",

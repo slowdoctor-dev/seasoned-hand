@@ -20,7 +20,7 @@ use seasoned_hand_core::agent::narrate::NarratorHook;
 use seasoned_hand_core::agent::{AgentRunner, AgentRunnerDeps};
 use seasoned_hand_core::browser::tracks::PostBrowserActionHook;
 use seasoned_hand_core::capability::ModelCapabilities;
-use seasoned_hand_core::channel::ChannelRegistry;
+use seasoned_hand_core::channel::{ChannelRegistration, ChannelRegistry, chat::ChatChannel};
 use seasoned_hand_core::cost::{CostClient, CostSnapshot};
 use seasoned_hand_core::db::DbPool;
 use seasoned_hand_core::deliverable::DeliverableStore;
@@ -225,9 +225,26 @@ impl AppState {
         let notifications_sent = Arc::new(NotificationsSentStore::new(db.clone()));
         let skills = Arc::new(SkillStore::new(db.clone()));
         let playbooks = Arc::new(PlaybookStore::new(db.clone()));
-        // Story 2.4: empty registry — main.rs registers concrete
-        // channels via `with_channels` after stories 2.9–2.13 land.
-        let channels = Arc::new(ChannelRegistry::new());
+        // Story 2.9: ChatChannel wraps the existing WS as both an
+        // IntakeProvider (no-op `run`; the WS server pushes IntakeEvents
+        // synchronously via `intake_router.handle_event`) and a
+        // DeliverySink (appends a `Misc{kind:"Deliverable"}` event that
+        // the WS payload renderer reshapes per architecture §4). No
+        // NotifySink — chat has no push-notify semantics distinct from
+        // regular messages.
+        //
+        // Other concrete channels (webhook, email, cli, ntfy) land in
+        // stories 2.10–2.13; main.rs will need a `with_channels` story
+        // that *merges* additional registrations on top of the chat
+        // baseline rather than replacing the registry wholesale.
+        let mut channels = ChannelRegistry::new();
+        let chat = Arc::new(ChatChannel::new(events.clone()));
+        channels.register(
+            ChannelRegistration::new("chat")
+                .with_intake(chat.clone())
+                .with_delivery(chat),
+        );
+        let channels = Arc::new(channels);
         // Story 2.5: routers reference the (empty for now) registry
         // Arc. `with_channels` swaps the registry and rebuilds both
         // routers so the slot stays consistent.

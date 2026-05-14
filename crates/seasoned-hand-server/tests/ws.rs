@@ -159,6 +159,64 @@ async fn task_create_returns_session_id_and_starts_runner() {
     assert!(exists);
 }
 
+/// Story 2.9: the WS `task_create` command now routes through the
+/// channel framework's IntakeRouter, which persists a row into V008
+/// `intake_events` with `channel = "chat"`. The legacy session+runner
+/// path still runs (backward-compat shim until Phase 2 DEBT #13 closes
+/// in story 2.8) — this test only checks the new intake side-effect.
+#[tokio::test]
+async fn ws_task_create_creates_intake_event() {
+    let (url, state) = boot().await;
+    let (mut ws, _) = connect_async(url).await.unwrap();
+    ws.send(Message::Text(
+        json!({
+            "type": "command",
+            "id": "create-intake-1",
+            "ts": 1,
+            "payload": { "cmd": "task_create", "input": "Summarize this week" }
+        })
+        .to_string(),
+    ))
+    .await
+    .unwrap();
+    let value = recv_envelope(&mut ws).await;
+    assert_eq!(value["type"], "ack", "ack envelope received");
+    assert_eq!(value["ok"], true, "ack reports ok");
+    let session_id = value["session_id"].as_str().unwrap().to_string();
+
+    // handle_event is synchronous from the WS handler's perspective —
+    // we still nudge the runtime in case the inner db ops yielded.
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+
+    let (count, brief, target_ref): (i64, String, Option<String>) = state
+        .db
+        .with_conn(move |conn| {
+            conn.query_row(
+                "SELECT COUNT(*), \
+                        COALESCE(MAX(brief_input), ''), \
+                        MAX(reply_target) \
+                   FROM intake_events WHERE channel = 'chat'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .expect("query intake_events")
+        })
+        .await;
+    assert_eq!(count, 1, "exactly one intake_events row was persisted");
+    assert_eq!(brief, "Summarize this week");
+    let target = target_ref.expect("reply_target persisted");
+    assert!(
+        target.contains(&format!("session:{session_id}")),
+        "reply_target encodes the chat session id: {target}"
+    );
+}
+
 #[tokio::test]
 async fn user_response_resumes_suspended_session() {
     let (url, state) = boot().await;

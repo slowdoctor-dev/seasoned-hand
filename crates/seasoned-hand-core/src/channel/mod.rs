@@ -27,6 +27,7 @@
 //! refs: /specs/phase-2/architecture.md §2.7
 //! refs: /specs/phase-2/stories/story-2.4.md
 
+pub mod chat;
 pub mod delivery;
 pub mod intake;
 pub mod notify;

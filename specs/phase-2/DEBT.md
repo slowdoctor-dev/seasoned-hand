@@ -226,6 +226,78 @@
   same tenant becomes realistic, ship `V0NN_unique_tenant_title.sql`
   with a one-time dedup of any existing duplicate Inbox rows.
 
+### 15. WS `task_create` still spawns the runner directly (Phase 0/1 shim)
+- **Origin**: story 2.9, `crates/seasoned-hand-server/src/ws.rs`
+- **Severity**: **Low**
+- **What**: The WS `task_create` handler now pushes an
+  `IntakeEvent { channel: "chat", ... }` through
+  `state.intake_router.handle_event(...)` (so the V008 `intake_events`
+  row + drafted Task land per the §2.8 contract) — BUT it still also
+  inserts a `sessions` row and spawns `AgentRunner::run` directly, the
+  same as the Phase 0/1 path. The synchronous WS Ack carrying
+  `session_id` is preserved so existing chat clients keep working.
+- **Why**: The Initializer spawn that would turn the drafted Task into
+  a running session is Phase 2 DEBT #13 (story 2.5 → 2.8). Removing
+  the legacy direct-spawn before #13 closes would break the
+  `task_create_returns_session_id_and_starts_runner` contract and
+  leave chat-originated tasks stuck in `drafted` forever. The spec for
+  2.9 (Implementation step 2 + Files-changed comment) calls for the
+  full inversion; the gotchas section also explicitly authorises
+  "stay scoped to 'intake row lands in DB' and explicitly punt the
+  Initializer spawn with a stronger DEBT note" — this entry is that
+  note.
+- **Pay down**: Story 2.8 closes DEBT #13 by wiring the Initializer
+  through the IntakeRouter. At the same time, the WS handler's
+  `insert_session_row` + `runner.run` block is replaced by a return of
+  `{task_id, briefing_call_id}` (or kept as a back-compat alias that
+  shells through to the Initializer). The
+  `task_create_returns_session_id_and_starts_runner` test is updated
+  or split.
+
+### 16. IntakeRouter `run` loop + shared mpsc not yet spawned in `main.rs`
+- **Origin**: story 2.9, `crates/seasoned-hand-server/src/main.rs`
+- **Severity**: **Low**
+- **What**: The architecture §2.8 contract is that all
+  `IntakeProvider` impls push into a single
+  `mpsc::Sender<IntakeEvent>` that `IntakeRouter::run` drains. Story
+  2.9 doesn't add that boot wiring — the ChatChannel's
+  `IntakeProvider::run` is a documented no-op and the WS handler calls
+  `IntakeRouter::handle_event` synchronously, so there is no producer
+  that needs the mpsc yet.
+- **Why**: Adding the channel + spawn + shutdown cancellation now,
+  with zero real long-lived intake providers, would be speculative
+  plumbing. Tests would also have to spawn the router themselves
+  (their `boot()` helpers use `AppState::new` directly and never call
+  `main`'s wiring).
+- **Pay down**: Story 2.10 (`WebhookChannel`) ships the first real
+  long-lived IntakeProvider; that story:
+  - adds `intake_events_tx: mpsc::Sender<IntakeEvent>` to `AppState`
+    (or a similar fan-in handle),
+  - spawns `IntakeRouter::run(rx, shutdown)` from `main.rs`,
+  - moves the WS handler from direct `handle_event` to mpsc push so a
+    single drain loop owns ordering across all intake providers.
+
+### 17. `AppState::with_channels` replaces (not merges) the chat baseline
+- **Origin**: story 2.9, `crates/seasoned-hand-server/src/lib.rs`
+- **Severity**: **Low**
+- **What**: `AppState::new` registers the always-on
+  [`ChatChannel`](../../crates/seasoned-hand-core/src/channel/chat.rs)
+  baseline into the [`ChannelRegistry`](../../crates/seasoned-hand-core/src/channel/mod.rs).
+  The existing `with_channels(channels: ChannelRegistry)` builder method
+  *replaces* `self.channels` wholesale, so any future caller that passes
+  in a freshly-built registry containing webhook / email / cli / ntfy
+  registrations will silently drop the chat entry.
+- **Why**: No production caller invokes `with_channels` today — the
+  only consumers of multi-channel registration land in stories
+  2.10–2.13. Designing the merge surface now (and writing the tests
+  for it) would be speculative.
+- **Pay down**: Story 2.10 (`WebhookChannel`) is the first caller that
+  needs additional channels at boot. That story should either:
+  - replace `with_channels(registry)` with `with_channel(name, reg)` /
+    `register_channel(...)` taking one registration at a time, OR
+  - keep the `with_channels` shape but have it merge each entry on top
+    of the existing registry rather than swap the Arc.
+
 ---
 
 ## Categories quick-reference (same as Phase 0 / Phase 1)

@@ -10,12 +10,29 @@ export type EventKind =
   | "Knowledge"
   | "Datasource"
   | "Skill"
-  | "Misc";
+  | "Misc"
+  // Phase 2 / story 2.9: the channel-framework ChatChannel as a
+  // DeliverySink emits a Misc event that the server's `build_payload`
+  // reshapes into a dedicated `Deliverable` payload (architecture §4).
+  // Reserved here so frontend story 2.22 can render it without an
+  // additional ws-types change. See `DeliverableEventPayload` below.
+  | "Deliverable";
 
 export type EventPayload = {
   kind: EventKind;
   // Backend serializes the underlying Event.data as the rest of the payload.
   [key: string]: unknown;
+};
+
+// Phase 2 / story 2.9: shape of the Deliverable payload emitted by the
+// ChatChannel DeliverySink. Frontend story 2.22 will render this as a
+// downloadable card in the chat pane.
+export type DeliverableEventPayload = {
+  kind: "Deliverable";
+  deliverable_id: string;
+  format: string;
+  file_ref: string;
+  citations: number[];
 };
 
 export type ServerEvent = {
