@@ -20,7 +20,11 @@ use seasoned_hand_core::agent::narrate::NarratorHook;
 use seasoned_hand_core::agent::{AgentRunner, AgentRunnerDeps};
 use seasoned_hand_core::browser::tracks::PostBrowserActionHook;
 use seasoned_hand_core::capability::ModelCapabilities;
-use seasoned_hand_core::channel::{ChannelRegistration, ChannelRegistry, chat::ChatChannel};
+use seasoned_hand_core::channel::{
+    ChannelRegistration, ChannelRegistry,
+    chat::ChatChannel,
+    webhook::{TokenCheck, WebhookChannel},
+};
 use seasoned_hand_core::cost::{CostClient, CostSnapshot};
 use seasoned_hand_core::db::DbPool;
 use seasoned_hand_core::deliverable::DeliverableStore;
@@ -121,11 +125,21 @@ pub struct AppState {
     /// Story 2.3 / DEBT #6: V009 `playbooks` reservation handle.
     /// Phase 2 never writes; Phase 3 Curator populates.
     pub playbooks: Arc<PlaybookStore>,
-    /// Story 2.4: registered channels (intake / delivery / notify
-    /// roles). Built empty by `AppState::new`; main.rs populates it
-    /// at boot via `with_channels` before the IntakeRouter spawns
-    /// (story 2.5).
+    /// Story 2.4 / 2.10: registered channels (intake / delivery /
+    /// notify roles). Built with the always-on chat baseline by
+    /// `AppState::new`; main.rs adds further channels at boot via
+    /// `register_channel` (story 2.10 — DEBT #17 pay-down replaces the
+    /// previous `with_channels` builder which silently dropped the
+    /// chat baseline).
     pub channels: Arc<ChannelRegistry>,
+    /// Story 2.10: shared `Arc<String>` mirroring the same allocation
+    /// stored inside the registered `WebhookChannel`. The webhook
+    /// intake HTTP handler (`POST /v1/intake/webhook`) reads this
+    /// directly to gate access — keeping a top-level handle avoids
+    /// downcasting the channel registry's `Arc<dyn IntakeProvider>`.
+    /// Empty when `SEASONED_HAND_INTAKE_TOKEN` is unset; the handler
+    /// then returns 503 `intake_token_not_configured`.
+    pub webhook_intake_token: Arc<String>,
     /// Story 2.5: IntakeRouter consumes the channel-framework mpsc
     /// and seeds Tasks. Built referencing `self.channels`;
     /// `with_channels` rebuilds it so the registry Arc stays in sync.
@@ -295,19 +309,43 @@ impl AppState {
             channels,
             intake_router,
             delivery_router,
+            webhook_intake_token: Arc::new(String::new()),
         }
     }
 
-    /// Story 2.4: install a populated [`ChannelRegistry`] built by
-    /// main.rs at boot (after stories 2.9–2.13 register concrete
-    /// channels). Tests skip this and inherit the empty default.
+    /// Story 2.10 / DEBT #17: merge one channel registration on top of
+    /// the existing registry (which already carries the chat baseline
+    /// from `AppState::new`). Replaces the previous `with_channels`
+    /// builder, which swapped the whole registry and silently dropped
+    /// pre-registered channels.
     ///
-    /// Story 2.5: also rebuilds `intake_router` + `delivery_router`
-    /// so both hold the freshly-populated registry Arc. The routers
-    /// store the registry by Arc<ChannelRegistry>, so the original
-    /// (empty) Arc would otherwise stay live in their slots.
-    pub fn with_channels(mut self, channels: ChannelRegistry) -> Self {
-        self.channels = Arc::new(channels);
+    /// Rebuilds `intake_router` + `delivery_router` so both hold the
+    /// freshly-populated registry Arc — the routers store the registry
+    /// by `Arc<ChannelRegistry>`, so the previous Arc would otherwise
+    /// stay live in their slots.
+    pub fn register_channel(mut self, registration: ChannelRegistration) -> Self {
+        // Move the existing entries into a fresh registry, then add
+        // the new registration on top. We can't mutate
+        // `Arc<ChannelRegistry>` directly because the routers hold
+        // their own Arc clones — building a fresh registry + Arc and
+        // re-pointing the routers is the only consistent path.
+        let mut next = ChannelRegistry::new();
+        for health in self.channels.health() {
+            let name = health.name.clone();
+            let mut reg = ChannelRegistration::new(&name);
+            if let Some(p) = self.channels.get_intake(&name) {
+                reg = reg.with_intake(p);
+            }
+            if let Some(s) = self.channels.get_delivery(&name) {
+                reg = reg.with_delivery(s);
+            }
+            if let Some(s) = self.channels.get_notify(&name) {
+                reg = reg.with_notify(s);
+            }
+            next.register(reg);
+        }
+        next.register(registration);
+        self.channels = Arc::new(next);
         self.intake_router = Arc::new(IntakeRouter::new(
             self.intake_events.clone(),
             self.tasks.clone(),
@@ -323,6 +361,29 @@ impl AppState {
             self.db.clone(),
         ));
         self
+    }
+
+    /// Story 2.10: register the production `WebhookChannel` (intake +
+    /// delivery + notify) and snapshot the intake token onto AppState
+    /// so the `POST /v1/intake/webhook` route handler can read it
+    /// without downcasting the registry's `Arc<dyn IntakeProvider>`.
+    /// Same `Arc<String>` is shared with the channel itself.
+    pub fn register_webhook_channel(
+        mut self,
+        intake_token: Arc<String>,
+        allowlist: Vec<ipnet::IpNet>,
+    ) -> Self {
+        let channel = Arc::new(WebhookChannel::with_default_client(
+            intake_token.clone(),
+            allowlist,
+        ));
+        self.webhook_intake_token = intake_token;
+        self.register_channel(
+            ChannelRegistration::new(seasoned_hand_core::channel::webhook::CHANNEL_NAME)
+                .with_intake(channel.clone())
+                .with_delivery(channel.clone())
+                .with_notify(channel),
+        )
     }
 
     /// Story 2.20: attach the NarratorHook's classifier-slot LLM path.
@@ -839,6 +900,13 @@ pub fn app(state: AppState) -> Router {
             "/v1/channels/:name/test",
             axum::routing::post(post_channel_test_handler),
         )
+        // Story 2.10: WebhookChannel intake source — HTTP POST is the
+        // long-lived listener (the channel's `IntakeProvider::run` is
+        // a no-op and parks on shutdown, see channel/webhook/mod.rs).
+        .route(
+            "/v1/intake/webhook",
+            axum::routing::post(post_intake_webhook_handler),
+        )
         .with_state(state)
 }
 
@@ -942,6 +1010,160 @@ async fn post_channel_test_handler(
         role: role.to_string(),
         ok: true,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Story 2.10: WebhookChannel intake — POST /v1/intake/webhook.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct WebhookIntakeBody {
+    brief: String,
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    reply_target: Option<seasoned_hand_core::channel::DeliveryTarget>,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct WebhookIntakeAck {
+    task_id: String,
+    /// Phase 2 reserves this slot per architecture §2.8 — the
+    /// briefing-confirmation flow that fills it lands in story 2.8.
+    /// Returning `None` is preferable to omitting the field so the
+    /// response shape is stable across the briefing rollout.
+    briefing_call_id: Option<String>,
+}
+
+async fn post_intake_webhook_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    body: Result<Json<WebhookIntakeBody>, axum::extract::rejection::JsonRejection>,
+) -> Result<(StatusCode, Json<WebhookIntakeAck>), (StatusCode, Json<ApiError>)> {
+    use seasoned_hand_core::channel::IntakeEvent;
+    use seasoned_hand_core::channel::webhook::CHANNEL_NAME as WEBHOOK_NAME;
+    use seasoned_hand_core::intake::router::{HandleOutcome, RejectionReason};
+
+    // Locate the registered WebhookChannel's intake provider so we
+    // can re-use its constant-time token check. Falling back to the
+    // raw `webhook_intake_token` keeps the handler honest if a future
+    // refactor changes the registration shape.
+    let token_check = if !state.webhook_intake_token.is_empty() {
+        let supplied = headers
+            .get("X-Seasoned-Hand-Intake-Token")
+            .and_then(|h| h.to_str().ok());
+        use subtle::ConstantTimeEq;
+        let ok: bool = supplied
+            .unwrap_or("")
+            .as_bytes()
+            .ct_eq(state.webhook_intake_token.as_bytes())
+            .into();
+        if ok {
+            TokenCheck::Ok
+        } else {
+            TokenCheck::Mismatch
+        }
+    } else {
+        TokenCheck::NotConfigured
+    };
+
+    match token_check {
+        TokenCheck::NotConfigured => {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiError {
+                    error: "intake_token_not_configured".into(),
+                }),
+            ));
+        }
+        TokenCheck::Mismatch => {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(ApiError {
+                    error: "unauthorized_token".into(),
+                }),
+            ));
+        }
+        TokenCheck::Ok => {}
+    }
+
+    let Json(body) = body.map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "invalid_json_body".into(),
+            }),
+        )
+    })?;
+
+    let mut metadata = body.metadata.unwrap_or_else(|| serde_json::json!({}));
+    if let Some(pid) = body.project_id.as_ref()
+        && let Some(obj) = metadata.as_object_mut()
+    {
+        obj.insert("project_id".into(), serde_json::Value::String(pid.clone()));
+    }
+
+    let intake_event = IntakeEvent {
+        channel: WEBHOOK_NAME.into(),
+        intake_id: format!("http:{}", uuid::Uuid::new_v4()),
+        brief_input: body.brief,
+        reply_target: body.reply_target,
+        metadata,
+        tenant_id: None,
+        received_at: now_unix_micros(),
+    };
+
+    match state.intake_router.handle_event(intake_event).await {
+        Ok(HandleOutcome::Created { task_id, .. }) => Ok((
+            StatusCode::ACCEPTED,
+            Json(WebhookIntakeAck {
+                task_id,
+                briefing_call_id: None,
+            }),
+        )),
+        Ok(HandleOutcome::DuplicateSkipped) => Err((
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "intake_rejected:duplicate_intake_id".into(),
+            }),
+        )),
+        Ok(HandleOutcome::Rejected(reason)) => {
+            // DEBT #12 close-out for the webhook surface: validation
+            // rejection surfaces as 4xx with the spec-shaped
+            // `intake_rejected:<reason>` payload. The pre-task Misc
+            // event remains deferred until a system-session strategy
+            // exists.
+            let reason_code = match reason {
+                RejectionReason::EmptyBrief => "empty_brief",
+                RejectionReason::UnknownChannel(_) => "unknown_channel",
+            };
+            Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: format!("intake_rejected:{reason_code}"),
+                }),
+            ))
+        }
+        Err(error) => {
+            tracing::error!(%error, "webhook intake: IntakeRouter error");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            ))
+        }
+    }
+}
+
+fn now_unix_micros() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_micros() as i64)
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------

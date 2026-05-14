@@ -12,9 +12,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use seasoned_hand_core::channel::{
-    ChannelError, ChannelRegistration, ChannelRegistry, Deliverable, DeliveryReceipt, DeliverySink,
-    DeliveryTarget, IntakeEvent, IntakeProvider, NotifyEvent, NotifyReceipt, NotifySink,
-    NotifyTarget,
+    ChannelError, ChannelRegistration, Deliverable, DeliveryReceipt, DeliverySink, DeliveryTarget,
+    IntakeEvent, IntakeProvider, NotifyEvent, NotifyReceipt, NotifySink, NotifyTarget,
 };
 use seasoned_hand_core::router::SlotRouter;
 use seasoned_hand_core::sandbox::SandboxClient;
@@ -92,21 +91,22 @@ async fn boot_with_channels() -> String {
     let search = SearchClient::new(SearchProvider::Brave { api_key: None });
     let router = SlotRouter::default_for_bifrost();
 
-    let mut registry = ChannelRegistry::new();
-    // "webhook" implements all three roles; "ntfy" notify-only —
-    // mirrors the Phase 2 ship list from architecture §2.7.
+    // Story 2.10 / DEBT #17: `register_channel` merges on top of the
+    // chat baseline that `AppState::new` already registered. The stub
+    // entries below stack on that baseline, so the introspection
+    // assertions further down account for "chat" + "webhook" + "ntfy".
     let webhook = Arc::new(StubChannel("webhook"));
-    registry.register(
-        ChannelRegistration::new("webhook")
-            .with_intake(webhook.clone() as Arc<dyn IntakeProvider>)
-            .with_delivery(webhook.clone() as Arc<dyn DeliverySink>)
-            .with_notify(webhook as Arc<dyn NotifySink>),
-    );
     let ntfy = Arc::new(StubChannel("ntfy"));
-    registry.register(ChannelRegistration::new("ntfy").with_notify(ntfy as Arc<dyn NotifySink>));
-
     let state = AppState::new(pool, redis, sandbox, search, router, Default::default())
-        .with_channels(registry);
+        .register_channel(
+            ChannelRegistration::new("webhook")
+                .with_intake(webhook.clone() as Arc<dyn IntakeProvider>)
+                .with_delivery(webhook.clone() as Arc<dyn DeliverySink>)
+                .with_notify(webhook as Arc<dyn NotifySink>),
+        )
+        .register_channel(
+            ChannelRegistration::new("ntfy").with_notify(ntfy as Arc<dyn NotifySink>),
+        );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -123,15 +123,21 @@ async fn get_v1_channels_lists_capabilities() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body: Value = resp.json().await.unwrap();
     let arr = body.as_array().expect("array");
-    assert_eq!(arr.len(), 2);
+    // Chat baseline (story 2.9) + webhook + ntfy stubs registered above.
+    assert_eq!(arr.len(), 3);
 
     // Stable sort by name (per ChannelRegistry::health contract):
-    // "ntfy" before "webhook" alphabetically.
-    assert_eq!(arr[0]["name"], "ntfy");
-    assert_eq!(arr[0]["capabilities"], serde_json::json!(["notify"]));
-    assert_eq!(arr[1]["name"], "webhook");
+    // "chat" < "ntfy" < "webhook" alphabetically.
+    assert_eq!(arr[0]["name"], "chat");
     assert_eq!(
-        arr[1]["capabilities"],
+        arr[0]["capabilities"],
+        serde_json::json!(["intake", "delivery"])
+    );
+    assert_eq!(arr[1]["name"], "ntfy");
+    assert_eq!(arr[1]["capabilities"], serde_json::json!(["notify"]));
+    assert_eq!(arr[2]["name"], "webhook");
+    assert_eq!(
+        arr[2]["capabilities"],
         serde_json::json!(["intake", "delivery", "notify"])
     );
 }

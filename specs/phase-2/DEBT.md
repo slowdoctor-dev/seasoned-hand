@@ -24,6 +24,16 @@
 - **Pay down**: Phase 5 tightens — webhook URLs from untrusted users
   must always resolve to public IPs; allow-list bypass requires admin
   scope.
+- **Status (story 2.10)**: Default-deny posture is now implemented in
+  `crates/seasoned-hand-core/src/channel/webhook/ssrf.rs` —
+  `assert_public_address` resolves the URL's host and rejects any
+  loopback / private / link-local / multicast / unspecified address
+  (both IPv4 and IPv6) with `RemoteRejected { status: 400, message:
+  "private_address_rejected" }` (terminal — the DeliveryRouter does
+  not retry). Operators bypass per-CIDR via the
+  `WEBHOOK_DELIVERY_ALLOWLIST` env (`10.0.0.0/8,192.168.0.0/16,...`).
+  Phase 5 will gate the bypass behind admin scope; the default-deny
+  contract is now locked in.
 
 ### 2. Sandbox-side renderer toolchain via startup-install
 - **Origin**: architecture.md §2.3 + §5 "Sandbox-side renderer toolchain"
@@ -173,7 +183,7 @@
   being persisted against a deliverable that doesn't exist. Story
   2.15 will still own the manifest `delivered_to[]` write.
 
-### 12. IntakeRouter cannot emit `intake_rejected` Misc or 4xx
+### ~~12. IntakeRouter cannot emit `intake_rejected` Misc or 4xx~~ — partially closed in story 2.10 (4xx surface lands; Misc emit still deferred)
 - **Origin**: story 2.5, `crates/seasoned-hand-core/src/intake/router.rs`
 - **Severity**: **Low**
 - **What**: Validation failures (empty brief, unregistered channel)
@@ -192,6 +202,14 @@
   Story 2.18+ may also introduce a per-tenant "system session" that
   pre-task Misc events can land on (defer until a second feature
   needs it; YAGNI for 2.5).
+- **Resolution (story 2.10, partial)**: The webhook intake handler in
+  `crates/seasoned-hand-server/src/lib.rs` (`post_intake_webhook_handler`)
+  now maps `HandleOutcome::Rejected(reason)` to a `400` carrying
+  `intake_rejected:<reason>` (`empty_brief` or `unknown_channel`). The
+  `intake_rejected` Misc event still has no session FK to attach to,
+  so the pre-task Misc emit is deferred until a system-session strategy
+  exists. Email / Slack / other future intake channels will route
+  rejection through the same 4xx surface.
 
 ### 13. IntakeRouter does not spawn the Initializer
 - **Origin**: story 2.5, `crates/seasoned-hand-core/src/intake/router.rs`
@@ -254,7 +272,7 @@
   `task_create_returns_session_id_and_starts_runner` test is updated
   or split.
 
-### 16. IntakeRouter `run` loop + shared mpsc not yet spawned in `main.rs`
+### ~~16. IntakeRouter `run` loop + shared mpsc not yet spawned in `main.rs`~~ — CLOSED in story 2.10
 - **Origin**: story 2.9, `crates/seasoned-hand-server/src/main.rs`
 - **Severity**: **Low**
 - **What**: The architecture §2.8 contract is that all
@@ -276,8 +294,22 @@
   - spawns `IntakeRouter::run(rx, shutdown)` from `main.rs`,
   - moves the WS handler from direct `handle_event` to mpsc push so a
     single drain loop owns ordering across all intake providers.
+- **Resolution (story 2.10)**: `main.rs` now creates the
+  `(intake_tx, intake_rx)` pair, spawns `IntakeRouter::run(intake_rx,
+  intake_shutdown)`, and calls
+  `state.channels.spawn_intakes(intake_tx, intake_shutdown.clone())`
+  to start every long-lived intake provider in lock-step. Both Chat
+  and Webhook channels currently park their `run()` on the shutdown
+  token (their intake source is external — WS for chat, the
+  `POST /v1/intake/webhook` route for webhook), so the drain loop is
+  idle today but ready for EmailChannel (story 2.11). The WS handler
+  staying on direct `handle_event` is intentional for now: the WS Ack
+  must return a synchronous `session_id`, which the mpsc push path
+  can't supply without further refactor; the legacy bridge is tracked
+  separately as DEBT #15 (closes when story 2.8 lands the briefing
+  gate).
 
-### 17. `AppState::with_channels` replaces (not merges) the chat baseline
+### ~~17. `AppState::with_channels` replaces (not merges) the chat baseline~~ — CLOSED in story 2.10
 - **Origin**: story 2.9, `crates/seasoned-hand-server/src/lib.rs`
 - **Severity**: **Low**
 - **What**: `AppState::new` registers the always-on
@@ -297,6 +329,18 @@
     `register_channel(...)` taking one registration at a time, OR
   - keep the `with_channels` shape but have it merge each entry on top
     of the existing registry rather than swap the Arc.
+- **Resolution (story 2.10)**: Chose **option (a)** — `with_channels`
+  is replaced by `AppState::register_channel(ChannelRegistration)`,
+  which folds the new registration into a fresh registry built from
+  the existing entries, then re-points `intake_router` /
+  `delivery_router` at the merged Arc. The chat baseline registered
+  by `AppState::new` (story 2.9) now survives every subsequent
+  registration; `register_webhook_channel` is a convenience builder
+  that constructs `WebhookChannel`, snapshots its intake token onto
+  AppState, and calls `register_channel`. The `tests/channels.rs`
+  fixture was migrated to the per-channel API and its assertions
+  account for the chat baseline. No production caller invoked the
+  old `with_channels` signature, so no compatibility shim was needed.
 
 ---
 

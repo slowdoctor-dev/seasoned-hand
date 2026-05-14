@@ -71,6 +71,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // don't race on process-wide env state.
     let admin_token = std::env::var("SEASONED_HAND_ADMIN_TOKEN").unwrap_or_default();
     state = state.with_admin_token(admin_token);
+
+    // Story 2.10: register the production WebhookChannel and snapshot
+    // the intake token onto AppState so the `POST /v1/intake/webhook`
+    // route handler can authenticate without downcasting the registry.
+    //
+    // `SEASONED_HAND_INTAKE_TOKEN` unset / empty → endpoint disabled
+    // (handler returns 503). `WEBHOOK_DELIVERY_ALLOWLIST` is a
+    // comma-separated list of CIDRs that bypass the default-deny SSRF
+    // guard; unset → empty allow-list (default-deny only, see
+    // phase-2/DEBT.md #1).
+    let webhook_intake_token =
+        std::sync::Arc::new(std::env::var("SEASONED_HAND_INTAKE_TOKEN").unwrap_or_default());
+    let allowlist = match std::env::var("WEBHOOK_DELIVERY_ALLOWLIST") {
+        Ok(raw) => match seasoned_hand_core::channel::webhook::ssrf::parse_allowlist(&raw) {
+            Ok(nets) => nets,
+            Err(error) => {
+                tracing::warn!(%error, "WEBHOOK_DELIVERY_ALLOWLIST parse failed; ignoring");
+                Vec::new()
+            }
+        },
+        Err(_) => Vec::new(),
+    };
+    state = state.register_webhook_channel(webhook_intake_token, allowlist);
     let rollback_flag = std::env::var("SEASONED_HAND_ROLLBACK_ON_VERIFIER_FAIL")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
@@ -144,6 +167,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "sandbox rehydration failed; continuing with empty cache"
         ),
     }
+
+    // Story 2.10 / DEBT #16: spawn the IntakeRouter drain loop and the
+    // long-lived intake providers (`ChannelRegistry::spawn_intakes`).
+    // Both Chat and Webhook channels have a no-op `run()` today — Chat
+    // pushes synchronously through `intake_router.handle_event` from
+    // the WS handler, Webhook pushes synchronously from the
+    // `POST /v1/intake/webhook` route. The drain loop exists so future
+    // polling intake providers (EmailChannel, story 2.11) can fan into
+    // a single ordered queue without each provider needing its own
+    // wiring.
+    let intake_shutdown = tokio_util::sync::CancellationToken::new();
+    let (intake_tx, intake_rx) = tokio::sync::mpsc::channel(64);
+    let intake_handle = {
+        let router = state.intake_router.clone();
+        let token = intake_shutdown.clone();
+        tokio::spawn(async move {
+            router.run(intake_rx, token).await;
+        })
+    };
+    let intake_provider_handles = state
+        .channels
+        .spawn_intakes(intake_tx, intake_shutdown.clone());
 
     // Story 1.13: spawn the Checkpoint Manager. The Phase 1 baseline run
     // loop is a polling no-op; the real Plan{op:"advance"} fanout lands
@@ -240,6 +285,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Story 1.13: drain the checkpoint manager.
     checkpoint_shutdown.cancel();
     let _ = checkpoint_handle.await;
+
+    // Story 2.10 / DEBT #16: drain the intake plane. Cancelling the
+    // token signals every long-lived `IntakeProvider::run` AND the
+    // drain loop; we join the drain first so any in-flight events
+    // queued by the providers land on the persistence path before the
+    // task exits.
+    intake_shutdown.cancel();
+    for handle in intake_provider_handles {
+        let _ = handle.await;
+    }
+    let _ = intake_handle.await;
 
     Ok(())
 }

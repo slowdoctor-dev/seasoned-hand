@@ -31,6 +31,7 @@ pub mod chat;
 pub mod delivery;
 pub mod intake;
 pub mod notify;
+pub mod webhook;
 
 use std::collections::HashMap;
 use std::sync::Arc;
