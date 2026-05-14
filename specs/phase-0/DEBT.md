@@ -166,7 +166,7 @@
   that allows the Chromium-needed syscalls but no more. Or migrate to
   Firecracker microVMs (ADR-004 Alternative A) for enterprise tier.
 
-### 16. Sandbox workspace cleanup is manual (orphan dirs accumulate)
+### ~~16. Sandbox workspace cleanup is manual (orphan dirs accumulate)~~ — CLOSED in story 2.17 (ce7de1d)
 - **Origin**: story 0.8
 - **Severity**: **Low**
 - **What**: `SandboxClient::destroy` removes the container but does NOT
@@ -174,8 +174,10 @@
   dir lingers on disk indefinitely.
 - **Why**: Workspaces may contain artifacts the user wants to download
   later. Deletion needs a retention policy.
-- **Pay down**: Phase 1 — add a configurable workspace TTL + a cleanup
-  job (cron or on-startup sweep).
+- **Closed**: story 2.17 landed `WorkspaceTtlCron` (env-configurable
+  per-status TTLs: 30 d completed / 7 d failed-cancelled / 1 d
+  drafted-briefed; running + paused never GC). Admin manual trigger
+  at `POST /v1/admin/sandbox/cleanup`.
 
 ### 17. Live sandbox lifecycle test is `#[ignore]`'d and pulls ~1 GB
 - **Origin**: story 0.8
