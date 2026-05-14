@@ -234,15 +234,15 @@ async fn task_state_machine_legal_transitions() {
     // re-shuffle that silently widens or narrows the state machine.
     assert_eq!(
         legal_transitions(TaskStatus::Drafted),
-        &[TaskStatus::Briefed]
+        &[TaskStatus::Briefed, TaskStatus::Cancelled]
     );
     assert_eq!(
         legal_transitions(TaskStatus::Briefed),
-        &[TaskStatus::Confirmed]
+        &[TaskStatus::Confirmed, TaskStatus::Cancelled]
     );
     assert_eq!(
         legal_transitions(TaskStatus::Confirmed),
-        &[TaskStatus::Running]
+        &[TaskStatus::Running, TaskStatus::Cancelled]
     );
     assert_eq!(
         legal_transitions(TaskStatus::Running),

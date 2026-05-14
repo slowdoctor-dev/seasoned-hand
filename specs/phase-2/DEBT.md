@@ -227,6 +227,17 @@
 - **Pay down**: Story 2.8 wires an `InitializerSpawn` handle through
   the `IntakeRouter` constructor and invokes it from
   `handle_event(...)` after the task is created.
+- **Status (story 2.8)**: **Still open.** Story 2.8 landed
+  `Initializer::run_with_confirmation` (Briefing emit + confirm gate +
+  edit cap + auto-confirm) as a self-contained method with 6 unit
+  tests, but explicitly DID NOT wire the per-`briefing_call_id`
+  sender map onto `AppState` or hook the IntakeRouter into a spawn
+  path. The wiring (DashMap of `briefing_call_id →
+  mpsc::Sender<UserResponse>` on AppState, IntakeRouter ctor change,
+  WS `briefing_confirm` cmd handler, WS `task_create` refactor to
+  drop the legacy direct-spawn shim) is the larger half of the
+  blast-radius and overflowed the 2-hour solo budget. Tracked as
+  story 2.8b (or rolled into 2.14 deliverable-pipeline prep).
 
 ### 14. `ProjectStore::find_or_create_inbox` has no UNIQUE backstop
 - **Origin**: story 2.5, `crates/seasoned-hand-core/src/project/project.rs`
@@ -271,6 +282,10 @@
   shells through to the Initializer). The
   `task_create_returns_session_id_and_starts_runner` test is updated
   or split.
+- **Status (story 2.8)**: **Still open** — see DEBT #13 status note
+  for the same reason. Story 2.8 landed the Initializer's
+  `run_with_confirmation` surface but not the WS / AppState wiring;
+  the legacy direct-spawn shim still owns chat-originated tasks.
 
 ### ~~16. IntakeRouter `run` loop + shared mpsc not yet spawned in `main.rs`~~ — CLOSED in story 2.10
 - **Origin**: story 2.9, `crates/seasoned-hand-server/src/main.rs`
@@ -372,6 +387,30 @@
   fixture was migrated to the per-channel API and its assertions
   account for the chat baseline. No production caller invoked the
   old `with_channels` signature, so no compatibility shim was needed.
+
+### 19. Task state machine widened: Drafted/Briefed/Confirmed → Cancelled
+- **Origin**: story 2.8, `crates/seasoned-hand-core/src/project/task.rs`
+  (`legal_transitions`)
+- **Severity**: **n/a** (informational — spec-gap close-out, not a stub)
+- **What**: The Phase 2 task lifecycle docstring claims
+  `drafted → briefed → confirmed → running ⇄ paused → completed |
+  failed | cancelled`, which on first reading suggests cancellation
+  only from Running/Paused. Story 2.8's `BriefingAction::Cancel`
+  requires cancelling **from `Briefed`** (the gate state), which the
+  original `legal_transitions` matrix forbade — the
+  `briefing_cancel_transitions_to_cancelled` unit test surfaced this
+  with `IllegalTransition { from: Briefed, to: Cancelled }`.
+- **Why**: The original matrix was too tight — a user cancelling
+  during the briefing gate is a first-class flow per architecture
+  §2.2 ("On `cancel`: task status → `cancelled`"). Widening to
+  `Drafted/Briefed/Confirmed → Cancelled` matches the spec's
+  cancel-anytime-before-running semantics.
+- **Resolution (story 2.8)**: `legal_transitions` now lists
+  `Cancelled` as a valid target from `Drafted`, `Briefed`, and
+  `Confirmed` in addition to the existing `Running` / `Paused`. The
+  pinned-table test (`task_state_machine_legal_transitions`) was
+  updated to assert the new shape. No new column or migration — this
+  is a code-level state machine refinement.
 
 ---
 

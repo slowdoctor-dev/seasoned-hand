@@ -71,12 +71,16 @@ impl TaskStatus {
 /// Single inspectable table of legal `from → to` transitions. Returning a
 /// static slice keeps the validity matrix in one place and avoids the
 /// match-arm explosion of nested `(from, to)` pairs.
+///
+/// User-cancel paths (`*  → Cancelled`) are allowed from every
+/// pre-running state so the story-2.8 Briefing gate can honor a
+/// `cancel` action without first walking the task through to `running`.
 pub fn legal_transitions(from: TaskStatus) -> &'static [TaskStatus] {
     use TaskStatus::*;
     match from {
-        Drafted => &[Briefed],
-        Briefed => &[Confirmed],
-        Confirmed => &[Running],
+        Drafted => &[Briefed, Cancelled],
+        Briefed => &[Confirmed, Cancelled],
+        Confirmed => &[Running, Cancelled],
         Running => &[Paused, Completed, Failed, Cancelled],
         Paused => &[Running, Completed, Failed, Cancelled],
         Completed | Failed | Cancelled => &[],
