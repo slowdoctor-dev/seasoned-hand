@@ -13,11 +13,13 @@
 
 pub mod replay;
 pub mod resume;
+pub mod ttl;
 
 pub use replay::{
     ReplayError, ReplayStep, replay_feature_list, replay_plan, replay_progress, restore_plan_row,
 };
 pub use resume::{ResumeDeps, ResumeError, ResumeOutcome, SandboxOps, resume_task};
+pub use ttl::{SandboxJanitor, TtlCleanupReport, TtlConfig, WorkspaceTtlCron};
 
 #[cfg(test)]
 mod tests;

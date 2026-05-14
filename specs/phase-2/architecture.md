@@ -998,10 +998,20 @@ Gains:
 
 Session-create path gains the renderer-install step (60 s one-time per
 session). Phase 0 DEBT #16 (workspace TTL cleanup) lands here:
-- Active task: never GC
-- Paused task: 7-day TTL
-- Completed task: 30-day TTL (configurable)
-- Failed/cancelled: 7-day TTL
+- Running task: never GC
+- Paused task: never GC (story 2.16's event-stream replay rebuild
+  makes durable-paused tasks survivable, but a still-paused workspace
+  must remain on disk in case the user resumes; the prior "Paused:
+  7-day TTL" rule pre-dated 2.16 and is superseded)
+- Completed task: 30-day TTL (configurable via `SANDBOX_TTL_COMPLETED_DAYS`)
+- Failed/cancelled: 7-day TTL (`SANDBOX_TTL_FAILED_CANCELLED_DAYS`)
+- Drafted/briefed: 1-day TTL (`SANDBOX_TTL_DRAFT_DAYS`) — cleans up
+  abandoned brief drafts the user never confirmed
+
+Implementation: `seasoned-hand-core::task::ttl::WorkspaceTtlCron`
+(story 2.17). Cycle interval `SANDBOX_CLEANUP_INTERVAL_SEC` (default
+3600 s). Manual trigger via the admin-token-gated
+`POST /v1/admin/sandbox/cleanup`.
 
 ---
 

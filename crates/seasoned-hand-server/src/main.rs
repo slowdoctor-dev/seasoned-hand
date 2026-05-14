@@ -350,6 +350,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // Story 2.17 / Phase 0 DEBT #16: spawn the workspace TTL cron.
+    // Single-task loop that wakes every `SANDBOX_CLEANUP_INTERVAL_SEC`
+    // (default 3600), tears down container + workspace for terminal-
+    // state tasks past their per-status TTL. Active tasks
+    // (running/paused) are never GC'd. Failures within the cycle are
+    // absorbed; the loop itself never exits with Err.
+    let ttl_shutdown = tokio_util::sync::CancellationToken::new();
+    let ttl_handle = {
+        let cron = state.workspace_ttl_cron.clone();
+        let token = ttl_shutdown.clone();
+        tokio::spawn(async move {
+            cron.run(token).await;
+        })
+    };
+
     let addr = bind_addr()?;
     tracing::info!(%addr, %database_url, %redis_url, "seasoned-hand-server starting");
 
@@ -389,6 +404,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     notify_shutdown.cancel();
     let _ = notify_listener_handle.await;
     let _ = notify_worker_handle.await;
+
+    // Story 2.17: drain the workspace TTL cron.
+    ttl_shutdown.cancel();
+    let _ = ttl_handle.await;
 
     Ok(())
 }

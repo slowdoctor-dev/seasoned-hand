@@ -177,6 +177,12 @@ pub struct AppState {
     /// trigger and no notifies are emitted (a clean default for
     /// operators who don't want push notifications).
     pub notify_config: Arc<NotifyConfig>,
+    /// Story 2.17 / Phase 0 DEBT #16: workspace-TTL cron. Spawned in
+    /// `main.rs` under a shutdown token; the
+    /// `POST /v1/admin/sandbox/cleanup` route uses this same handle to
+    /// run a single cycle on demand.
+    pub workspace_ttl_cron:
+        Arc<seasoned_hand_core::task::WorkspaceTtlCron<seasoned_hand_core::sandbox::SandboxClient>>,
 }
 
 /// Story 2.20: configuration bundle for the NarratorHook's
@@ -462,6 +468,18 @@ impl AppState {
         ));
         let briefing_senders = Arc::new(DashMap::new());
         let notify_config = Arc::new(NotifyConfig::empty());
+        // Story 2.17: workspace TTL cron. Configuration is env-driven
+        // (`SANDBOX_CLEANUP_INTERVAL_SEC`, `SANDBOX_TTL_*_DAYS`) — tests
+        // don't set those so the production defaults apply, but the
+        // cron only fires from `main.rs` (it isn't spawned by
+        // `AppState::new`), so test runs never trigger a cycle.
+        let workspace_ttl_cron = Arc::new(seasoned_hand_core::task::WorkspaceTtlCron::new(
+            tasks_store.clone(),
+            events.clone(),
+            sandbox.clone(),
+            db.clone(),
+            seasoned_hand_core::task::TtlConfig::from_env(),
+        ));
         let state = Self {
             db,
             redis,
@@ -498,6 +516,7 @@ impl AppState {
             webhook_intake_token: Arc::new(String::new()),
             briefing_senders,
             notify_config,
+            workspace_ttl_cron,
         };
         // Story 2.8b: attach the confirm-gate Initializer spawner so
         // every Created intake event flows through to the briefing
@@ -1194,6 +1213,13 @@ pub fn app(state: AppState) -> Router {
             "/v1/sessions/:id/checkpoints/:checkpoint_id/rollback",
             axum::routing::post(post_checkpoint_rollback_handler),
         )
+        // Story 2.17 / Phase 0 DEBT #16: admin-token-gated manual
+        // workspace cleanup. Same 3-guard pattern as the rollback
+        // route above (configured-token / loopback / header match).
+        .route(
+            "/v1/admin/sandbox/cleanup",
+            axum::routing::post(post_admin_sandbox_cleanup_handler),
+        )
         // Story 2.5: channel introspection.
         .route("/v1/channels", get(list_channels_handler))
         .route("/v1/channels/:name/health", get(get_channel_health_handler))
@@ -1648,6 +1674,52 @@ async fn post_checkpoint_rollback_handler(
             rolled_back_at,
         }),
     ))
+}
+
+// ---------------------------------------------------------------------------
+// Story 2.17: admin workspace-cleanup handler.
+// ---------------------------------------------------------------------------
+
+async fn post_admin_sandbox_cleanup_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+) -> Result<
+    (StatusCode, Json<seasoned_hand_core::task::TtlCleanupReport>),
+    (StatusCode, Json<ApiError>),
+> {
+    // Guard 1: admin token must be configured at boot.
+    if state.admin_token.is_empty() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiError {
+                error: "admin_token_not_configured".into(),
+            }),
+        ));
+    }
+    // Guard 2: loopback only.
+    if !remote.ip().is_loopback() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ApiError {
+                error: "forbidden_non_loopback".into(),
+            }),
+        ));
+    }
+    // Guard 3: token header match.
+    let token_hdr = headers
+        .get("X-Seasoned-Hand-Admin-Token")
+        .and_then(|h| h.to_str().ok());
+    if token_hdr != Some(state.admin_token.as_str()) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(ApiError {
+                error: "unauthorized_token".into(),
+            }),
+        ));
+    }
+    let report = state.workspace_ttl_cron.cleanup_cycle().await;
+    Ok((StatusCode::OK, Json(report)))
 }
 
 // ---------------------------------------------------------------------------
