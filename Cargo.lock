@@ -2012,6 +2012,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-util",
+ "toml",
  "tracing",
  "urlencoding",
  "uuid",

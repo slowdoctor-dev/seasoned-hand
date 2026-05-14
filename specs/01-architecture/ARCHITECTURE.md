@@ -117,7 +117,9 @@ tracks "where we are in the task" and prevents goal drift. See ADR-010.
 > `lettre 0.11` (SMTP send, EmailChannel delivery + notify),
 > `mailparse 0.15` (RFC 5322 parse, EmailChannel intake),
 > `async-imap 0.10` (IMAP poll, EmailChannel intake — `tokio-rustls`
-> feature, no openssl).
+> feature, no openssl),
+> `toml 0.8` (`config/notify.toml` parser, story 2.12 NotifyWorker
+> per-trigger routing).
 > Sandbox-side renderer toolchain: Pandoc + python-pptx + openpyxl
 > (installed at session-create time per phase-2/DEBT.md #2).
 

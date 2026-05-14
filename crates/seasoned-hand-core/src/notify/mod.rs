@@ -8,10 +8,19 @@
 //! refs: /specs/phase-2/architecture.md §2.7, §3 V008
 //! refs: /specs/phase-2/stories/story-2.3.md
 
+pub mod config;
+pub mod listener;
 pub mod store;
+pub mod worker;
 
+pub use config::{KNOWN_TRIGGERS, NotifyConfig, NotifyConfigError};
+pub use listener::{NotifyDispatch, NotifyEventListener, RedisNotifyDispatch};
 pub use store::{
     NewNotificationSent, NotificationSentRow, NotificationsSentStore, NotifyStoreError,
+};
+pub use worker::{
+    NOTIFY_CONSUMER_GROUP, NOTIFY_STREAM, NotifyRequest, NotifyRuntimeConfig, NotifyWorker,
+    StaticTargetResolver, TargetResolver,
 };
 
 #[cfg(test)]

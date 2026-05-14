@@ -58,6 +58,24 @@ impl RedisPool {
         Ok(EventSubscription { pubsub })
     }
 
+    /// Pattern-subscribe. Returns a subscription that yields every
+    /// payload from any channel matching `pattern`. Used by the
+    /// story 2.12 `NotifyEventListener` to observe every appended event
+    /// across every session (pattern `"sh:events:*"`).
+    pub async fn psubscribe(&self, pattern: &str) -> Result<EventSubscription, RedisError> {
+        let client = redis::Client::open(self.url.clone())?;
+        let mut pubsub = client.get_async_pubsub().await?;
+        pubsub.psubscribe(pattern).await?;
+        Ok(EventSubscription { pubsub })
+    }
+
+    /// Pattern matching every per-session event channel —
+    /// `sh:events:*` (see [`channel_for`]). Story 2.12 listener uses
+    /// this with [`Self::psubscribe`].
+    pub fn events_pattern() -> &'static str {
+        "sh:events:*"
+    }
+
     pub async fn xadd_json<T: Serialize>(
         &self,
         stream: &str,

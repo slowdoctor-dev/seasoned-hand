@@ -40,6 +40,8 @@ webpki-roots = "0.26"
 futures = "0.3"
 # Story 2.11: sender allow-list regex matching for EmailChannel.
 regex = "1"
+# Story 2.12: config/notify.toml parser for NotifyWorker per-trigger routing.
+toml = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

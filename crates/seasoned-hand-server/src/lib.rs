@@ -27,6 +27,7 @@ use seasoned_hand_core::channel::{
     email::{
         AllowList, AsyncImapFetcher, EmailChannel, ImapConfig, LettreSmtpTransport, SmtpConfig,
     },
+    ntfy::NtfyChannel,
     webhook::{TokenCheck, WebhookChannel},
 };
 use seasoned_hand_core::cost::{CostClient, CostSnapshot};
@@ -41,7 +42,7 @@ use seasoned_hand_core::dispatch::{
 use seasoned_hand_core::events::{EventQuery, EventStore, EventType, sqlite::SqliteEventStore};
 use seasoned_hand_core::intake::{IntakeEventStore, IntakeRouter};
 use seasoned_hand_core::llm::LlmClient;
-use seasoned_hand_core::notify::NotificationsSentStore;
+use seasoned_hand_core::notify::{NotificationsSentStore, NotifyConfig};
 use seasoned_hand_core::plan::PlanManager;
 use seasoned_hand_core::project::{ProjectStore, TaskStore};
 use seasoned_hand_core::pubsub::RedisPool;
@@ -167,6 +168,12 @@ pub struct AppState {
     /// receiver, so per-call-id keying would require an additional
     /// indirection without buying anything.
     pub briefing_senders: Arc<DashMap<String, tokio::sync::mpsc::Sender<UserResponse>>>,
+    /// Story 2.12: per-trigger notify routing + per-channel default
+    /// targets, parsed from `config/notify.toml` at boot. Empty when
+    /// the file is missing — the listener silently skips every
+    /// trigger and no notifies are emitted (a clean default for
+    /// operators who don't want push notifications).
+    pub notify_config: Arc<NotifyConfig>,
 }
 
 /// Story 2.20: configuration bundle for the NarratorHook's
@@ -427,6 +434,7 @@ impl AppState {
             db.clone(),
         ));
         let briefing_senders = Arc::new(DashMap::new());
+        let notify_config = Arc::new(NotifyConfig::empty());
         let state = Self {
             db,
             redis,
@@ -462,6 +470,7 @@ impl AppState {
             delivery_router,
             webhook_intake_token: Arc::new(String::new()),
             briefing_senders,
+            notify_config,
         };
         // Story 2.8b: attach the confirm-gate Initializer spawner so
         // every Created intake event flows through to the briefing
@@ -603,6 +612,29 @@ impl AppState {
                 .with_delivery(channel.clone())
                 .with_notify(channel),
         )
+    }
+
+    /// Story 2.12: register the production [`NtfyChannel`]. Notify-only,
+    /// so only the `with_notify` slot is filled.
+    ///
+    /// `NTFY_HOST` defaults to `https://ntfy.sh`; main.rs only calls
+    /// this when `NTFY_TOPIC` env is non-empty (the topic itself is a
+    /// per-trigger / per-notify concern resolved by
+    /// [`NotifyConfig::resolve`](seasoned_hand_core::notify::NotifyConfig)).
+    pub fn register_ntfy_channel(self, host: impl Into<String>) -> Self {
+        let channel = Arc::new(NtfyChannel::with_default_client(host));
+        self.register_channel(
+            ChannelRegistration::new(seasoned_hand_core::channel::ntfy::CHANNEL_NAME)
+                .with_notify(channel),
+        )
+    }
+
+    /// Story 2.12: swap in the operator-provided notify config. Default
+    /// (`AppState::new`) is an empty config — every trigger is silently
+    /// disabled until main.rs supplies a parsed `config/notify.toml`.
+    pub fn with_notify_config(mut self, config: Arc<NotifyConfig>) -> Self {
+        self.notify_config = config;
+        self
     }
 
     /// Story 2.20: attach the NarratorHook's classifier-slot LLM path.

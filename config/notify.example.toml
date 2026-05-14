@@ -1,0 +1,39 @@
+# Story 2.12 — example notify config.
+#
+# Copy to `config/notify.toml` and edit for your deployment. Missing
+# file = notifications silently disabled.
+#
+# Per-trigger routing — each trigger fires when the matching Misc event
+# is appended to a session's event stream (see NotifyEventListener).
+# Empty channels list = trigger is opt-out (the listener skips it).
+
+[trigger.task_finished]
+channels = ["ntfy"]
+
+[trigger.task_failed]
+channels = ["ntfy"]
+
+# Opt-in triggers — leave empty by default. Set to `["ntfy"]` etc. to
+# receive intermediate signals.
+[trigger.briefing_pending]
+channels = []
+
+[trigger.verifier_fail]
+channels = []
+
+# Per-channel defaults. The worker uses `default_target` when the
+# NotifyRequest carries no `target_override`. ntfy's target_ref IS the
+# topic; email's is the Message-ID to reply to (for opt-in alerts);
+# webhook's would be the callback URL (`url:https://...`).
+
+[channel.ntfy]
+default_target = "seasoned-hand-alerts"
+# default_metadata is merged into NotifyEvent.metadata before
+# NotifySink::notify; ntfy reads `title`, `priority`, `tags` here.
+default_metadata = { priority = "default" }
+
+# [channel.email]
+# default_target = "msgid:<owner@example.com>"
+
+# [channel.webhook]
+# default_target = "url:https://example.com/notify"

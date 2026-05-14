@@ -103,6 +103,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // every dropped message.
     state = state.register_email_channel(EmailChannelEnv::from_env());
 
+    // Story 2.12: register the production NtfyChannel + load the
+    // operator's `config/notify.toml`. Channel is registered only when
+    // `NTFY_TOPIC` is set (the topic itself lives in the notify config
+    // per-channel `default_target`, but presence of the env signals
+    // "operator wants ntfy"). Missing config file is non-fatal — every
+    // trigger silently disabled.
+    if std::env::var("NTFY_TOPIC")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+    {
+        let ntfy_host = std::env::var("NTFY_HOST")
+            .unwrap_or_else(|_| seasoned_hand_core::channel::ntfy::DEFAULT_HOST.into());
+        state = state.register_ntfy_channel(ntfy_host);
+    }
+    let notify_config_path =
+        std::env::var("NOTIFY_CONFIG_PATH").unwrap_or_else(|_| "config/notify.toml".into());
+    let notify_config =
+        match seasoned_hand_core::notify::NotifyConfig::from_path(&notify_config_path) {
+            Ok(cfg) => {
+                tracing::info!(
+                    path = %notify_config_path,
+                    triggers = cfg.triggers.len(),
+                    channels = cfg.channels.len(),
+                    "notify config loaded"
+                );
+                cfg
+            }
+            Err(error) => {
+                tracing::info!(
+                    %error,
+                    path = %notify_config_path,
+                    "notify config not found / unparseable; notifications silently disabled"
+                );
+                seasoned_hand_core::notify::NotifyConfig::empty()
+            }
+        };
+    let notify_config = std::sync::Arc::new(notify_config);
+    state = state.with_notify_config(notify_config.clone());
+
     let rollback_flag = std::env::var("SEASONED_HAND_ROLLBACK_ON_VERIFIER_FAIL")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
@@ -198,6 +237,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let intake_provider_handles = state
         .channels
         .spawn_intakes(intake_tx, intake_shutdown.clone());
+
+    // Story 2.12: spawn the NotifyWorker + NotifyEventListener.
+    //
+    // - Listener PSUBSCRIBEs to `sh:events:*` and XADDs a `notify_request`
+    //   for every Misc event matching a configured trigger.
+    // - Worker XREADGROUPs `notify_request` and fans each entry into
+    //   per-channel `NotifySink::notify` calls (ntfy / webhook / email).
+    //
+    // Both honour `notify_shutdown` so graceful shutdown drains
+    // in-flight dispatches.
+    let notify_shutdown = tokio_util::sync::CancellationToken::new();
+    let notify_worker_handle = {
+        let redis = std::sync::Arc::new(state.redis.clone());
+        let resolver: std::sync::Arc<dyn seasoned_hand_core::notify::TargetResolver> =
+            notify_config.clone();
+        let worker = seasoned_hand_core::notify::NotifyWorker::new(
+            state.channels.clone(),
+            state.notifications_sent.clone(),
+            resolver,
+        );
+        let token = notify_shutdown.clone();
+        tokio::spawn(async move {
+            worker.run(redis, token).await;
+        })
+    };
+    let notify_listener_handle = {
+        let redis = std::sync::Arc::new(state.redis.clone());
+        let dispatch: std::sync::Arc<dyn seasoned_hand_core::notify::NotifyDispatch> =
+            std::sync::Arc::new(seasoned_hand_core::notify::RedisNotifyDispatch::new(
+                redis.clone(),
+            ));
+        let listener = std::sync::Arc::new(seasoned_hand_core::notify::NotifyEventListener::new(
+            notify_config.clone(),
+            dispatch,
+        ));
+        let token = notify_shutdown.clone();
+        tokio::spawn(async move {
+            listener.run(redis, token).await;
+        })
+    };
 
     // Story 1.13: spawn the Checkpoint Manager. The Phase 1 baseline run
     // loop is a polling no-op; the real Plan{op:"advance"} fanout lands
@@ -305,6 +384,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = handle.await;
     }
     let _ = intake_handle.await;
+
+    // Story 2.12: drain the notify plane.
+    notify_shutdown.cancel();
+    let _ = notify_listener_handle.await;
+    let _ = notify_worker_handle.await;
 
     Ok(())
 }
