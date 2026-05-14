@@ -29,15 +29,92 @@ pub(crate) fn workspace_bootstrap_commands() -> [&'static str; 5] {
     ]
 }
 
-/// Subset of the AIO Sandbox `/v1/shell/exec` response we rely on.
-/// The endpoint returns `{exit_code, stdout, stderr, ...}` per its OpenAPI;
-/// we only read `exit_code` + `stderr` for bootstrap classification.
-#[derive(Debug, Deserialize, Default)]
-pub(crate) struct ShellExecOutcome {
+/// Subset of the AIO Sandbox `/v1/shell/exec` response. The endpoint
+/// returns `{exit_code, stdout, stderr, ...}` per its OpenAPI; the
+/// renderer dispatcher (story 2.6) needs `stdout` too so we keep the
+/// full triple here.
+///
+/// `pub(crate)` so the renderer module can import it; not part of the
+/// public surface — keep `ChannelError` / `RenderError` as the
+/// surface-facing types.
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct ShellExecOutcome {
     #[serde(default)]
     pub exit_code: i32,
     #[serde(default)]
+    pub stdout: String,
+    #[serde(default)]
     pub stderr: String,
+}
+
+/// Story 2.6: renderer-toolchain install commands. Run after
+/// [`run_bootstrap`] inside `SandboxClient::create`. ~30-60 s
+/// one-time per session (acceptable per architecture §5 / DEBT #2,
+/// which defers the pre-baked image to Phase 4). Skipped entirely
+/// when `SANDBOX_SKIP_RENDERER_INSTALL=1` (tests + pre-baked-image
+/// future).
+pub(crate) fn renderer_install_commands() -> [&'static str; 2] {
+    [
+        // Pandoc for docx/pdf/html/odt; texlive-xetex for pdf-via-pandoc.
+        // python3-pip is installed defensively — Phase 2 sandbox image
+        // ships it but pre-baked images may not.
+        "apt-get install -y pandoc texlive-xetex python3-pip",
+        // python-pptx for pptx; openpyxl for xlsx. --break-system-packages
+        // tolerates Debian/Ubuntu's PEP 668 lock.
+        "pip3 install --break-system-packages python-pptx openpyxl",
+    ]
+}
+
+/// Env override that disables the renderer install step. When set to
+/// `"1"`, [`install_renderer_toolchain`] returns `Ok(())` immediately
+/// without touching the sandbox — matches the pre-baked image future
+/// (phase-2/DEBT.md #2) and lets the integration tests skip the
+/// install cost.
+pub const SKIP_INSTALL_ENV: &str = "SANDBOX_SKIP_RENDERER_INSTALL";
+
+/// Story 2.6: install the renderer toolchain on a freshly-bootstrapped
+/// sandbox. Returns the same `WorkspaceBootstrap` error variant as
+/// [`run_bootstrap`] on first non-zero exit, so the upstream
+/// `session_create_failed` surface stays uniform.
+pub(crate) async fn install_renderer_toolchain(
+    client: &reqwest::Client,
+    api_url: &str,
+) -> Result<(), SandboxError> {
+    if std::env::var(SKIP_INSTALL_ENV).is_ok_and(|v| v == "1") {
+        return Ok(());
+    }
+    for cmd in renderer_install_commands() {
+        let outcome = post_shell_exec(client, api_url, cmd).await?;
+        if outcome.exit_code != 0 {
+            return Err(SandboxError::WorkspaceBootstrap(format!(
+                "renderer install failed: cmd={cmd:?}, exit={}, stderr={:?}",
+                outcome.exit_code,
+                truncate(&outcome.stderr, 400),
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        s.chars().take(n).collect()
+    }
+}
+
+/// Public wrapper around [`post_shell_exec`] used by the renderer
+/// dispatcher (story 2.6). Lets one-off shell invocations land
+/// without re-implementing the request shape. `pub(crate)` keeps it
+/// out of the SDK surface — the canonical caller is
+/// [`crate::deliverable::renderer`].
+pub(crate) async fn shell_exec(
+    client: &reqwest::Client,
+    api_url: &str,
+    command: &str,
+) -> Result<ShellExecOutcome, SandboxError> {
+    post_shell_exec(client, api_url, command).await
 }
 
 /// Run the bootstrap sequence against `api_url` (the sandbox HTTP API).

@@ -8,8 +8,10 @@
 //! refs: /specs/phase-2/architecture.md §2.3, §2.11, §3 V007
 //! refs: /specs/phase-2/stories/story-2.3.md
 
+pub mod renderer;
 pub mod store;
 
+pub use renderer::{RenderError, RenderedArtifact, RendererDispatcher};
 pub use store::{DeliverableError, DeliverableStore, NewDeliverable};
 
 use serde::{Deserialize, Serialize};

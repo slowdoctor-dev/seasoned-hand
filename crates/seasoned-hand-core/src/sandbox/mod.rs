@@ -321,12 +321,52 @@ impl SandboxClient {
                 .await;
             return Err(err);
         }
+        // Story 2.6: install the renderer toolchain (Pandoc + python-pptx
+        // + openpyxl). Skipped by `SANDBOX_SKIP_RENDERER_INSTALL=1` so
+        // integration tests don't pay the ~30-60 s install cost. Failure
+        // surfaces as `WorkspaceBootstrap` per Phase 1 conventions —
+        // session_create returns the same shape the bootstrap step
+        // would emit.
+        if let Err(err) =
+            bootstrap::install_renderer_toolchain(&bootstrap_client, &handle.api_url).await
+        {
+            let _ = self
+                .docker
+                .remove_container(
+                    &name,
+                    Some(RemoveContainerOptions {
+                        force: true,
+                        v: false,
+                        link: false,
+                    }),
+                )
+                .await;
+            return Err(err);
+        }
 
         self.handles
             .write()
             .await
             .insert(session_id.to_string(), handle.clone());
         Ok(handle)
+    }
+
+    /// Story 2.6: invoke `/v1/shell/exec` on the sandbox for
+    /// `session_id`. Used by the renderer dispatcher
+    /// ([`crate::deliverable::renderer`]) to run Pandoc / Python
+    /// scripts. Returns [`bootstrap::ShellExecOutcome`] verbatim so
+    /// callers can branch on `exit_code` + read `stdout` / `stderr`.
+    pub async fn shell_exec(
+        &self,
+        session_id: &str,
+        command: &str,
+    ) -> Result<bootstrap::ShellExecOutcome, SandboxError> {
+        let handle = self
+            .get(session_id)
+            .await
+            .ok_or_else(|| SandboxError::NotFound(session_id.to_string()))?;
+        let client = reqwest::Client::new();
+        bootstrap::shell_exec(&client, &handle.api_url, command).await
     }
 
     /// Story 1.13b: cheap pause-state probe used by the admin rollback
