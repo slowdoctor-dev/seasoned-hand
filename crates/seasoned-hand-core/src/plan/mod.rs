@@ -193,6 +193,22 @@ impl PlanManager {
             .await
     }
 
+    /// Story 2.16: append a `Plan{op:"create"}` event without
+    /// performing the row INSERT — the rebuild path (see
+    /// [`crate::task::replay::restore_plan_row`]) writes the row
+    /// directly to preserve phase status the `create()` path would
+    /// normalize. Public to the crate; not exposed via the trait
+    /// because regular callers should always go through
+    /// [`Self::create`].
+    pub async fn emit_replay_create(
+        &self,
+        session_id: &str,
+        snapshot: &Plan,
+    ) -> Result<(), PlanError> {
+        self.emit_event(session_id, json!({"op":"create","snapshot":snapshot}))
+            .await
+    }
+
     async fn emit_event(&self, session_id: &str, data: serde_json::Value) -> Result<(), PlanError> {
         self.events
             .append(NewEvent {

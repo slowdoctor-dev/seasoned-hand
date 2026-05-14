@@ -24,6 +24,7 @@ pub mod routes;
 pub mod sandbox;
 pub mod search;
 pub mod skill;
+pub mod task;
 pub mod tools;
 pub mod verifier;
 

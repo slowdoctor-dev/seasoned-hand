@@ -1,6 +1,6 @@
 # Story 2.16 — Durable pause/resume + event-stream replay rebuild
 
-> **Status**: ready
+> **Status**: complete (2026-05-14)
 > **Estimated**: 3 hours
 > **Dependencies**: 2.2
 > **Phase**: 2

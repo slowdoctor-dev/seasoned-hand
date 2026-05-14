@@ -56,8 +56,16 @@ pub enum CommandPayload {
         max_steps: Option<u32>,
         cost_cap_cents: Option<u32>,
     },
+    /// Story 2.16: `durable` is additive on top of Phase 1 1.17.
+    /// `Some(true)` (the default — `None` resolves to true) emits a
+    /// `task_paused_durable` Misc *before* the existing `task_paused`
+    /// Misc, carrying the sandbox / workspace / event-cursor metadata
+    /// the rebuild path consumes when the sandbox container is gone
+    /// at resume time.
     TaskPause {
         session_id: String,
+        #[serde(default)]
+        durable: Option<bool>,
     },
     TaskResume {
         session_id: String,
@@ -394,8 +402,11 @@ async fn handle_command(
                 session_id: None,
             });
         }
-        CommandPayload::TaskPause { session_id } => {
-            let result = handle_task_pause(state, &session_id).await;
+        CommandPayload::TaskPause {
+            session_id,
+            durable,
+        } => {
+            let result = handle_task_pause(state, &session_id, durable.unwrap_or(true)).await;
             let _ = tx.send(ServerEnvelope::Ack {
                 id: Uuid::new_v4().to_string(),
                 r#ref: cmd_id,
@@ -501,7 +512,11 @@ async fn session_state(state: &AppState, session_id: &str) -> Result<Option<Stri
     Ok(found)
 }
 
-async fn handle_task_pause(state: &AppState, session_id: &str) -> Result<(), String> {
+async fn handle_task_pause(
+    state: &AppState,
+    session_id: &str,
+    durable: bool,
+) -> Result<(), String> {
     let current = session_state(state, session_id)
         .await?
         .ok_or_else(|| "unknown_session".to_string())?;
@@ -514,6 +529,38 @@ async fn handle_task_pause(state: &AppState, session_id: &str) -> Result<(), Str
         .await
         .map_err(|_| "internal".to_string())?;
     set_session_state(state, session_id, "SUSPENDED").await?;
+    // Story 2.16: durable pause records the sandbox + workspace +
+    // event-cursor metadata into a `task_paused_durable` Misc BEFORE
+    // the existing `task_paused` Misc. The cursor is the latest
+    // event_id at pause time so the rebuild path on resume can scope
+    // its replay window to events that landed before the pause.
+    if durable {
+        let handle = state.sandbox.get(session_id).await;
+        let sandbox_id = handle
+            .as_ref()
+            .map(|h| h.container_id.clone())
+            .unwrap_or_default();
+        let workspace_path = handle
+            .as_ref()
+            .map(|h| h.workspace_host_path.display().to_string())
+            .unwrap_or_default();
+        let event_cursor = latest_event_id(state, session_id).await.unwrap_or(0);
+        let _ = state
+            .events
+            .append(NewEvent {
+                session_id: session_id.to_string(),
+                event_type: EventType::Misc,
+                source: "ws".into(),
+                data: json!({
+                    "kind": "task_paused_durable",
+                    "sandbox_id": sandbox_id,
+                    "workspace_path": workspace_path,
+                    "event_cursor": event_cursor,
+                    "paused_at": now_unix(),
+                }),
+            })
+            .await;
+    }
     let _ = state
         .events
         .append(NewEvent {
@@ -526,6 +573,21 @@ async fn handle_task_pause(state: &AppState, session_id: &str) -> Result<(), Str
     Ok(())
 }
 
+async fn latest_event_id(state: &AppState, session_id: &str) -> Option<i64> {
+    let sid = session_id.to_string();
+    state
+        .db
+        .with_conn(move |conn| {
+            conn.query_row(
+                "SELECT COALESCE(MAX(id), 0) FROM events WHERE session_id = ?",
+                rusqlite::params![sid],
+                |row| row.get::<_, i64>(0),
+            )
+            .ok()
+        })
+        .await
+}
+
 async fn handle_task_resume(state: &AppState, session_id: &str) -> Result<(), String> {
     let current = session_state(state, session_id)
         .await?
@@ -533,6 +595,16 @@ async fn handle_task_resume(state: &AppState, session_id: &str) -> Result<(), St
     if current != "SUSPENDED" {
         return Err("wrong_state".into());
     }
+    // Story 2.16: Phase 2 tasks (sessions.task_id != NULL) route
+    // through `task::resume_task`, which picks unpause-vs-rebuild
+    // based on whether the in-memory sandbox handle survived the
+    // pause window. Legacy WS-only sessions (no task_id) keep the
+    // Phase 1 1.17 inline behavior.
+    let task_id = lookup_session_task_id(state, session_id).await;
+    if let Some(task_id) = task_id {
+        return run_durable_resume(state, &task_id).await;
+    }
+    // Legacy path — kept verbatim from Phase 1.
     state
         .sandbox
         .resume(session_id)
@@ -552,6 +624,45 @@ async fn handle_task_resume(state: &AppState, session_id: &str) -> Result<(), St
     let sid = session_id.to_string();
     tokio::spawn(async move {
         let _ = runner.resume_session(&sid).await;
+    });
+    Ok(())
+}
+
+async fn lookup_session_task_id(state: &AppState, session_id: &str) -> Option<String> {
+    let sid = session_id.to_string();
+    state
+        .db
+        .with_conn(move |conn| {
+            conn.query_row(
+                "SELECT task_id FROM sessions WHERE id = ?",
+                rusqlite::params![sid],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten()
+        })
+        .await
+}
+
+async fn run_durable_resume(state: &AppState, task_id: &str) -> Result<(), String> {
+    use seasoned_hand_core::task::{ResumeDeps, ResumeOutcome, resume_task};
+    let deps = ResumeDeps {
+        task_store: state.tasks.as_ref(),
+        events: state.events.as_ref(),
+        plan_manager: state.plan_manager.as_ref(),
+        sandbox: state.sandbox.as_ref(),
+        db: &state.db,
+    };
+    let outcome = resume_task(task_id, deps)
+        .await
+        .map_err(|e| e.to_string())?;
+    let resume_session_id = match outcome {
+        ResumeOutcome::UnpausedExisting { session_id } => session_id,
+        ResumeOutcome::Rebuilt { new_session_id, .. } => new_session_id,
+    };
+    let runner = state.runner.clone();
+    tokio::spawn(async move {
+        let _ = runner.resume_session(&resume_session_id).await;
     });
     Ok(())
 }
@@ -881,7 +992,7 @@ mod tests {
                 .unwrap();
             })
             .await;
-        let err = handle_task_pause(&state, "s1")
+        let err = handle_task_pause(&state, "s1", true)
             .await
             .expect_err("wrong_state");
         assert_eq!(err, "wrong_state");

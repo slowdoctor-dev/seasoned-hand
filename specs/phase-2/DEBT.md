@@ -546,6 +546,44 @@
   every task-creation site, drop the synthetic fallback + return
   `ProvenanceError::IntakeMissing` on the cold path.
 
+### 27. `task::resume_task` uses in-memory handle as "container exists" proxy
+- **Origin**: story 2.16, `crates/seasoned-hand-core/src/task/resume.rs`
+  (`SandboxOps::get_handle` branch)
+- **Severity**: **Low**
+- **What**: The rebuild-vs-unpause split looks at the in-memory
+  `SandboxClient::handles` map. After a server process restart that
+  map is empty even though the docker container may still be alive
+  and only paused — `task_resume` will trigger a full sandbox rebuild
+  + event-stream replay instead of cheaply unpausing the existing
+  container.
+- **Why**: Story 2.6 + Phase 2 §8 model "container alive" as "handle
+  present"; rehydrating the map from `docker ps` (a la
+  `SandboxClient::rehydrate_from_docker`, story 1.2) is the correct
+  fix but adds boot-time docker round-trips out of scope for 2.16.
+- **Pay down**: Phase 5 boot-time reconciliation — call
+  `rehydrate_from_docker` BEFORE accepting WS connections so paused
+  containers re-register, and the unpause path fires on cross-restart
+  resume.
+
+### 28. Replay cost baseline resets to zero on rebuild
+- **Origin**: story 2.16, `crates/seasoned-hand-core/src/task/replay.rs`
+  (`replay_cost_baseline`)
+- **Severity**: **Low**
+- **What**: The rebuild path starts the new session's `cost_cents` at
+  0 instead of copying the old session's accumulated cost. A 24h task
+  that's already burned $5 and rebuilds at hour 23 effectively gets
+  a fresh budget for the final hour — cost-cap accounting under-counts
+  cumulative spend.
+- **Why**: Phase 0/1 `CostClient` has no per-session baseline state
+  (the baseline is a per-loop `CostSnapshot` value). Persisting cost
+  snapshots as Misc events + replaying them needs a new emit site that
+  story 2.16 is explicitly scoped not to add. The user-prompt for 2.16
+  noted this trade-off and asked for the zero-reset path.
+- **Pay down**: Phase 3 — add a periodic `cost_snapshot` Misc emitted
+  by the runner loop; `replay_cost_baseline` reads the latest snapshot
+  for the old session and writes the matching delta onto the new
+  session's `cost_cents`. Until then, cost caps reset per rebuild.
+
 ### 23. CliChannel not registered into the production AppState
 - **Origin**: story 2.13, `crates/seasoned-hand-core/src/channel/cli.rs`
 - **Severity**: **Low**
