@@ -72,7 +72,12 @@ impl InitializerSpawner for WsInitializerSpawner {
         //    appends against unknown session ids — the Initializer
         //    starts emitting Misc events immediately, so the row must
         //    exist before the spawn returns).
-        insert_session_row(&self.state, &session_id, "RUNNING")
+        //
+        //    Story 2.14 needs sessions.task_id populated so the
+        //    `task_deliver` LLM tool can attach Deliverable rows to
+        //    the originating Task without re-querying the intake_events
+        //    table. V006 added the column; this insert sets it.
+        insert_session_row(&self.state, &session_id, "RUNNING", Some(&spec.task_id))
             .await
             .map_err(|e| SpawnError::Other(format!("insert_session_row: {e}")))?;
 
@@ -158,7 +163,12 @@ impl InitializerSpawner for WsInitializerSpawner {
     }
 }
 
-async fn insert_session_row(state: &AppState, session_id: &str, name: &str) -> Result<(), String> {
+async fn insert_session_row(
+    state: &AppState,
+    session_id: &str,
+    name: &str,
+    task_id: Option<&str>,
+) -> Result<(), String> {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now: i64 = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -166,12 +176,14 @@ async fn insert_session_row(state: &AppState, session_id: &str, name: &str) -> R
         .unwrap_or(0);
     let id = session_id.to_string();
     let name = name.to_string();
+    let task_id = task_id.map(str::to_string);
     state
         .db
         .with_conn(move |conn| {
             conn.execute(
-                "INSERT INTO sessions (id, created_at, updated_at, state) VALUES (?, ?, ?, ?)",
-                (id, now, now, name),
+                "INSERT INTO sessions (id, created_at, updated_at, state, task_id) \
+                 VALUES (?, ?, ?, ?, ?)",
+                (id, now, now, name, task_id),
             )
         })
         .await

@@ -1175,7 +1175,78 @@ pub fn all() -> HashMap<&'static str, Arc<dyn Tool>> {
     map.insert("checkpoint_label", Arc::new(CheckpointLabel));
     map.insert("checkpoint_rollback", Arc::new(CheckpointRollback));
 
+    // ===== Deliverable (1) — story 2.14 =====
+    // Always registered so the LLM sees the tool surface (mask policy
+    // gates its availability per AgentMode). When the production deps
+    // (DeliverableStore + RendererDispatcher + planner LLM) aren't
+    // wired, the placeholder reports `task_deliver_not_wired` so the
+    // operator gets a clear diagnostic instead of silent failure.
+    // `register_builtin_tools_with_task_deliver` overrides the slot
+    // with the real handler — main.rs / AgentRunner are the canonical
+    // callers.
+    map.insert("task_deliver", Arc::new(TaskDeliverNotWired));
+
     map
+}
+
+/// Story 2.14: registry builder used by `AppState::new` once the
+/// production [`crate::deliverable::TaskDeliver`] dependencies are
+/// resolved. Drops the placeholder + inserts the real handler.
+pub fn all_with_task_deliver(
+    deps: crate::deliverable::TaskDeliverDeps,
+) -> HashMap<&'static str, Arc<dyn Tool>> {
+    let mut map = all();
+    map.insert(
+        "task_deliver",
+        Arc::new(crate::deliverable::TaskDeliver::new(deps)),
+    );
+    map
+}
+
+/// Placeholder used when the production [`crate::deliverable::TaskDeliver`]
+/// hasn't been wired yet — keeps the catalog count stable (Phase 1
+/// tests + spec-check expect 38 tools post-2.14) while giving the LLM
+/// a clear error if it tries to invoke `task_deliver` against an
+/// unwired runtime (Phase 0 / Phase 1 tests).
+pub struct TaskDeliverNotWired;
+
+#[async_trait]
+impl Tool for TaskDeliverNotWired {
+    fn name(&self) -> &'static str {
+        "task_deliver"
+    }
+    fn description(&self) -> &'static str {
+        "Hand a finished real-employee artifact back to the operator. \
+         The `target_filename` extension picks the renderer. \
+         (Phase 2 only — disabled when DeliverableStore + RendererDispatcher \
+         deps aren't wired into AppState.)"
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "content": { "type": "string" },
+                "target_filename": { "type": "string" },
+                "citations": {
+                    "type": "array",
+                    "items": { "type": "integer" }
+                }
+            },
+            "required": ["content", "target_filename"],
+            "additionalProperties": false,
+        })
+    }
+    async fn invoke(&self, _args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput {
+            ok: false,
+            output: json!({}),
+            file_ref: None,
+            error: Some(ToolErrorPayload {
+                kind: "task_deliver_not_wired".into(),
+                message: "task_deliver deps not registered into AppState".into(),
+            }),
+        })
+    }
 }
 
 /// Story 1.13: attach a human-readable label to the next

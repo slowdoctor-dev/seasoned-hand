@@ -1,0 +1,875 @@
+//! `task_deliver` LLM tool — Worker-mode entry point that hands a
+//! real-employee artifact back through the channel framework.
+//!
+//! Pipeline (architecture §2.3 / §8):
+//! 1. Validate `target_filename` extension via [`DeliverableFormat::from_filename`].
+//! 2. Look up the originating task via `sessions.task_id`.
+//! 3. Write the LLM-authored source to
+//!    `/workspace/.deliverables/.source/<deliverable_id>.<src_ext>`.
+//! 4. Render via [`RendererDispatcher`] (story 2.6).
+//! 5. On failure: ONE retry via "simplify content" LLM call against
+//!    the planner slot. Re-attempt the render.
+//! 6. If second attempt fails: fall back to writing the source as
+//!    `.md` (raw) and persist with `format = "md"`. Emit
+//!    `Misc{kind:"deliverable_format_fallback"}` so the operator can
+//!    diagnose.
+//! 7. Persist the [`Deliverable`] row via [`DeliverableStore::insert`].
+//!    Provenance manifest is the schema-version-only stub — story
+//!    2.15 lands the full builder.
+//! 8. Emit `Misc{kind:"deliverable"}` so the DeliveryRouter picks it
+//!    up (story 2.5 already routes on this event).
+//!
+//! Mask: Worker-mode only. Initializer / Verifier modes get the tool
+//! masked via [`crate::dispatch::mask::DefaultMaskPolicy`].
+//!
+//! refs: /specs/phase-2/architecture.md §2.3, §8
+//! refs: /specs/phase-2/stories/story-2.14.md
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use rusqlite::OptionalExtension;
+use serde_json::{Value, json};
+use uuid::Uuid;
+
+use super::renderer::{RenderError, RendererDispatcher};
+use super::store::{DeliverableError, DeliverableStore, NewDeliverable};
+use crate::db::DbPool;
+use crate::events::{EventStore, EventType, NewEvent};
+use crate::llm::{ChatCompletionRequest, LlmClient, Message, Role};
+use crate::project::brief::DeliverableFormat;
+use crate::router::{SlotName, SlotRouter};
+use crate::tools::{Tool, ToolContext, ToolError, ToolErrorPayload, ToolOutput};
+
+pub const TOOL_NAME: &str = "task_deliver";
+
+/// Max characters of `stderr` injected into the simplify prompt — keeps
+/// the LLM input small and avoids leaking renderer internals into the
+/// LLM's context.
+const STDERR_PREVIEW_CHARS: usize = 200;
+
+/// Per-LLM simplify token budget. Markdown / JSON content is usually
+/// small; 4 k tokens covers most realistic deliverables without
+/// risking provider-side timeouts.
+const SIMPLIFY_MAX_TOKENS: u32 = 4096;
+
+/// Stub provenance manifest written when story 2.15 hasn't yet shipped
+/// the full builder. Keeps the schema-version slot reserved so 2.15
+/// can roll out without a schema migration.
+const PROVENANCE_SCHEMA_VERSION: u32 = 1;
+
+/// Tool dependencies threaded in at registration time (`AppState::new`
+/// in production, an in-test fixture in unit tests). Keeping the deps
+/// inside the struct avoids widening [`ToolContext`] across every
+/// existing tool / test fixture.
+#[derive(Clone)]
+pub struct TaskDeliverDeps {
+    pub deliverables: Arc<DeliverableStore>,
+    pub renderer: Arc<RendererDispatcher>,
+    /// Pool used to look up `sessions.task_id` for the originating
+    /// task. The store layer doesn't expose this query because Phase 2
+    /// has no other reader yet; if a second caller appears, lift this
+    /// into a `SessionStore::task_id_for(...)` helper.
+    pub db: DbPool,
+    /// Optional — when `Some`, the renderer-failure retry path is
+    /// enabled (planner-slot LLM call to simplify the content). When
+    /// `None`, renderer failure short-circuits straight to the `.md`
+    /// fallback. Tests typically wire `Some(stub_llm)` to exercise the
+    /// retry without touching a real LLM provider.
+    pub planner_llm: Option<Arc<dyn SimplifyLlm>>,
+}
+
+/// LLM seam for the simplify-and-retry path. Production wraps
+/// [`LlmClient`] against the planner slot; tests substitute a
+/// recording impl to assert the prompt shape + return canned content.
+#[async_trait]
+pub trait SimplifyLlm: Send + Sync {
+    /// Return the simplified content, or `None` if the LLM declined /
+    /// errored. `None` is treated by the caller as "skip the retry,
+    /// fall back to `.md` directly".
+    async fn simplify(
+        &self,
+        failed_content: &str,
+        target_format: &str,
+        stderr_preview: &str,
+    ) -> Option<String>;
+}
+
+/// Production `SimplifyLlm` impl that calls the planner slot with a
+/// small renderer-simplify system prompt. Built in
+/// [`TaskDeliverDeps::from_app_state`] (or whatever AppState builder
+/// wires it).
+pub struct PlannerSimplifyLlm {
+    pub llm: LlmClient,
+    pub model: String,
+}
+
+impl PlannerSimplifyLlm {
+    pub fn from_router(router: &SlotRouter) -> Self {
+        let slot = router.resolve(SlotName::Planner);
+        Self {
+            llm: LlmClient::new(slot.base_url.clone(), slot.api_key.clone()),
+            model: slot.model.clone(),
+        }
+    }
+}
+
+#[async_trait]
+impl SimplifyLlm for PlannerSimplifyLlm {
+    async fn simplify(
+        &self,
+        failed_content: &str,
+        target_format: &str,
+        stderr_preview: &str,
+    ) -> Option<String> {
+        let system = format!(
+            "You are an assistant that rewrites a document so a renderer can produce \
+             a `{target_format}` file from it. Remove complex tables, images, and fancy \
+             formatting while preserving the meaning. Return ONLY the rewritten content \
+             with no preamble or explanation."
+        );
+        let user = format!(
+            "The renderer failed with stderr: {stderr_preview}\n\n\
+             Original content:\n```\n{failed_content}\n```"
+        );
+        let resp = self
+            .llm
+            .chat_completion(ChatCompletionRequest {
+                model: self.model.clone(),
+                messages: vec![
+                    Message {
+                        role: Role::System,
+                        content: Some(system),
+                        name: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    },
+                    Message {
+                        role: Role::User,
+                        content: Some(user),
+                        name: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    },
+                ],
+                tools: None,
+                tool_choice: None,
+                temperature: Some(0.0),
+                max_tokens: Some(SIMPLIFY_MAX_TOKENS),
+                top_p: None,
+            })
+            .await
+            .ok()?;
+        resp.choices
+            .first()
+            .and_then(|c| c.message.content.clone())
+            .filter(|s| !s.trim().is_empty())
+    }
+}
+
+pub struct TaskDeliver {
+    deps: TaskDeliverDeps,
+}
+
+impl TaskDeliver {
+    pub fn new(deps: TaskDeliverDeps) -> Self {
+        Self { deps }
+    }
+}
+
+#[async_trait]
+impl Tool for TaskDeliver {
+    fn name(&self) -> &'static str {
+        TOOL_NAME
+    }
+
+    fn description(&self) -> &'static str {
+        "Hand a finished real-employee artifact back to the operator. \
+         The `target_filename` extension picks the renderer (md/txt/json/csv pass-through; \
+         docx/pdf/html/odt via Pandoc; pptx via python-pptx; xlsx via openpyxl). \
+         `citations` is an array of `event_id`s that ground the content."
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "LLM-authored source content. Markdown for prose / Pandoc \
+                                    formats; JSON for pptx + xlsx (see arch §2.3)."
+                },
+                "target_filename": {
+                    "type": "string",
+                    "description": "Target deliverable filename including extension."
+                },
+                "citations": {
+                    "type": "array",
+                    "items": { "type": "integer" },
+                    "description": "Optional event_id list grounding the content."
+                }
+            },
+            "required": ["content", "target_filename"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let content = args
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::InvalidArgs("missing content".into()))?
+            .to_string();
+        let target_filename = args
+            .get("target_filename")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::InvalidArgs("missing target_filename".into()))?
+            .to_string();
+        let citations: Option<Vec<i64>> = args.get("citations").and_then(|v| match v {
+            Value::Array(items) => Some(items.iter().filter_map(Value::as_i64).collect()),
+            _ => None,
+        });
+
+        let Some(target_format) = DeliverableFormat::from_filename(&target_filename) else {
+            return Err(ToolError::InvalidArgs(format!(
+                "unknown_format: {target_filename}"
+            )));
+        };
+
+        // Resolve task_id from sessions.task_id (set at session-row
+        // insert time by WsInitializerSpawner). Missing → tool errors
+        // out; we'd rather see a clear error than silently orphan a
+        // Deliverable row.
+        let session_id = ctx.session_id.clone();
+        let task_id = lookup_task_id(&self.deps.db, &session_id)
+            .await
+            .map_err(|e| ToolError::Backend(format!("task_id lookup: {e}")))?
+            .ok_or_else(|| {
+                ToolError::Backend(format!(
+                    "session {session_id} has no task_id; Deliverable cannot be persisted"
+                ))
+            })?;
+
+        let deliverable_id = Uuid::new_v4().to_string();
+
+        // First attempt — write source + render.
+        let source_ext = source_ext_for(&target_format);
+        let source_path = format!(".deliverables/.source/{deliverable_id}.{source_ext}");
+        ctx.sandbox
+            .write_workspace_file(&session_id, &source_path, content.as_bytes())
+            .await
+            .map_err(|e| ToolError::Backend(format!("write source: {e}")))?;
+
+        let attempt_one = self
+            .deps
+            .renderer
+            .render(content.as_bytes(), &target_filename, &session_id)
+            .await;
+
+        let (rendered, format_str, source_for_record, source_path_for_record, fallback_reason) =
+            match attempt_one {
+                Ok(artifact) => (
+                    artifact,
+                    format_to_str(&target_format).to_string(),
+                    content.clone(),
+                    source_path.clone(),
+                    None,
+                ),
+                Err(RenderError::RendererFailed {
+                    renderer,
+                    exit_code,
+                    stderr,
+                    input_preview,
+                }) => {
+                    self.simplify_or_fallback(
+                        ctx,
+                        &session_id,
+                        &target_format,
+                        &target_filename,
+                        &content,
+                        renderer,
+                        exit_code,
+                        &stderr,
+                        &input_preview,
+                    )
+                    .await?
+                }
+                Err(other) => {
+                    return Ok(ToolOutput {
+                        ok: false,
+                        output: json!({}),
+                        file_ref: None,
+                        error: Some(ToolErrorPayload {
+                            kind: "render_failed".into(),
+                            message: other.to_string(),
+                        }),
+                    });
+                }
+            };
+
+        // Persist Deliverable row.
+        let new_row = NewDeliverable {
+            task_id: task_id.clone(),
+            tenant_id: None,
+            format: format_str.clone(),
+            source_content_path: Some(source_path_for_record.clone()),
+            source_content_sha256: Some(sha256_hex(source_for_record.as_bytes())),
+            rendered_content_path: rendered.workspace_path.clone(),
+            rendered_content_sha256: rendered.sha256.clone(),
+            content_size: rendered.size as i64,
+            citations: citations.clone(),
+            provenance_manifest: stub_provenance(&task_id, &session_id, citations.as_deref()),
+        };
+        let persisted_id = self
+            .deps
+            .deliverables
+            .insert(new_row)
+            .await
+            .map_err(|e: DeliverableError| ToolError::Backend(e.to_string()))?;
+
+        // Emit Misc{kind:"deliverable"} so the DeliveryRouter (story
+        // 2.5) picks it up. Also emit the fallback Misc if we landed
+        // on the .md path.
+        if let Some(reason) = fallback_reason {
+            let _ = ctx
+                .events
+                .append(NewEvent {
+                    session_id: session_id.clone(),
+                    event_type: EventType::Misc,
+                    source: "task_deliver".into(),
+                    data: json!({
+                        "kind": "deliverable_format_fallback",
+                        "target_format": format_to_str(&target_format),
+                        "fell_back_to": "md",
+                        "reason": reason,
+                    }),
+                })
+                .await;
+        }
+        let _ = ctx
+            .events
+            .append(NewEvent {
+                session_id: session_id.clone(),
+                event_type: EventType::Misc,
+                source: "task_deliver".into(),
+                data: json!({
+                    "kind": "deliverable",
+                    "deliverable_id": persisted_id,
+                    "format": format_str,
+                    "file_ref": rendered.workspace_path,
+                    "task_id": task_id,
+                    "citations": citations,
+                }),
+            })
+            .await;
+
+        Ok(ToolOutput {
+            ok: true,
+            output: json!({
+                "deliverable_id": persisted_id,
+                "filename": target_filename,
+                "format": format_str,
+                "content_sha256": rendered.sha256,
+                "content_size": rendered.size,
+            }),
+            file_ref: Some(rendered.workspace_path),
+            error: None,
+        })
+    }
+}
+
+impl TaskDeliver {
+    #[allow(clippy::too_many_arguments)]
+    async fn simplify_or_fallback(
+        &self,
+        ctx: &ToolContext,
+        session_id: &str,
+        target_format: &DeliverableFormat,
+        target_filename: &str,
+        original_content: &str,
+        renderer: &'static str,
+        exit_code: i32,
+        stderr: &str,
+        _input_preview: &str,
+    ) -> Result<
+        (
+            super::renderer::RenderedArtifact,
+            String,
+            String,
+            String,
+            Option<String>,
+        ),
+        ToolError,
+    > {
+        let stderr_preview = truncate(stderr, STDERR_PREVIEW_CHARS);
+
+        // Step 1: planner-LLM simplify (if a simplifier is wired).
+        if let Some(simplifier) = self.deps.planner_llm.clone() {
+            let simplified = simplifier
+                .simplify(
+                    original_content,
+                    format_to_str(target_format),
+                    &stderr_preview,
+                )
+                .await;
+            if let Some(new_content) = simplified {
+                // Step 2: re-attempt render with the simplified content.
+                let retry_id = Uuid::new_v4().to_string();
+                let source_ext = source_ext_for(target_format);
+                let retry_source_path = format!(".deliverables/.source/{retry_id}.{source_ext}");
+                ctx.sandbox
+                    .write_workspace_file(session_id, &retry_source_path, new_content.as_bytes())
+                    .await
+                    .map_err(|e| ToolError::Backend(format!("write simplified source: {e}")))?;
+                match self
+                    .deps
+                    .renderer
+                    .render(new_content.as_bytes(), target_filename, session_id)
+                    .await
+                {
+                    Ok(artifact) => {
+                        return Ok((
+                            artifact,
+                            format_to_str(target_format).to_string(),
+                            new_content,
+                            retry_source_path,
+                            None,
+                        ));
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            target_format = format_to_str(target_format),
+                            %error,
+                            "task_deliver: simplify retry still failed; falling back to .md"
+                        );
+                    }
+                }
+            }
+        }
+
+        // Step 3: fall back to writing the original source as raw .md.
+        let fallback_id = Uuid::new_v4().to_string();
+        let fallback_filename = format!("{fallback_id}.md");
+        // Raw renderer writes to /workspace/.deliverables/<filename>.md
+        let artifact = super::renderer::raw::render(
+            ctx.sandbox.as_ref(),
+            session_id,
+            original_content.as_bytes(),
+            &format!(".deliverables/{fallback_filename}"),
+        )
+        .await
+        .map_err(|e| ToolError::Backend(format!("fallback raw write: {e}")))?;
+        let fallback_source_path = format!(".deliverables/.source/{fallback_id}.md");
+        ctx.sandbox
+            .write_workspace_file(
+                session_id,
+                &fallback_source_path,
+                original_content.as_bytes(),
+            )
+            .await
+            .map_err(|e| ToolError::Backend(format!("write fallback source: {e}")))?;
+        Ok((
+            artifact,
+            "md".into(),
+            original_content.to_string(),
+            fallback_source_path,
+            Some(format!(
+                "renderer {renderer} failed (exit={exit_code}): {stderr_preview}"
+            )),
+        ))
+    }
+}
+
+fn lookup_task_id(
+    db: &DbPool,
+    session_id: &str,
+) -> impl std::future::Future<Output = Result<Option<String>, rusqlite::Error>> + Send + 'static {
+    let sid = session_id.to_string();
+    let db = db.clone();
+    async move {
+        db.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT task_id FROM sessions WHERE id = ?",
+                rusqlite::params![sid],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map(|maybe| maybe.flatten())
+        })
+        .await
+    }
+}
+
+fn source_ext_for(format: &DeliverableFormat) -> &'static str {
+    match format {
+        // Markdown is the LLM's source for every Pandoc target.
+        DeliverableFormat::Markdown
+        | DeliverableFormat::Docx
+        | DeliverableFormat::Pdf
+        | DeliverableFormat::Html => "md",
+        // JSON is the LLM's source for the structured formats.
+        DeliverableFormat::Json | DeliverableFormat::Pptx | DeliverableFormat::Xlsx => "json",
+        DeliverableFormat::Csv => "csv",
+        DeliverableFormat::Code | DeliverableFormat::Url => "md",
+    }
+}
+
+fn format_to_str(format: &DeliverableFormat) -> &'static str {
+    match format {
+        DeliverableFormat::Markdown => "md",
+        DeliverableFormat::Json => "json",
+        DeliverableFormat::Csv => "csv",
+        DeliverableFormat::Docx => "docx",
+        DeliverableFormat::Pdf => "pdf",
+        DeliverableFormat::Html => "html",
+        DeliverableFormat::Pptx => "pptx",
+        DeliverableFormat::Xlsx => "xlsx",
+        DeliverableFormat::Code => "code",
+        DeliverableFormat::Url => "url",
+    }
+}
+
+fn stub_provenance(task_id: &str, session_id: &str, citations: Option<&[i64]>) -> Value {
+    json!({
+        "schema_version": PROVENANCE_SCHEMA_VERSION,
+        "task_id": task_id,
+        "sessions": [session_id],
+        "citations": citations.unwrap_or(&[]),
+        "phase_2_stub": true,
+    })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        s.chars().take(n).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db;
+    use crate::dispatch::mask::{AgentMode, DefaultMaskPolicy, ToolMaskPolicy};
+    use crate::events::EventQuery;
+    use crate::events::sqlite::SqliteEventStore;
+    use crate::sandbox::{SandboxClient, SandboxHandle};
+    use crate::tools::register_builtin_tools;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+    use wiremock::matchers::{method, path as wm_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Recording SimplifyLlm so the retry-path tests can assert prompt
+    /// shape + return canned simplified content.
+    #[derive(Default)]
+    struct RecordingSimplify {
+        calls: Mutex<Vec<(String, String, String)>>,
+        canned: Mutex<Option<String>>,
+    }
+    impl RecordingSimplify {
+        fn with_canned(self, content: &str) -> Self {
+            *self.canned.lock().unwrap() = Some(content.into());
+            self
+        }
+        fn call_count(&self) -> usize {
+            self.calls.lock().unwrap().len()
+        }
+    }
+    #[async_trait]
+    impl SimplifyLlm for RecordingSimplify {
+        async fn simplify(
+            &self,
+            failed: &str,
+            target_format: &str,
+            stderr_preview: &str,
+        ) -> Option<String> {
+            self.calls.lock().unwrap().push((
+                failed.into(),
+                target_format.into(),
+                stderr_preview.into(),
+            ));
+            self.canned.lock().unwrap().clone()
+        }
+    }
+
+    /// Boot a fixture with a wiremock'd /v1/shell/exec returning the
+    /// supplied (exit_code, stderr) for EVERY shell exec.
+    async fn fixture_with_exit(
+        exit_code: i32,
+        stderr: &str,
+        simplifier: Option<Arc<dyn SimplifyLlm>>,
+    ) -> (
+        TaskDeliver,
+        ToolContext,
+        TempDir,
+        Arc<SqliteEventStore>,
+        Arc<DeliverableStore>,
+        Arc<SandboxClient>,
+        Arc<RendererDispatcher>,
+        String, // task_id
+        String, // session_id
+        MockServer,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(wm_path("/v1/shell/exec"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "exit_code": exit_code,
+                "stdout": "",
+                "stderr": stderr,
+            })))
+            .mount(&server)
+            .await;
+
+        let pool = db::open(":memory:").await.unwrap();
+        let session_id = "sess-test".to_string();
+        let project_id = {
+            let projects = crate::project::ProjectStore::new(pool.clone());
+            projects
+                .insert(crate::project::NewProject {
+                    tenant_id: None,
+                    title: "P".into(),
+                    description: None,
+                })
+                .await
+                .unwrap()
+        };
+        let task_id = {
+            let tasks = crate::project::TaskStore::new(pool.clone());
+            tasks
+                .insert(crate::project::NewTask {
+                    project_id,
+                    tenant_id: None,
+                    title: "T".into(),
+                    expected_due_at: None,
+                })
+                .await
+                .unwrap()
+        };
+        // Insert sessions row with task_id link.
+        let sid = session_id.clone();
+        let tid = task_id.clone();
+        pool.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO sessions (id, created_at, updated_at, state, task_id) \
+                 VALUES (?, 0, 0, 'RUNNING', ?)",
+                rusqlite::params![sid, tid],
+            )
+            .unwrap();
+        })
+        .await;
+
+        let events = Arc::new(SqliteEventStore::new(pool.clone()));
+        let sandbox =
+            Arc::new(SandboxClient::new("ghcr.io/agent-infra/sandbox:test", tmp.path()).unwrap());
+        sandbox
+            .insert_handle_for_test(SandboxHandle {
+                session_id: session_id.clone(),
+                container_id: "c".into(),
+                api_url: server.uri(),
+                novnc_url: "http://127.0.0.1:0".into(),
+                ttyd_url: "ws://127.0.0.1:0".into(),
+                workspace_host_path: tmp.path().to_path_buf(),
+            })
+            .await;
+        let renderer = Arc::new(RendererDispatcher::new(sandbox.clone()));
+        let deliverables = Arc::new(DeliverableStore::new(pool.clone()));
+        let plan_manager = Arc::new(crate::plan::PlanManager::new(pool.clone(), events.clone()));
+
+        let tool = TaskDeliver::new(TaskDeliverDeps {
+            deliverables: deliverables.clone(),
+            renderer: renderer.clone(),
+            db: pool.clone(),
+            planner_llm: simplifier,
+        });
+
+        let ctx = ToolContext {
+            session_id: session_id.clone(),
+            mask_mode: AgentMode::Worker,
+            events: events.clone(),
+            sandbox: sandbox.clone(),
+            search: Arc::new(crate::search::SearchClient::new(
+                crate::search::SearchProvider::Brave { api_key: None },
+            )),
+            plan_manager,
+            checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
+            checkpoints: Arc::new(crate::checkpoint::CheckpointStore::new(pool)),
+        };
+        (
+            tool,
+            ctx,
+            tmp,
+            events,
+            deliverables,
+            sandbox,
+            renderer,
+            task_id,
+            session_id,
+            server,
+        )
+    }
+
+    #[tokio::test]
+    async fn task_deliver_writes_source_and_renders() {
+        let (tool, ctx, tmp, _events, deliverables, _sandbox, _renderer, task_id, _, _) =
+            fixture_with_exit(0, "", None).await;
+
+        let args = json!({
+            "content": "# Hello world\n",
+            "target_filename": "out.md",
+            "citations": [1, 2],
+        });
+        let out = tool.invoke(args, &ctx).await.expect("ok");
+        assert!(out.ok, "deliverable persisted");
+        let deliverable_id = out
+            .output
+            .get("deliverable_id")
+            .and_then(Value::as_str)
+            .unwrap();
+        let row = deliverables.get(deliverable_id).await.unwrap();
+        assert_eq!(row.task_id, task_id);
+        assert_eq!(row.format, "md");
+        assert!(
+            tmp.path().join(".deliverables/out.md").exists(),
+            "rendered file on disk"
+        );
+    }
+
+    #[tokio::test]
+    async fn task_deliver_rejects_unknown_extension() {
+        let (tool, ctx, _tmp, _, _, _, _, _, _, _) = fixture_with_exit(0, "", None).await;
+        let err = tool
+            .invoke(
+                json!({"content": "x", "target_filename": "thing.rtf"}),
+                &ctx,
+            )
+            .await
+            .expect_err("rejected");
+        match err {
+            ToolError::InvalidArgs(msg) => assert!(msg.contains("unknown_format")),
+            other => panic!("expected InvalidArgs, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn task_deliver_emits_misc_deliverable_event() {
+        let (tool, ctx, _tmp, events, _, _, _, _, session_id, _) =
+            fixture_with_exit(0, "", None).await;
+        tool.invoke(json!({"content": "# hi", "target_filename": "x.md"}), &ctx)
+            .await
+            .unwrap();
+
+        let rows = events
+            .query(&session_id, EventQuery::default())
+            .await
+            .unwrap();
+        assert!(
+            rows.iter()
+                .any(|e| e.data.get("kind").and_then(Value::as_str) == Some("deliverable")),
+            "deliverable Misc emitted"
+        );
+    }
+
+    #[test]
+    fn task_deliver_masked_in_initializer_mode() {
+        let policy = DefaultMaskPolicy;
+        assert!(!policy.is_available("task_deliver", AgentMode::Initializer));
+    }
+
+    #[test]
+    fn task_deliver_masked_in_verifier_mode() {
+        let policy = DefaultMaskPolicy;
+        assert!(!policy.is_available("task_deliver", AgentMode::Verifier));
+        assert!(!policy.is_available("task_deliver", AgentMode::Internal));
+        // Worker stays available.
+        assert!(policy.is_available("task_deliver", AgentMode::Worker));
+    }
+
+    #[tokio::test]
+    async fn task_deliver_retries_with_simplified_content_on_render_fail() {
+        // First /v1/shell/exec returns exit=1 (pandoc fails); we plant
+        // the rendered file on disk so the SECOND render's fingerprint
+        // step succeeds. The mock returns exit=1 always, so the retry
+        // would also "fail" — but because we wire the simplifier to
+        // return content, the retry path is exercised. We use docx so
+        // pandoc is the renderer.
+        //
+        // For this test we want the retry to SUCCEED → so we need
+        // the second shell-exec to succeed. Set up a sequence: first
+        // exec exit=1, subsequent exit=0. wiremock doesn't natively
+        // support that; instead: first attempt fails → simplify is
+        // called → second attempt also "fails" but we don't care since
+        // the spec says "if second attempt fails, fall back to .md".
+        //
+        // So actually the simpler test: BOTH attempts fail, simplifier
+        // returns canned content, and we assert (a) simplifier was
+        // called once, and (b) the persisted deliverable's format is
+        // "md" (the fallback path). That is covered by
+        // task_deliver_falls_back_to_md_after_double_fail below — so
+        // this test asserts only that simplify() was invoked when the
+        // first render failed.
+        let simplifier = Arc::new(RecordingSimplify::default().with_canned("# simplified\n"));
+        let (tool, ctx, _tmp, _, _, _, _, _, _, _) =
+            fixture_with_exit(1, "pandoc: oops", Some(simplifier.clone())).await;
+        let _ = tool
+            .invoke(
+                json!({"content": "# big", "target_filename": "report.docx"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(simplifier.call_count(), 1, "simplifier called exactly once");
+    }
+
+    #[tokio::test]
+    async fn task_deliver_falls_back_to_md_after_double_fail() {
+        // Both render attempts fail (every shell_exec returns exit=1);
+        // simplifier returns Some content. Fallback kicks in →
+        // deliverable persisted with format = "md" + fallback Misc emitted.
+        let simplifier = Arc::new(RecordingSimplify::default().with_canned("# alt\n"));
+        let (tool, ctx, _tmp, events, deliverables, _, _, _, session_id, _) =
+            fixture_with_exit(1, "pandoc: still broken", Some(simplifier)).await;
+
+        let out = tool
+            .invoke(
+                json!({"content": "# original", "target_filename": "x.docx"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.ok, "deliverable persisted via fallback");
+        let id = out
+            .output
+            .get("deliverable_id")
+            .and_then(Value::as_str)
+            .unwrap();
+        let row = deliverables.get(id).await.unwrap();
+        assert_eq!(row.format, "md", "fell back to md");
+
+        let rows = events
+            .query(&session_id, EventQuery::default())
+            .await
+            .unwrap();
+        assert!(
+            rows.iter()
+                .any(|e| e.data.get("kind").and_then(Value::as_str)
+                    == Some("deliverable_format_fallback")),
+            "fallback Misc emitted"
+        );
+    }
+
+    /// Spot-check the registry honours the production builder.
+    #[test]
+    fn task_deliver_registered_in_builtin_catalog() {
+        let reg = register_builtin_tools();
+        assert!(reg.contains_key("task_deliver"));
+    }
+}

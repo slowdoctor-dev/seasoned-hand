@@ -50,19 +50,24 @@ fi
 # Check 4: No orphan stories (status: done but file changed since)
 # (skipping for v0)
 
-# Check 5: Tool catalog registry size (Phase 1 stories 1.4 + 1.13 + 1.13b)
-# Phase 1 baseline now ships 37: Phase 0's 33 + feature_mark_done +
+# Check 5: Tool catalog registry size (Phase 1 stories 1.4 + 1.13 + 1.13b;
+# Phase 2 story 2.14 adds task_deliver).
+# Phase 2 baseline ships 38: Phase 0's 33 + feature_mark_done +
 # progress_update (story 1.4) + checkpoint_label (story 1.13) +
-# checkpoint_rollback (story 1.13b — registered but masked from LLM).
+# checkpoint_rollback (story 1.13b — registered but masked from LLM)
+# + task_deliver (story 2.14 — Worker-mode only).
 TOOLS_BUILTIN=crates/seasoned-hand-core/src/tools/builtin.rs
 if [ -f "$TOOLS_BUILTIN" ]; then
+  # Raw `map.insert(` lines = 39 since story 2.14 (one insert in `all()`
+  # for the not-wired placeholder, one in `all_with_task_deliver()` for
+  # the production override). Unique tool count is 38.
   count=$(grep -c "map.insert(" "$TOOLS_BUILTIN" || echo 0)
-  expected=37
+  expected=39
   if [ "$count" -ne "$expected" ]; then
-    echo "✗ Tool catalog registry has $count entries, expected $expected (story 0.7 / DEBT #4)"
+    echo "✗ Tool catalog registry has $count entries, expected $expected (story 0.7 / 2.14; 38 unique + task_deliver prod override)"
     FAIL=$((FAIL+1))
   else
-    echo "✓ Tool catalog registry size ($count) matches story 0.7"
+    echo "✓ Tool catalog registry size ($count = 38 unique + task_deliver prod override) matches story 2.14"
     PASS=$((PASS+1))
   fi
 fi

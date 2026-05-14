@@ -32,7 +32,10 @@ use seasoned_hand_core::channel::{
 };
 use seasoned_hand_core::cost::{CostClient, CostSnapshot};
 use seasoned_hand_core::db::DbPool;
-use seasoned_hand_core::deliverable::DeliverableStore;
+// (DeliverableStore imported via the broader `deliverable::` use below.)
+use seasoned_hand_core::deliverable::{
+    DeliverableStore, PlannerSimplifyLlm, RendererDispatcher, TaskDeliverDeps,
+};
 use seasoned_hand_core::delivery::{DeliveryEventStore, DeliveryRouter};
 use seasoned_hand_core::dispatch::mask::DefaultMaskPolicy;
 use seasoned_hand_core::dispatch::{
@@ -50,7 +53,7 @@ use seasoned_hand_core::router::{SlotName, SlotRouter};
 use seasoned_hand_core::sandbox::SandboxClient;
 use seasoned_hand_core::search::SearchClient;
 use seasoned_hand_core::skill::{PlaybookStore, SkillStore};
-use seasoned_hand_core::tools::register_builtin_tools;
+use seasoned_hand_core::tools::builtin::all_with_task_deliver;
 use seasoned_hand_core::verifier::{
     VerificationStore,
     routes::{ListQuery as VerifyListQuery, get_verification, list_verifications},
@@ -338,8 +341,31 @@ impl AppState {
         // dispatcher's hook chain, so the boot-time `attach_classifier`
         // call mutates the in-chain hook directly.
         let narrator = Arc::new(NarratorHook::new(events.clone()));
+
+        // Story 2.14: build the Deliverable store + RendererDispatcher
+        // BEFORE the ToolDispatcher so `task_deliver` lands in the
+        // catalog with its production deps. The other Phase 2 stores
+        // are built here too — moving them up the file (they used to
+        // sit below the AgentRunner) keeps every share-from-`db` store
+        // in one block.
+        let projects = Arc::new(seasoned_hand_core::project::ProjectStore::new(db.clone()));
+        let tasks_store = Arc::new(seasoned_hand_core::project::TaskStore::new(db.clone()));
+        let deliverables = Arc::new(DeliverableStore::new(db.clone()));
+        let intake_events = Arc::new(IntakeEventStore::new(db.clone()));
+        let delivery_events = Arc::new(DeliveryEventStore::new(db.clone()));
+        let notifications_sent = Arc::new(NotificationsSentStore::new(db.clone()));
+        let skills = Arc::new(SkillStore::new(db.clone()));
+        let playbooks = Arc::new(PlaybookStore::new(db.clone()));
+        let renderer = Arc::new(RendererDispatcher::new(sandbox.clone()));
+        let task_deliver_deps = TaskDeliverDeps {
+            deliverables: deliverables.clone(),
+            renderer: renderer.clone(),
+            db: db.clone(),
+            planner_llm: Some(Arc::new(PlannerSimplifyLlm::from_router(&router))),
+        };
+
         let dispatcher = Arc::new(
-            ToolDispatcher::new(register_builtin_tools())
+            ToolDispatcher::new(all_with_task_deliver(task_deliver_deps))
                 .with_hook(narrator.clone())
                 .with_hook(Arc::new(EventEmittingHook::new(events.clone())))
                 .with_hook(Arc::new(InvalidationHook::new(
@@ -385,17 +411,6 @@ impl AppState {
             breakers: breakers.clone(),
             cancel_tokens: cancel_tokens.clone(),
         }));
-        // Story 2.3: Phase 2 OS-shape persistence handles. All eight
-        // stores share the same pool — concurrency is gated by the
-        // pool's inner `Mutex<Connection>`, so this is safe.
-        let projects = Arc::new(ProjectStore::new(db.clone()));
-        let tasks_store = Arc::new(TaskStore::new(db.clone()));
-        let deliverables = Arc::new(DeliverableStore::new(db.clone()));
-        let intake_events = Arc::new(IntakeEventStore::new(db.clone()));
-        let delivery_events = Arc::new(DeliveryEventStore::new(db.clone()));
-        let notifications_sent = Arc::new(NotificationsSentStore::new(db.clone()));
-        let skills = Arc::new(SkillStore::new(db.clone()));
-        let playbooks = Arc::new(PlaybookStore::new(db.clone()));
         // Story 2.9: ChatChannel wraps the existing WS as both an
         // IntakeProvider (no-op `run`; the WS server pushes IntakeEvents
         // synchronously via `intake_router.handle_event`) and a

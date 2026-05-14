@@ -99,6 +99,8 @@ const EXPECTED_TOOLS: &[&str] = &[
     // checkpoint (2) — story 1.13 + 1.13b
     "checkpoint_label",
     "checkpoint_rollback",
+    // deliverable (1) — story 2.14
+    "task_deliver",
 ];
 
 #[test]
@@ -162,6 +164,14 @@ async fn stubs_return_not_implemented() {
         // `real` here so the stubs test doesn't try to invoke it
         // against the empty fixture (it would 404 on checkpoint_id).
         "checkpoint_rollback",
+        // Story 2.14: registered as a not-wired placeholder in the
+        // base `register_builtin_tools()` (production wiring is via
+        // `all_with_task_deliver(deps)`). Surfaces
+        // `task_deliver_not_wired` rather than `not_implemented` — the
+        // distinction matters because operators need to know "deps
+        // missing" vs "feature deferred". Excluded from the stub
+        // check so it doesn't fail the kind assertion.
+        "task_deliver",
     ];
     for (name, tool) in reg.iter() {
         if real.contains(name) {

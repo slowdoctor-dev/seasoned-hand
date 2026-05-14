@@ -10,9 +10,14 @@
 
 pub mod renderer;
 pub mod store;
+pub mod task_deliver;
 
 pub use renderer::{RenderError, RenderedArtifact, RendererDispatcher};
 pub use store::{DeliverableError, DeliverableStore, NewDeliverable};
+pub use task_deliver::{
+    PlannerSimplifyLlm, SimplifyLlm, TOOL_NAME as TASK_DELIVER_TOOL_NAME, TaskDeliver,
+    TaskDeliverDeps,
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

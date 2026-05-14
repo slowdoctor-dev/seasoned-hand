@@ -31,6 +31,13 @@ impl ToolMaskPolicy for DefaultMaskPolicy {
             // dispatch it.
             ("checkpoint_rollback", AgentMode::Internal) => true,
             ("checkpoint_rollback", _) => false,
+            // Story 2.14: `task_deliver` is Worker-mode only.
+            // Initializer is busy authoring the Brief; Verifier reads
+            // existing state but doesn't produce deliverables.
+            // `Internal` is trusted-admin-side and shouldn't be
+            // emitting deliverables either.
+            ("task_deliver", AgentMode::Worker) => true,
+            ("task_deliver", _) => false,
             _ => true,
         }
     }
