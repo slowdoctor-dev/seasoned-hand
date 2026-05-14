@@ -17,6 +17,7 @@ pub mod llm;
 pub mod notify;
 pub mod plan;
 pub mod project;
+pub mod provenance;
 pub mod pubsub;
 pub mod router;
 pub mod routes;

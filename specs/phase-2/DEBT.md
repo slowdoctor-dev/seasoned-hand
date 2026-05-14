@@ -510,6 +510,42 @@
   confirm_timeout: Duration::from_millis(100) }` via a test-only env
   override if the manual confirm is undesirable.
 
+### 24. Provenance `brief.confirmed`/`confirmed_at`/`edits_applied` are static placeholders
+- **Origin**: story 2.15,
+  `crates/seasoned-hand-core/src/provenance/builder.rs` (`build_manifest`)
+- **Severity**: **Low**
+- **What**: The manifest's `brief` block currently writes
+  `confirmed = true`, `confirmed_at = None`, `edits_applied = 0` for
+  every deliverable. The real confirm/edit lineage lives in the
+  Initializer's `run_confirm_gate` (story 2.8 / 2.8b) but never makes
+  it into a queryable surface that the manifest builder can read.
+- **Why**: Tracing the gate's actual outcome would require either
+  persisting confirm/edit/cancel cycles into a new column on `tasks`
+  (Brief.confirmed_at, edits_applied) or replaying the `briefing` Misc
+  event stream to count edits. Neither lands cleanly inside story 2.15
+  without growing scope.
+- **Pay down**: Story 2.23 (FE briefing card) or a Phase 3 close-out
+  threads the gate's counters onto `tasks` (or a tiny side table) and
+  the builder reads them. The schema slot is reserved in §2.11 already.
+
+### 25. Provenance `intake` synthesizes "unknown" entry for legacy WS tasks
+- **Origin**: story 2.15,
+  `crates/seasoned-hand-core/src/provenance/builder.rs` (`load_intake`)
+- **Severity**: **Low**
+- **What**: When a task has no `intake_events` row (i.e. it was created
+  via the legacy WS `task_create` shim before DEBT #15 closed; or via
+  a future code path that bypasses intake) the builder emits a
+  synthetic `IntakeProvenance { channel: "unknown", intake_id:
+  "synthetic", received_at: task.created_at, metadata: {} }` rather
+  than failing. Keeps the §2.11 schema rigid (`intake` always present)
+  at the cost of losing the actual chat-side message-id evidence.
+- **Why**: Phase 2 closed DEBT #15 (WS task_create now creates an
+  intake_events row via ChatChannel) but pre-2.8b tasks + any future
+  out-of-band creation path would otherwise fail manifest build.
+- **Pay down**: Phase 5 multi-user — enforce intake row creation at
+  every task-creation site, drop the synthetic fallback + return
+  `ProvenanceError::IntakeMissing` on the cold path.
+
 ### 23. CliChannel not registered into the production AppState
 - **Origin**: story 2.13, `crates/seasoned-hand-core/src/channel/cli.rs`
 - **Severity**: **Low**

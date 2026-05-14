@@ -357,11 +357,27 @@ impl AppState {
         let skills = Arc::new(SkillStore::new(db.clone()));
         let playbooks = Arc::new(PlaybookStore::new(db.clone()));
         let renderer = Arc::new(RendererDispatcher::new(sandbox.clone()));
+        // Story 2.15: provenance builder needs the verifier + checkpoint
+        // stores. Lifted ahead of `task_deliver_deps` so it can hand the
+        // ProvenanceDeps bundle to `TaskDeliverDeps`.
+        let verifications = Arc::new(VerificationStore::new(db.clone()));
+        let checkpoints = Arc::new(seasoned_hand_core::checkpoint::CheckpointStore::new(
+            db.clone(),
+        ));
         let task_deliver_deps = TaskDeliverDeps {
             deliverables: deliverables.clone(),
             renderer: renderer.clone(),
             db: db.clone(),
             planner_llm: Some(Arc::new(PlannerSimplifyLlm::from_router(&router))),
+            provenance: seasoned_hand_core::deliverable::task_deliver::ProvenanceDeps {
+                task_store: tasks_store.clone(),
+                project_store: projects.clone(),
+                intake_store: intake_events.clone(),
+                delivery_store: delivery_events.clone(),
+                events: events.clone(),
+                verifications: verifications.clone(),
+                checkpoints: checkpoints.clone(),
+            },
         };
 
         let dispatcher = Arc::new(
@@ -375,12 +391,8 @@ impl AppState {
                 .with_hook(Arc::new(PostBrowserActionHook::new(events.clone()))),
         );
         let verifier_enabled = router.verifier_enabled();
-        let verifications = Arc::new(VerificationStore::new(db.clone()));
         let checkpoint_labels =
             Arc::new(seasoned_hand_core::checkpoint::CheckpointLabelBuffer::new());
-        let checkpoints = Arc::new(seasoned_hand_core::checkpoint::CheckpointStore::new(
-            db.clone(),
-        ));
         // Story 1.13b: admin_token / rollback flag default empty/false;
         // production main.rs reads them from env and calls the
         // builder methods. Tests can do the same without touching
@@ -1196,6 +1208,11 @@ pub fn app(state: AppState) -> Router {
             "/v1/intake/webhook",
             axum::routing::post(post_intake_webhook_handler),
         )
+        // Story 2.15: per-task provenance manifest. Returns the latest
+        // deliverable's manifest by default, or a specific deliverable's
+        // when `?deliverable_id=...` is supplied. Spilled (file-ref)
+        // manifests are transparently inflated.
+        .route("/v1/tasks/:id/provenance", get(get_task_provenance_handler))
         .with_state(state)
 }
 
@@ -1707,6 +1724,28 @@ async fn get_verification_handler(
     render_outcome(
         "get_verification",
         get_verification(&state.verifications, &id).await,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Story 2.15: per-task provenance manifest.
+// ---------------------------------------------------------------------------
+
+async fn get_task_provenance_handler(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+    Query(q): Query<seasoned_hand_core::provenance::GetTaskProvenanceQuery>,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    use seasoned_hand_core::provenance::{GetTaskProvenanceDeps, get_task_provenance};
+    let deps = GetTaskProvenanceDeps {
+        deliverables: state.deliverables.as_ref(),
+        delivery_events: state.delivery_events.as_ref(),
+        sandbox: state.sandbox.as_ref(),
+        db: &state.db,
+    };
+    render_outcome(
+        "get_task_provenance",
+        get_task_provenance(&task_id, q, deps).await,
     )
 }
 

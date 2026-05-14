@@ -34,12 +34,20 @@ use uuid::Uuid;
 
 use super::renderer::{RenderError, RendererDispatcher};
 use super::store::{DeliverableError, DeliverableStore, NewDeliverable};
+use crate::checkpoint::CheckpointStore;
 use crate::db::DbPool;
-use crate::events::{EventStore, EventType, NewEvent};
+use crate::delivery::store::DeliveryEventStore;
+use crate::events::{EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
+use crate::intake::store::IntakeEventStore;
 use crate::llm::{ChatCompletionRequest, LlmClient, Message, Role};
 use crate::project::brief::DeliverableFormat;
+use crate::project::{ProjectStore, TaskStore};
+use crate::provenance::{
+    BuildDeps, INLINE_THRESHOLD_BYTES, ManifestInputs, build_manifest, persist_or_spill,
+};
 use crate::router::{SlotName, SlotRouter};
 use crate::tools::{Tool, ToolContext, ToolError, ToolErrorPayload, ToolOutput};
+use crate::verifier::VerificationStore;
 
 pub const TOOL_NAME: &str = "task_deliver";
 
@@ -52,11 +60,6 @@ const STDERR_PREVIEW_CHARS: usize = 200;
 /// small; 4 k tokens covers most realistic deliverables without
 /// risking provider-side timeouts.
 const SIMPLIFY_MAX_TOKENS: u32 = 4096;
-
-/// Stub provenance manifest written when story 2.15 hasn't yet shipped
-/// the full builder. Keeps the schema-version slot reserved so 2.15
-/// can roll out without a schema migration.
-const PROVENANCE_SCHEMA_VERSION: u32 = 1;
 
 /// Tool dependencies threaded in at registration time (`AppState::new`
 /// in production, an in-test fixture in unit tests). Keeping the deps
@@ -77,6 +80,24 @@ pub struct TaskDeliverDeps {
     /// fallback. Tests typically wire `Some(stub_llm)` to exercise the
     /// retry without touching a real LLM provider.
     pub planner_llm: Option<Arc<dyn SimplifyLlm>>,
+    /// Story 2.15: borrowed handles the provenance builder needs at
+    /// deliverable-persist time. Kept as a single sub-struct so future
+    /// renderer-side fields don't keep growing `TaskDeliverDeps` itself.
+    pub provenance: ProvenanceDeps,
+}
+
+/// Borrowed-handle bundle threaded into `build_manifest` from
+/// `task_deliver`. All fields are `Arc` so the dispatcher can clone
+/// `TaskDeliverDeps` cheaply across the per-iteration tool catalog.
+#[derive(Clone)]
+pub struct ProvenanceDeps {
+    pub task_store: Arc<TaskStore>,
+    pub project_store: Arc<ProjectStore>,
+    pub intake_store: Arc<IntakeEventStore>,
+    pub delivery_store: Arc<DeliveryEventStore>,
+    pub events: Arc<SqliteEventStore>,
+    pub verifications: Arc<VerificationStore>,
+    pub checkpoints: Arc<CheckpointStore>,
 }
 
 /// LLM seam for the simplify-and-retry path. Production wraps
@@ -307,18 +328,55 @@ impl Tool for TaskDeliver {
                 }
             };
 
+        // Story 2.15: build the full provenance manifest BEFORE
+        // persisting the Deliverable row. The architecture (§2.11)
+        // requires the manifest to land on the same INSERT.
+        let source_sha = sha256_hex(source_for_record.as_bytes());
+        let citations_vec: Vec<i64> = citations.clone().unwrap_or_default();
+        let build_deps = BuildDeps {
+            task_store: &self.deps.provenance.task_store,
+            project_store: &self.deps.provenance.project_store,
+            intake_store: &self.deps.provenance.intake_store,
+            delivery_store: &self.deps.provenance.delivery_store,
+            events: &self.deps.provenance.events,
+            verifications: &self.deps.provenance.verifications,
+            checkpoints: &self.deps.provenance.checkpoints,
+            db: &self.deps.db,
+        };
+        let manifest = build_manifest(
+            ManifestInputs {
+                task_id: &task_id,
+                deliverable_id: &deliverable_id,
+                rendered_content_sha256: &rendered.sha256,
+                source_content_sha256: Some(&source_sha),
+                citations: &citations_vec,
+            },
+            &build_deps,
+        )
+        .await
+        .map_err(|e| ToolError::Backend(format!("provenance: {e}")))?;
+        let column = persist_or_spill(
+            &manifest,
+            ctx.sandbox.as_ref(),
+            &session_id,
+            &task_id,
+            INLINE_THRESHOLD_BYTES,
+        )
+        .await
+        .map_err(|e| ToolError::Backend(format!("provenance spill: {e}")))?;
+
         // Persist Deliverable row.
         let new_row = NewDeliverable {
             task_id: task_id.clone(),
             tenant_id: None,
             format: format_str.clone(),
             source_content_path: Some(source_path_for_record.clone()),
-            source_content_sha256: Some(sha256_hex(source_for_record.as_bytes())),
+            source_content_sha256: Some(source_sha),
             rendered_content_path: rendered.workspace_path.clone(),
             rendered_content_sha256: rendered.sha256.clone(),
             content_size: rendered.size as i64,
             citations: citations.clone(),
-            provenance_manifest: stub_provenance(&task_id, &session_id, citations.as_deref()),
+            provenance_manifest: column.into_column_value(),
         };
         let persisted_id = self
             .deps
@@ -529,16 +587,6 @@ fn format_to_str(format: &DeliverableFormat) -> &'static str {
     }
 }
 
-fn stub_provenance(task_id: &str, session_id: &str, citations: Option<&[i64]>) -> Value {
-    json!({
-        "schema_version": PROVENANCE_SCHEMA_VERSION,
-        "task_id": task_id,
-        "sessions": [session_id],
-        "citations": citations.unwrap_or(&[]),
-        "phase_2_stub": true,
-    })
-}
-
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(bytes))
@@ -631,29 +679,25 @@ mod tests {
 
         let pool = db::open(":memory:").await.unwrap();
         let session_id = "sess-test".to_string();
-        let project_id = {
-            let projects = crate::project::ProjectStore::new(pool.clone());
-            projects
-                .insert(crate::project::NewProject {
-                    tenant_id: None,
-                    title: "P".into(),
-                    description: None,
-                })
-                .await
-                .unwrap()
-        };
-        let task_id = {
-            let tasks = crate::project::TaskStore::new(pool.clone());
-            tasks
-                .insert(crate::project::NewTask {
-                    project_id,
-                    tenant_id: None,
-                    title: "T".into(),
-                    expected_due_at: None,
-                })
-                .await
-                .unwrap()
-        };
+        let projects_store = Arc::new(crate::project::ProjectStore::new(pool.clone()));
+        let project_id = projects_store
+            .insert(crate::project::NewProject {
+                tenant_id: None,
+                title: "P".into(),
+                description: None,
+            })
+            .await
+            .unwrap();
+        let tasks_store = Arc::new(crate::project::TaskStore::new(pool.clone()));
+        let task_id = tasks_store
+            .insert(crate::project::NewTask {
+                project_id,
+                tenant_id: None,
+                title: "T".into(),
+                expected_due_at: None,
+            })
+            .await
+            .unwrap();
         // Insert sessions row with task_id link.
         let sid = session_id.clone();
         let tid = task_id.clone();
@@ -682,6 +726,10 @@ mod tests {
             .await;
         let renderer = Arc::new(RendererDispatcher::new(sandbox.clone()));
         let deliverables = Arc::new(DeliverableStore::new(pool.clone()));
+        let intake_store = Arc::new(IntakeEventStore::new(pool.clone()));
+        let delivery_store = Arc::new(DeliveryEventStore::new(pool.clone()));
+        let verifications_store = Arc::new(VerificationStore::new(pool.clone()));
+        let checkpoints_store = Arc::new(CheckpointStore::new(pool.clone()));
         let plan_manager = Arc::new(crate::plan::PlanManager::new(pool.clone(), events.clone()));
 
         let tool = TaskDeliver::new(TaskDeliverDeps {
@@ -689,6 +737,15 @@ mod tests {
             renderer: renderer.clone(),
             db: pool.clone(),
             planner_llm: simplifier,
+            provenance: ProvenanceDeps {
+                task_store: tasks_store.clone(),
+                project_store: projects_store.clone(),
+                intake_store: intake_store.clone(),
+                delivery_store: delivery_store.clone(),
+                events: events.clone(),
+                verifications: verifications_store.clone(),
+                checkpoints: checkpoints_store.clone(),
+            },
         });
 
         let ctx = ToolContext {
