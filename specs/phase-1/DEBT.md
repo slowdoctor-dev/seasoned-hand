@@ -131,7 +131,7 @@ notes) — append them below as item 14+ when the decision is made.
   cron). Whichever phase lands #16 should also add Track C-specific
   retention.
 
-### ~~9. Frontend has no automated test coverage~~ — CLOSED in story 2.24 (<SHA>)
+### ~~9. Frontend has no automated test coverage~~ — CLOSED in story 2.24 (aff80fd)
 - ~~**Origin**: inherited from Phase 0 retrospective; Phase 1 adds
   three new UI surfaces (narration lane, verdict pane, 3-track
   BrowserTab) without test infrastructure.~~
