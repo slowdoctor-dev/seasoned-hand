@@ -21,7 +21,7 @@ Total: 22 weeks ≈ 5 months
 
 ---
 
-## Phase 0 — Foundation (3 weeks) — CURRENT
+## Phase 0 — Foundation (3 weeks) — ✅ Complete (2026-05-12, 27 stories, see `/specs/phase-0/RETROSPECTIVE.md`)
 
 **Goal**: One-line task delegation → result. Working skeleton.
 
@@ -49,7 +49,7 @@ Total: 22 weeks ≈ 5 months
 
 ---
 
-## Phase 1 — Manus 5-Layer (4 weeks)
+## Phase 1 — Manus 5-Layer (4 weeks) — ✅ Complete (2026-05-13, 23 stories, see `/specs/phase-1/RETROSPECTIVE.md`)
 
 **Goal**: Deep task completion. 50+ tool calls per task without falling apart.
 
@@ -74,7 +74,7 @@ sessions stable.
 
 ---
 
-## Phase 2 — Employee Interface (3 weeks)
+## Phase 2 — Employee Interface (3 weeks → 5 in spec; actual 3 days under parallel-mode) — ✅ Complete (2026-05-15, 27 stories, see `/specs/phase-2/RETROSPECTIVE.md`)
 
 **Goal**: Feels like a digital employee, not a chatbot.
 
@@ -92,7 +92,7 @@ sessions stable.
 
 ---
 
-## Phase 3 — Learning System (4 weeks) — LEARNING STARTS
+## Phase 3 — Learning System (4 weeks) — LEARNING STARTS — CURRENT (kickoff pending; BMAD Architect persona on `/specs/phase-3/architecture.md`)
 
 **Goal**: Same task type is faster the second time. Time-axis benefit
 visible.

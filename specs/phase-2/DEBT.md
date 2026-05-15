@@ -9,8 +9,9 @@
 
 ## Closeout audit (story 2.27, 2026-05-16)
 
-Eight in-phase entries graduated to **closed** during Phase 2 (each
-strike-through links its closing story SHA):
+Of 22 in-phase entries appended during Phase 2 (numbered #10–#32
+with #26 skipped), eight graduated to **closed** during the phase
+itself; each strike-through now links its closing story SHA:
 
 - **#10** (`Deliverable` struct location) → story 2.3 (`2c36eae`)
 - **#11** (`mark_delivered` row-existence stub) → story 2.5 (`030ffcd`)
@@ -23,13 +24,18 @@ strike-through links its closing story SHA):
   story 2.26 (`27d3770`)
 
 **#12** sits partially closed (4xx surface lands in story 2.10; Misc
-emit deferred until a system-session anchor exists). **#18, #19, #26**
-are informational (#18 EmailChannel attachment bytes; #19 task-state
-widening exec-note; #26 not yet allocated). **All other in-phase
-entries** (#14, #20, #21, #22, #24, #25, #27, #28, #29, #30, #31)
-remain **open** and are scheduled to specific later phases on each
-entry's `Pay down` line — these survived a full Phase 2 retrospective
-review and are honestly open as of 2026-05-16.
+emit deferred until a system-session anchor exists). **#19** is
+informational only (task-state widening — a code-level state-machine
+refinement that closed a spec gap, not a stub or shortcut). **#26** is
+a skipped number (the EmailChannel #18 → state-machine #19 →
+Initializer #20 → ... renumbering went straight from 25 to 27; no
+entry exists). **All other in-phase entries** (#14, #18, #20, #21,
+#22, #24, #25, #27, #28, #29, #30, #31) remain **open** and are
+scheduled to specific later phases on each entry's `Pay down` line —
+these survived a full Phase 2 retrospective review and are honestly
+open as of 2026-05-16. #18 (EmailChannel attachment bytes) is Medium
+severity and the most likely Phase 3 pay-down candidate of the
+in-phase open set.
 
 Seed items #1–#9 also remain **open** at Phase 2 close. Each is
 deliberately routed to Phase 3, 4, or 5 per its `Pay down` line:

@@ -164,6 +164,7 @@ Spec reference: `/specs/phase-2/RETROSPECTIVE.md`.
   DEBT #3 into Phase 3 (no precision data accumulated yet from
   `phase2-live-overnight` jobs)
 - CLI auth (#8) — Phase 5
+- `ProjectStore::find_or_create_inbox` UNIQUE backstop (#14) — Phase 5
 - EmailChannel discards attachment bytes (#18) — Phase 3
 - Initializer loose `in_reply_to_call_id` match (#20)
 - Non-chat channels don't forward briefing events (#21)

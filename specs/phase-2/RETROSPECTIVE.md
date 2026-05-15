@@ -69,15 +69,19 @@ path drives 399 tests green including the
   - **#21** Non-chat channels don't forward briefing events back to the
     user — 5-min auto-confirm is the Phase 2 contract for non-chat
     intake; interactive flow is Phase 4/5
-- **Low**: ~14 items including pre-baked sandbox renderer image (#2),
+- **Low** (~15 items): pre-baked sandbox renderer image (#2),
   code-as-deliverable git-tree-only (#3), email allow-list curation
-  (#4), provenance manifest size budget (#5), CLI auth (#8), Initializer
-  loose `in_reply_to_call_id` match (#20), e2e tests don't send
-  `briefing_confirm` (#22), provenance `brief.confirmed` placeholders
-  (#24), `IntakeProvenance` "unknown" synthesis (#25), in-memory handle
-  proxy for `resume_task` (#27), replay cost baseline reset (#28),
-  `task new --no-auto-confirm` not honored by spawner (#29), BriefingCard
-  rough edges (#31), `channel logs` stub (#30).
+  (#4), provenance manifest size budget (#5), CLI auth (#8),
+  `ProjectStore::find_or_create_inbox` UNIQUE backstop (#14),
+  Initializer loose `in_reply_to_call_id` match (#20), e2e tests don't
+  send `briefing_confirm` (#22), provenance `brief.confirmed`
+  placeholders (#24), `IntakeProvenance` "unknown" synthesis (#25),
+  in-memory handle proxy for `resume_task` (#27), replay cost baseline
+  reset (#28), `task new --no-auto-confirm` not honored by spawner
+  (#29), `channel logs` stub (#30), BriefingCard rough edges (#31).
+- **Informational** (no pay-down needed): skill / playbook tables
+  empty (#6 — Phase 3 fills), Phase 1 carry-over rollup (#9), task
+  state machine widening (#19 — code-level refinement).
 
 ## What worked
 
@@ -198,9 +202,12 @@ path drives 399 tests green including the
   SandboxGitShell injection / #15 Verifier XREADGROUP)
 - **Phase 1 DEBT carried**: #3 (verifier rollback default — no
   precision data yet) lives as Phase 2 DEBT #7
-- **Phase 2 DEBT logged**: 9 seed + 14 in-phase additions; **8 closed
+- **Phase 2 DEBT logged**: 9 seed + 22 in-phase additions (numbered
+  #10–#32 with #26 skipped) = **31 entries total**; **8 closed
   in-phase** (#10 / #11 / #13 / #15 / #16 / #17 / #23 / #32) + 1
-  partial (#12); 14 open at close
+  partial (#12); **22 open at close** (9 seed + 13 in-phase). Of the
+  in-phase open set, #18 (EmailChannel attachment bytes) carries
+  Medium severity; the rest are Low or informational (#19)
 - **Channels registered**: 5 (`chat`, `webhook`, `email`, `cli`, `ntfy`)
   across 3 role traits (`IntakeProvider` / `DeliverySink` / `NotifySink`)
 - **Renderer formats**: 8 (`md`, `json`, `csv`, `docx`, `pdf`, `html`,
