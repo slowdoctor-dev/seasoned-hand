@@ -584,7 +584,7 @@
   for the old session and writes the matching delta onto the new
   session's `cost_cents`. Until then, cost caps reset per rebuild.
 
-### ~~23. CliChannel not registered into the production AppState~~ — CLOSED in story 2.21a
+### ~~23. CliChannel not registered into the production AppState~~ — CLOSED in story 2.21a (527ff75)
 - **Origin**: story 2.13, `crates/seasoned-hand-core/src/channel/cli.rs`
 - **Severity**: **Low**
 - **What**: `CliChannel` is built + unit-tested but never registered
