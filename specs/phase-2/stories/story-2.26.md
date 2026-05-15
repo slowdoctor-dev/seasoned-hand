@@ -29,9 +29,17 @@ manually triggered:
       .docx deliverable + email reply.
 - [ ] `crates/seasoned-hand-server/tests/phase2_webhook_roundtrip.rs` —
       `#[ignore]`'d; tests webhook intake → real briefing →
-      task runs → email delivery to a configured address. Asserts the
-      webhook callback URL received a POST with `{task_id,
-      deliverable_id, status, content_url}`.
+      task runs → **email delivery** to a configured mailbox. Asserts
+      a real reply lands in IMAP with an attachment whose filename
+      ends in `.docx`, and that the persisted provenance manifest
+      records `intake.channel == "webhook"` +
+      `delivered_to[0].channel == "email"`. (The original AC mentioned
+      a webhook callback URL receiving a POST; that conflicts with the
+      `reply_target.channel = "email"` line directly above. Architecture
+      §11 names the job "webhook intake → email delivery", so the
+      email-delivery reading is canonical — the webhook-delivery
+      round-trip is already covered by story 2.10's `WebhookChannel`
+      unit tests.)
 - [ ] `.github/workflows/ci.yml` gains two new
       `workflow_dispatch`-only jobs:
       - `phase2-live-overnight`: runs `phase2_live_overnight` with
@@ -39,7 +47,8 @@ manually triggered:
         cap, requires `ANTHROPIC_API_KEY` + `OPENAI_API_KEY` secrets.
       - `phase2-live-webhook-roundtrip`: same env, requires also
         `SMTP_HOST` / `SMTP_USERNAME` / `SMTP_PASSWORD` /
-        `WEBHOOK_CALLBACK_URL` secrets.
+        `IMAP_HOST` / `IMAP_USERNAME` / `IMAP_PASSWORD` secrets so
+        the test can both send and verify the round-tripped reply.
 - [ ] Neither live job runs in the default CI matrix.
 - [ ] Phase 1's `phase1-live-smoke` job stays as-is (unchanged).
 - [ ] Each live test prints a final summary line `phase2 smoke pass:
@@ -71,10 +80,14 @@ verdict, deliverable `.docx` exists, manifest valid.
 
 ### 2. phase2_webhook_roundtrip.rs
 
-POST to `http://127.0.0.1:3000/v1/intake/webhook` with a brief and
-`reply_target.channel = "email"`. Configure a test mailbox via env.
-After task completion, verify a real email arrived in the test
-mailbox (poll via async-imap on a real account).
+POST to the in-process server's `/v1/intake/webhook` (bound on a
+random `127.0.0.1` port — never hard-code `3000`, that races with
+any local dev server) with a brief and `reply_target.channel =
+"email"`. Configure the test mailbox via the SMTP/IMAP envs. After
+task completion, poll IMAP (via `AsyncImapFetcher::fetch_unseen`)
+until a reply lands with a unique subject marker; assert the
+attachment filename ends with `.docx` and that the persisted
+provenance manifest records the two-channel pairing.
 
 ### 3. CI workflow
 

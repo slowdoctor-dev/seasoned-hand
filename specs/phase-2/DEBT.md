@@ -704,7 +704,7 @@
   Could also drop the `tail` flag and have the route default to live
   tail if the cost is the same.
 
-### 32. `task_deliver` stores workspace-relative `rendered_content_path` but `EmailChannel::deliver` reads it as absolute
+### ~~32. `task_deliver` stores workspace-relative `rendered_content_path` but `EmailChannel::deliver` reads it as absolute~~ — CLOSED in story 2.26
 - **Origin**: surfaced by story 2.25 (`crates/seasoned-hand-server/tests/phase2_overnight.rs`),
   rooted in `crates/seasoned-hand-core/src/deliverable/task_deliver.rs`
   (writes `rendered.workspace_path` verbatim) +
@@ -729,14 +729,17 @@
   before persisting) or thread a `SandboxClient` reference into
   `EmailChannel::deliver` — either change touches surfaces beyond the
   acceptance-gate test's scope.
-- **Pay down**: Phase 2 close-out story (2.27) or a dedicated fix-up:
-  pick a side and commit — recommend resolving the absolute path
-  inside `task_deliver` so the column stores the canonical workspace
-  path, then `EmailChannel::deliver` reads it directly. The test
-  worked-around by `UPDATE deliverables SET rendered_content_path = ?`
-  to the absolute form (workspace_host_path + relative) before
-  triggering delivery; that workaround MUST disappear once the
-  task_deliver side is fixed.
+- **Resolution (story 2.26)**: `task_deliver` now resolves the
+  workspace-relative path returned by `RendererDispatcher` against
+  the sandbox handle's `workspace_host_path` immediately before
+  constructing `NewDeliverable`. The persisted column is the absolute
+  on-disk path, so `EmailChannel::deliver` (and any future consumer
+  that performs I/O on the rendered bytes) succeeds with
+  `tokio::fs::read(...)`. The `canonicalize_rendered_path` UPDATE
+  workaround in `tests/phase2_overnight.rs` is removed; a unit-level
+  regression test asserts `row.rendered_content_path.is_absolute()`
+  in
+  `crates/seasoned-hand-core/src/deliverable/task_deliver.rs::tests::task_deliver_writes_source_and_renders`.
 
 ---
 

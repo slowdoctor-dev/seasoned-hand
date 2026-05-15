@@ -433,13 +433,10 @@ slots:
     let _ = gate.poll_once(0).await.expect("gate poll");
 
     // --- Trigger delivery via the DeliveryRouter ------------------------
-    // DEBT #32 workaround: `task_deliver` stores
-    // `rendered_content_path` as a workspace-relative path but
-    // `EmailChannel::deliver` reads it as absolute. Canonicalize to
-    // the absolute path on disk (sandbox handle's workspace_host_path
-    // + the relative tail) before the router invokes the sink. Remove
-    // this UPDATE once DEBT #32 is paid down.
-    canonicalize_rendered_path(&state, &session_b_id, &task_id).await;
+    // DEBT #32 closed in story 2.26: `task_deliver` now persists the
+    // absolute on-disk path (workspace_host_path + relative tail), so
+    // `EmailChannel::deliver`'s naïve `tokio::fs::read(...)` succeeds
+    // without the per-test canonicalize workaround.
     let receipt = state
         .delivery_router
         .deliver_task(&task_id)
@@ -959,44 +956,6 @@ async fn misc_events(state: &AppState, session_id: &str) -> Vec<Value> {
         .collect()
 }
 
-/// DEBT #32 workaround: rewrite the deliverable's
-/// `rendered_content_path` from the workspace-relative form
-/// (`.deliverables/<filename>`) to the absolute on-disk form
-/// (`<workspace_host_path>/.deliverables/<filename>`) so
-/// `EmailChannel::deliver`'s naïve `tokio::fs::read(...)` succeeds.
-async fn canonicalize_rendered_path(state: &AppState, session_id: &str, task_id: &str) {
-    let handle = state
-        .sandbox
-        .get(session_id)
-        .await
-        .expect("session handle present");
-    let workspace_root = handle.workspace_host_path.clone();
-    let task_id = task_id.to_string();
-    state
-        .db
-        .with_conn(move |conn| {
-            let mut stmt = conn
-                .prepare("SELECT id, rendered_content_path FROM deliverables WHERE task_id = ?")
-                .unwrap();
-            let rows: Vec<(String, String)> = stmt
-                .query_map(rusqlite::params![task_id], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .unwrap()
-                .filter_map(Result::ok)
-                .collect();
-            for (id, relative) in rows {
-                let abs = workspace_root.join(&relative);
-                conn.execute(
-                    "UPDATE deliverables SET rendered_content_path = ? WHERE id = ?",
-                    rusqlite::params![abs.display().to_string(), id],
-                )
-                .unwrap();
-            }
-        })
-        .await;
-}
-
 fn now_micros() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1091,4 +1050,3 @@ fn redact_provenance(value: &mut Value) {
         }
     }
 }
-

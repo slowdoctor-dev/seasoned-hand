@@ -571,6 +571,15 @@ impl SandboxClient {
             .await
             .insert(handle.session_id.clone(), handle);
     }
+
+    /// Test/support utility: drop the cached handle for a session id so the
+    /// next `get(...)` returns `None`. Mirrors what would happen if the
+    /// docker container died and `rehydrate_from_docker` failed to find it.
+    /// Used by story 2.26's live overnight test to force the durable-resume
+    /// rebuild branch after `docker rm -f` hard-killed the container.
+    pub async fn remove_handle_for_test(&self, session_id: &str) {
+        self.handles.write().await.remove(session_id);
+    }
 }
 
 fn normalize_workspace_relative_path(path: &str) -> &str {

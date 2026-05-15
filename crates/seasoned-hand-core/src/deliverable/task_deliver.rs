@@ -365,6 +365,27 @@ impl Tool for TaskDeliver {
         .await
         .map_err(|e| ToolError::Backend(format!("provenance spill: {e}")))?;
 
+        // DEBT #32 close-out: resolve the workspace-relative path that
+        // [`RendererDispatcher`] returns (e.g. `.deliverables/foo.docx`)
+        // into the absolute on-disk path via the sandbox handle's
+        // `workspace_host_path` before persisting. `EmailChannel::deliver`
+        // (and any future consumer that needs the rendered bytes off
+        // disk) reads the column verbatim via `tokio::fs::read(...)`;
+        // storing the relative form was a latent bug that only surfaced
+        // once a non-FE consumer attempted I/O against the path.
+        let absolute_rendered_path = ctx
+            .sandbox
+            .get(&session_id)
+            .await
+            .map(|handle| {
+                handle
+                    .workspace_host_path
+                    .join(&rendered.workspace_path)
+                    .display()
+                    .to_string()
+            })
+            .unwrap_or_else(|| rendered.workspace_path.clone());
+
         // Persist Deliverable row.
         let new_row = NewDeliverable {
             task_id: task_id.clone(),
@@ -372,7 +393,7 @@ impl Tool for TaskDeliver {
             format: format_str.clone(),
             source_content_path: Some(source_path_for_record.clone()),
             source_content_sha256: Some(source_sha),
-            rendered_content_path: rendered.workspace_path.clone(),
+            rendered_content_path: absolute_rendered_path,
             rendered_content_sha256: rendered.sha256.clone(),
             content_size: rendered.size as i64,
             citations: citations.clone(),
@@ -797,6 +818,20 @@ mod tests {
         assert!(
             tmp.path().join(".deliverables/out.md").exists(),
             "rendered file on disk"
+        );
+        // DEBT #32 close-out: persisted path is absolute (resolved via
+        // the sandbox handle's workspace_host_path) so downstream
+        // I/O consumers (EmailChannel::deliver) can `tokio::fs::read`
+        // it directly.
+        assert!(
+            std::path::Path::new(&row.rendered_content_path).is_absolute(),
+            "rendered_content_path persisted as absolute: {}",
+            row.rendered_content_path
+        );
+        assert!(
+            row.rendered_content_path.ends_with(".deliverables/out.md"),
+            "absolute path retains workspace-relative tail: {}",
+            row.rendered_content_path
         );
     }
 
