@@ -704,7 +704,7 @@
   Could also drop the `tail` flag and have the route default to live
   tail if the cost is the same.
 
-### ~~32. `task_deliver` stores workspace-relative `rendered_content_path` but `EmailChannel::deliver` reads it as absolute~~ — CLOSED in story 2.26
+### ~~32. `task_deliver` stores workspace-relative `rendered_content_path` but `EmailChannel::deliver` reads it as absolute~~ — CLOSED in story 2.26 (`27d3770`)
 - **Origin**: surfaced by story 2.25 (`crates/seasoned-hand-server/tests/phase2_overnight.rs`),
   rooted in `crates/seasoned-hand-core/src/deliverable/task_deliver.rs`
   (writes `rendered.workspace_path` verbatim) +
