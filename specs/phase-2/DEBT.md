@@ -614,6 +614,51 @@
   `AppState::cli_channel.register_pending(...)` directly to set up
   the in-process oneshot path.
 
+### 29. `task new --no-auto-confirm` metadata flag not honored by spawner
+- **Origin**: story 2.21b,
+  `crates/seasoned-hand-cli/src/commands/task.rs` (the `--no-auto-confirm`
+  flag) +
+  `crates/seasoned-hand-server/src/initializer_spawner.rs` (uses
+  `RunConfig::default()` unconditionally)
+- **Severity**: **Low**
+- **What**: The CLI accepts `seasoned-hand task new "<brief>"
+  --no-auto-confirm` and records `metadata.no_auto_confirm = true` on
+  the IntakeEvent, but `WsInitializerSpawner::spawn` builds
+  `RunConfig::default()` (which has `require_confirm: false`) without
+  looking at `spec.metadata`. The 5-minute auto-confirm timer still
+  fires regardless of the flag.
+- **Why**: Threading metadata into `RunConfig` would touch
+  `SpawnSpec` + the spawner + the per-call shape of `RunConfig` —
+  out-of-scope for 2.21b's "CLI surface" charter. The flag is wired
+  end-to-end in the wire format so operators can rely on it landing
+  later without a UX change.
+- **Pay down**: Add `SpawnSpec::require_confirm: bool` (default
+  `false`); `IntakeRouter::handle_event` reads
+  `event.metadata.no_auto_confirm` and flips the bool;
+  `WsInitializerSpawner::spawn` builds `RunConfig { require_confirm:
+  spec.require_confirm, .. }`. One-story scope; bundle with a future
+  story that's already touching the spawner.
+
+### 30. `seasoned-hand channel logs` is a stub
+- **Origin**: story 2.21b,
+  `crates/seasoned-hand-cli/src/commands/channel.rs`
+- **Severity**: **Low**
+- **What**: `seasoned-hand channel logs <NAME> [--tail]` exits with an
+  explanatory error (`channel logs is not yet implemented — see
+  phase-2/DEBT.md #30`). The other `channel` subcommands (`list`,
+  `test`) are live; only `logs` is deferred.
+- **Why**: The server has no per-channel structured log feed today
+  (channels log via `tracing` directly to the process's
+  stdout/stderr). Adding a WS-subscription endpoint + the matching
+  CLI subscriber overran 2.21b's 2-3h budget; the rest of the CLI
+  surface is more load-bearing.
+- **Pay down**: Add `GET /v1/channels/:name/logs` as a WS upgrade that
+  drips a filtered structured-log stream (channel name + role +
+  rendered tracing fields). CLI side: replace the stub with a
+  `tokio-tungstenite` subscriber that prints `--tail`-style output.
+  Could also drop the `tail` flag and have the route default to live
+  tail if the cost is the same.
+
 ---
 
 ## Categories quick-reference (same as Phase 0 / Phase 1)

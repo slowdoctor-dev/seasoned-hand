@@ -54,9 +54,26 @@ enum Commands {
     /// Project management — `seasoned-hand project <list|create|archive>`.
     #[command(subcommand)]
     Project(commands::project::ProjectCmd),
-    /// Task lifecycle — `seasoned-hand task <list|show|pause|resume|cancel|provenance>`.
+    /// Task lifecycle — `seasoned-hand task <list|show|new|brief|deliverable|pause|resume|cancel|provenance>`.
     #[command(subcommand)]
     Task(commands::task::TaskCmd),
+    /// Briefing confirm gate — `seasoned-hand brief <confirm|edit|cancel>`.
+    #[command(subcommand)]
+    Brief(commands::brief::BriefCmd),
+    /// List pending briefings across all projects.
+    Inbox(commands::inbox::InboxCmd),
+    /// Channel management — `seasoned-hand channel <list|test|logs>`.
+    #[command(subcommand)]
+    Channel(commands::channel::ChannelCmd),
+    /// Bootstrap `~/.seasoned-hand/` (config + deliverables dirs).
+    Init,
+    /// Exec the `seasoned-hand-server` binary (assumes it's on PATH —
+    /// `cargo install` puts the two side-by-side).
+    Server {
+        /// Args passed through to `seasoned-hand-server`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -74,6 +91,22 @@ async fn main() -> ExitCode {
     let result = match cli.command {
         Commands::Project(cmd) => commands::project::run(cmd, &client, cli.json).await,
         Commands::Task(cmd) => commands::task::run(cmd, &client, cli.json).await,
+        Commands::Brief(cmd) => commands::brief::run(cmd, &client, cli.json).await,
+        Commands::Inbox(cmd) => commands::inbox::run(cmd, &client, cli.json).await,
+        Commands::Channel(cmd) => commands::channel::run(cmd, &client, cli.json).await,
+        Commands::Init => commands::init::run(cli.json),
+        Commands::Server { args } => {
+            // exec-replaces the process on Unix (function returns Err
+            // only on exec() failure); on Windows it returns the
+            // wrapped exit code.
+            return match commands::server::run(args) {
+                Ok(code) => code,
+                Err(err) => {
+                    eprintln!("error: {err:#}");
+                    ExitCode::from(1)
+                }
+            };
+        }
     };
 
     match result {

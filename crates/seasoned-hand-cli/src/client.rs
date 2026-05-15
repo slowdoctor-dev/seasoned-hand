@@ -5,6 +5,8 @@
 //! the failure shape (e.g. `404 task_not_found`, `409 wrong_state:running`).
 
 use anyhow::{Context, Result};
+use seasoned_hand_core::agent::init::briefing::PartialBrief;
+use seasoned_hand_core::deliverable::Deliverable;
 use seasoned_hand_core::project::{Project, Task};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -40,6 +42,51 @@ struct CreateProjectBody<'a> {
 #[derive(Debug, Serialize, Default)]
 struct PauseBody {
     durable: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+struct CliIntakeBody<'a> {
+    brief: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_id: Option<&'a str>,
+    metadata: serde_json::Value,
+    wait: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CliIntakeAck {
+    pub task_id: String,
+    pub intake_id: String,
+    #[serde(default)]
+    pub deliverable: Option<Deliverable>,
+    #[serde(default)]
+    pub briefing_call_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InboxEntry {
+    pub briefing_id: String,
+    pub task_id: String,
+    pub project_id: String,
+    pub title: String,
+    #[serde(default)]
+    pub brief: Option<serde_json::Value>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "action", rename_all = "lowercase")]
+pub enum BriefingConfirmRequest {
+    Confirm,
+    Cancel,
+    Edit { edits: PartialBrief },
+}
+
+#[derive(Debug, Serialize)]
+struct BriefingConfirmBody<'a> {
+    action: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edits: Option<&'a PartialBrief>,
 }
 
 impl ApiClient {
@@ -150,6 +197,117 @@ impl ApiClient {
             .get(self.url(&format!("/v1/tasks/{id}/provenance")))
             .send()
             .await?;
+        decode(resp).await
+    }
+
+    /// Block on POST /v1/intake/cli until the deliverable comes back, or
+    /// the server's long-poll ceiling fires. `max_wait` is total request
+    /// timeout — bumped past `CLI_INTAKE_MAX_WAIT_SECS` so the server
+    /// times out first and surfaces its `deliver_timeout` error.
+    pub async fn intake_cli_blocking(
+        &self,
+        brief: &str,
+        project_id: Option<&str>,
+        metadata: serde_json::Value,
+        max_wait: std::time::Duration,
+    ) -> Result<CliIntakeAck, ApiError> {
+        // +30s padding so the server's tokio::time::timeout fires before
+        // reqwest gives up on us.
+        let client_timeout = max_wait + std::time::Duration::from_secs(30);
+        let inner = reqwest::Client::builder()
+            .timeout(client_timeout)
+            .build()
+            .map_err(ApiError::Transport)?;
+        let resp = inner
+            .post(self.url("/v1/intake/cli"))
+            .json(&CliIntakeBody {
+                brief,
+                project_id,
+                metadata,
+                wait: true,
+            })
+            .send()
+            .await?;
+        decode(resp).await
+    }
+
+    /// POST /v1/intake/cli with wait=false — ack as soon as the task row
+    /// is minted. The deliverable still lands in
+    /// `~/.seasoned-hand/deliverables/` (the CliChannel's file fallback).
+    pub async fn intake_cli_detach(
+        &self,
+        brief: &str,
+        project_id: Option<&str>,
+        metadata: serde_json::Value,
+    ) -> Result<CliIntakeAck, ApiError> {
+        let resp = self
+            .inner
+            .post(self.url("/v1/intake/cli"))
+            .json(&CliIntakeBody {
+                brief,
+                project_id,
+                metadata,
+                wait: false,
+            })
+            .send()
+            .await?;
+        decode(resp).await
+    }
+
+    pub async fn list_inbox(&self, project_id: Option<&str>) -> Result<Vec<InboxEntry>, ApiError> {
+        let mut req = self.inner.get(self.url("/v1/inbox"));
+        if let Some(pid) = project_id {
+            req = req.query(&[("project_id", pid)]);
+        }
+        let resp = req.send().await?;
+        decode(resp).await
+    }
+
+    pub async fn briefing_confirm(
+        &self,
+        briefing_id: &str,
+        action: BriefingConfirmRequest,
+    ) -> Result<(), ApiError> {
+        let body = match &action {
+            BriefingConfirmRequest::Confirm => BriefingConfirmBody {
+                action: "confirm",
+                edits: None,
+            },
+            BriefingConfirmRequest::Cancel => BriefingConfirmBody {
+                action: "cancel",
+                edits: None,
+            },
+            BriefingConfirmRequest::Edit { edits } => BriefingConfirmBody {
+                action: "edit",
+                edits: Some(edits),
+            },
+        };
+        let resp = self
+            .inner
+            .post(self.url(&format!("/v1/briefings/{briefing_id}/confirm")))
+            .json(&body)
+            .send()
+            .await?;
+        decode_unit(resp).await
+    }
+
+    pub async fn list_channels(&self) -> Result<serde_json::Value, ApiError> {
+        let resp = self.inner.get(self.url("/v1/channels")).send().await?;
+        decode(resp).await
+    }
+
+    pub async fn channel_test(
+        &self,
+        name: &str,
+        role: Option<&str>,
+    ) -> Result<serde_json::Value, ApiError> {
+        let mut req = self
+            .inner
+            .post(self.url(&format!("/v1/channels/{name}/test")));
+        if let Some(r) = role {
+            req = req.query(&[("role", r)]);
+        }
+        let resp = req.send().await?;
         decode(resp).await
     }
 }

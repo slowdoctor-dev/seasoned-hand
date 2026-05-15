@@ -13,7 +13,10 @@
 //! `--json` so the JSON path never embeds ANSI codes.
 
 use colored::{ColoredString, Colorize};
+use seasoned_hand_core::deliverable::Deliverable;
 use seasoned_hand_core::project::{Project, Task, TaskStatus};
+
+use crate::client::InboxEntry;
 
 pub fn task_status_badge(status: TaskStatus) -> ColoredString {
     let s = status.as_db_str();
@@ -102,4 +105,29 @@ pub fn print_task(task: &Task) {
         println!("Due at:     {due}");
     }
     println!("Created at: {}", task.created_at);
+}
+
+pub fn print_deliverable_summary(task_id: &str, deliverable: &Deliverable) {
+    println!("{}", "task delivered".green().bold());
+    println!("Task:    {task_id}");
+    println!("Format:  {}", deliverable.format);
+    println!("Path:    {}", deliverable.rendered_content_path);
+    println!("Sha256:  {}", deliverable.rendered_content_sha256);
+    println!("Size:    {} bytes", deliverable.content_size);
+}
+
+pub fn print_inbox(entries: &[InboxEntry]) {
+    if entries.is_empty() {
+        println!("(inbox empty — no pending briefings)");
+        return;
+    }
+    println!(
+        "{:<38}  {:<38}  {}",
+        "BRIEFING ID".bold(),
+        "PROJECT".bold(),
+        "TITLE".bold()
+    );
+    for e in entries {
+        println!("{:<38}  {:<38}  {}", e.briefing_id, e.project_id, e.title);
+    }
 }

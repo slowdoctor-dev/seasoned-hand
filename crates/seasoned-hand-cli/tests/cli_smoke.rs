@@ -384,3 +384,192 @@ async fn cli_task_show_404_for_unknown_id() {
         "stderr surfaces task_not_found: {stderr}"
     );
 }
+
+// ---------------------------------------------------------------------
+// Story 2.21b — inbox + briefing-confirm + task new --detach + init.
+// ---------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_inbox_lists_briefed_tasks() {
+    let h = boot().await;
+    // Seed a project + task, then walk Drafted → Briefed and stash a
+    // Brief on the row so the inbox surfaces it.
+    let project_id = h
+        .state
+        .projects
+        .insert(seasoned_hand_core::project::NewProject {
+            tenant_id: None,
+            title: "Inbox".into(),
+            description: None,
+        })
+        .await
+        .expect("insert project");
+    let task_id = h
+        .state
+        .tasks
+        .insert(seasoned_hand_core::project::NewTask {
+            project_id: project_id.clone(),
+            tenant_id: None,
+            title: "fix the typo".into(),
+            expected_due_at: None,
+        })
+        .await
+        .expect("insert task");
+    let brief = serde_json::json!({
+        "goal": "fix the typo",
+        "phases": [{"id": 1, "title": "Plan"}],
+    });
+    h.state
+        .tasks
+        .set_brief(&task_id, &brief)
+        .await
+        .expect("set brief");
+    h.state
+        .tasks
+        .set_status(&task_id, seasoned_hand_core::project::TaskStatus::Briefed)
+        .await
+        .expect("→ briefed");
+
+    let mut cmd = cli();
+    cmd.args(["--server", &h.server_url, "--json", "--no-color", "inbox"]);
+    let (status, stdout, stderr) = run(cmd);
+    assert!(status.success(), "inbox exits 0; stderr: {stderr}");
+    let entries: Vec<Value> = serde_json::from_str(&stdout).expect("inbox json");
+    let entry = entries
+        .iter()
+        .find(|e| e["task_id"] == task_id)
+        .expect("seeded task in inbox");
+    assert_eq!(entry["briefing_id"], task_id, "briefing_id alias = task_id");
+    assert_eq!(entry["project_id"], project_id);
+    assert_eq!(entry["title"], "fix the typo");
+    assert_eq!(entry["brief"]["goal"], "fix the typo");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_brief_confirm_routes_to_sender() {
+    let h = boot().await;
+    // The Initializer's spawner is normally what pushes the per-task
+    // mpsc sender into AppState::briefing_senders. For this test we
+    // simulate that side-channel directly: grab a sender, stash it,
+    // fire `brief confirm <id>`, then assert the matching response
+    // landed on the receiver.
+    let project_id = h
+        .state
+        .projects
+        .insert(seasoned_hand_core::project::NewProject {
+            tenant_id: None,
+            title: "Inbox".into(),
+            description: None,
+        })
+        .await
+        .expect("insert project");
+    let task_id = h
+        .state
+        .tasks
+        .insert(seasoned_hand_core::project::NewTask {
+            project_id,
+            tenant_id: None,
+            title: "needs confirm".into(),
+            expected_due_at: None,
+        })
+        .await
+        .expect("insert task");
+    let (tx, mut rx) =
+        tokio::sync::mpsc::channel::<seasoned_hand_core::agent::init::briefing::UserResponse>(4);
+    h.state.briefing_senders.insert(task_id.clone(), tx);
+
+    let mut cmd = cli();
+    cmd.args([
+        "--server",
+        &h.server_url,
+        "--no-color",
+        "brief",
+        "confirm",
+        &task_id,
+    ]);
+    let (status, _stdout, stderr) = run(cmd);
+    assert!(status.success(), "brief confirm exits 0; stderr: {stderr}");
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        .await
+        .expect("recv within 2s")
+        .expect("sender alive");
+    assert!(matches!(
+        response.action,
+        seasoned_hand_core::agent::init::briefing::BriefingAction::Confirm
+    ));
+    assert_eq!(response.in_reply_to_call_id, task_id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_brief_confirm_returns_404_when_no_sender() {
+    let h = boot().await;
+    // No briefing sender registered → 404 no_pending_briefing.
+    let mut cmd = cli();
+    cmd.args([
+        "--server",
+        &h.server_url,
+        "--no-color",
+        "brief",
+        "confirm",
+        "unknown-task",
+    ]);
+    let (status, _, stderr) = run(cmd);
+    assert!(!status.success());
+    assert!(
+        stderr.contains("no_pending_briefing") || stderr.contains("404"),
+        "stderr surfaces no_pending_briefing: {stderr}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_task_new_detach_returns_intake_id() {
+    let h = boot().await;
+    let mut cmd = cli();
+    cmd.args([
+        "--server",
+        &h.server_url,
+        "--json",
+        "--no-color",
+        "task",
+        "new",
+        "Summarise the report",
+        "--detach",
+    ]);
+    let (status, stdout, stderr) = run(cmd);
+    assert!(
+        status.success(),
+        "task new --detach exits 0; stderr: {stderr}"
+    );
+    let ack: Value = serde_json::from_str(&stdout).expect("ack json");
+    assert!(ack["task_id"].as_str().is_some(), "task_id present");
+    assert!(
+        ack["intake_id"].as_str().unwrap_or("").starts_with("cli:"),
+        "intake_id starts with cli: prefix, got {}",
+        ack["intake_id"]
+    );
+    assert_eq!(ack["detached"], true);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_init_creates_dirs() {
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let mut cmd = cli();
+    cmd.env("HOME", tmp.path());
+    cmd.args(["--no-color", "init"]);
+    let (status, _stdout, stderr) = run(cmd);
+    assert!(status.success(), "init exits 0; stderr: {stderr}");
+    let root = tmp.path().join(".seasoned-hand");
+    assert!(root.exists(), "root dir created");
+    assert!(
+        root.join("deliverables").exists(),
+        "deliverables dir created"
+    );
+    assert!(root.join("config").exists(), "config dir created");
+    // Idempotent — second run shouldn't error.
+    let mut cmd = cli();
+    cmd.env("HOME", tmp.path());
+    cmd.args(["--no-color", "init"]);
+    let (status, _, stderr) = run(cmd);
+    assert!(status.success(), "second init still 0; stderr: {stderr}");
+}
