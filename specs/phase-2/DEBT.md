@@ -7,6 +7,45 @@
 > Seeded at architecture phase boundary (2026-05-13). Items added during
 > story implementation get appended below the seed block.
 
+## Closeout audit (story 2.27, 2026-05-16)
+
+Eight in-phase entries graduated to **closed** during Phase 2 (each
+strike-through links its closing story SHA):
+
+- **#10** (`Deliverable` struct location) → story 2.3 (`2c36eae`)
+- **#11** (`mark_delivered` row-existence stub) → story 2.5 (`030ffcd`)
+- **#13** (IntakeRouter doesn't spawn Initializer) → story 2.8b (`d1006ff`)
+- **#15** (WS `task_create` legacy shim) → story 2.8b (`d1006ff`)
+- **#16** (IntakeRouter `run` loop not spawned) → story 2.10 (`b19ec7f`)
+- **#17** (`with_channels` replaces chat baseline) → story 2.10 (`b19ec7f`)
+- **#23** (CliChannel not registered) → story 2.21a (`527ff75`)
+- **#32** (`rendered_content_path` workspace-relative vs absolute) →
+  story 2.26 (`27d3770`)
+
+**#12** sits partially closed (4xx surface lands in story 2.10; Misc
+emit deferred until a system-session anchor exists). **#18, #19, #26**
+are informational (#18 EmailChannel attachment bytes; #19 task-state
+widening exec-note; #26 not yet allocated). **All other in-phase
+entries** (#14, #20, #21, #22, #24, #25, #27, #28, #29, #30, #31)
+remain **open** and are scheduled to specific later phases on each
+entry's `Pay down` line — these survived a full Phase 2 retrospective
+review and are honestly open as of 2026-05-16.
+
+Seed items #1–#9 also remain **open** at Phase 2 close. Each is
+deliberately routed to Phase 3, 4, or 5 per its `Pay down` line:
+**#1, #4, #8** Phase 5 multi-user; **#2, #3** Phase 4 once toolchain
+stabilises; **#5** Phase 3+; **#6** Phase 3 fills the table; **#7**
+addressed below; **#9** informational. None were resolved in Phase 2
+proper.
+
+**Phase 1 DEBT #3** (verifier rollback default flip) carries to Phase
+3 (recorded as item #7 above). Story 2.26 landed the
+`phase2-live-overnight` workflow_dispatch jobs but the jobs are
+operator-triggered and have not accumulated verdict precision data
+yet. The default in `crates/seasoned-hand-server/src/lib.rs`
+(`checkpoint_rollback_on_verifier_fail = false`) is **unchanged**;
+Phase 3 retro should re-evaluate once enough live runs exist.
+
 ---
 
 ## Seed (from architecture v2.1, 2026-05-13)
@@ -132,7 +171,7 @@
 
 ## Story-introduced (chronological)
 
-### ~~10. `Deliverable` struct lives inside `channel/delivery.rs`~~ — CLOSED in story 2.3
+### ~~10. `Deliverable` struct lives inside `channel/delivery.rs`~~ — CLOSED in story 2.3 (`2c36eae`)
 - **Origin**: story 2.4 (`93fff98`), `crates/seasoned-hand-core/src/channel/delivery.rs`
 - **Severity**: **Low**
 - **What**: The `Deliverable` placeholder struct (V007 column shape)
@@ -158,7 +197,7 @@
   columns). `channel::delivery` `pub use`s it so `DeliverySink::deliver`
   stays self-contained and 2.4 / 2.5 callers see no path change.
 
-### ~~11. `DeliverableStore::mark_delivered` is a row-existence stub~~ — CLOSED in story 2.5
+### ~~11. `DeliverableStore::mark_delivered` is a row-existence stub~~ — CLOSED in story 2.5 (`030ffcd`)
 - **Origin**: story 2.3, `crates/seasoned-hand-core/src/deliverable/store.rs`
 - **Severity**: **Low**
 - **What**: `mark_delivered(id)` only validates the deliverable row
@@ -211,7 +250,7 @@
   exists. Email / Slack / other future intake channels will route
   rejection through the same 4xx surface.
 
-### ~~13. IntakeRouter does not spawn the Initializer~~ — CLOSED in story 2.8b
+### ~~13. IntakeRouter does not spawn the Initializer~~ — CLOSED in story 2.8b (`d1006ff`)
 - **Origin**: story 2.5, `crates/seasoned-hand-core/src/intake/router.rs`
 - **Severity**: **Low**
 - **What**: After persisting the intake row + creating the `drafted`
@@ -265,7 +304,7 @@
   same tenant becomes realistic, ship `V0NN_unique_tenant_title.sql`
   with a one-time dedup of any existing duplicate Inbox rows.
 
-### ~~15. WS `task_create` still spawns the runner directly (Phase 0/1 shim)~~ — CLOSED in story 2.8b
+### ~~15. WS `task_create` still spawns the runner directly (Phase 0/1 shim)~~ — CLOSED in story 2.8b (`d1006ff`)
 - **Origin**: story 2.9, `crates/seasoned-hand-server/src/ws.rs`
 - **Severity**: **Low**
 - **What**: The WS `task_create` handler now pushes an
@@ -312,7 +351,7 @@
   `AppState::briefing_senders` keyed by task_id; unknown tasks Ack
   with `error: "no_pending_briefing"`.
 
-### ~~16. IntakeRouter `run` loop + shared mpsc not yet spawned in `main.rs`~~ — CLOSED in story 2.10
+### ~~16. IntakeRouter `run` loop + shared mpsc not yet spawned in `main.rs`~~ — CLOSED in story 2.10 (`b19ec7f`)
 - **Origin**: story 2.9, `crates/seasoned-hand-server/src/main.rs`
 - **Severity**: **Low**
 - **What**: The architecture §2.8 contract is that all
@@ -380,7 +419,7 @@
   SandboxClient handle and EmailChannel can write directly into the
   per-session workspace. Whichever lands first owns the migration.
 
-### ~~17. `AppState::with_channels` replaces (not merges) the chat baseline~~ — CLOSED in story 2.10
+### ~~17. `AppState::with_channels` replaces (not merges) the chat baseline~~ — CLOSED in story 2.10 (`b19ec7f`)
 - **Origin**: story 2.9, `crates/seasoned-hand-server/src/lib.rs`
 - **Severity**: **Low**
 - **What**: `AppState::new` registers the always-on

@@ -15,7 +15,7 @@
 | **Repo** | `github.com/slowdoctor-dev/seasoned-hand` (개인 계정, Public, MIT) |
 | **License** | MIT |
 | **Tagline** | Every task makes the hand wiser. |
-| **Status** | Phase 1 complete → Phase 2 starting |
+| **Status** | Phase 2 complete → Phase 3 starting |
 | **Domain** | General-purpose autonomous AI agent platform (no domain assumptions) |
 | **Audience** | Developers + business users (balanced) |
 | **Philosophy** | Digital Employee (not assistant) |
@@ -92,13 +92,14 @@ Full methodology: `/docs/methodology.md`
 |---|---|---|---|
 | 0 | 3 | Foundation: working skeleton | (none) |
 | 1 | 4 | Manus 5-layer (deep execution) | (none) |
-| 2 | 3 | Employee interface (briefing, deliverables) | (none) |
+| 2 | 5 (actual: 3 days under parallel-mode compression) | Employee interface (briefing, deliverables) | (none) |
 | 3 | 4 | 4-layer learning system | **starts** |
 | 4 | 3 | Curator + self-improvement | (matures) |
 | 5 | 3 | Multi-user + organization | (scales) |
 | 6 | 2 | Open source release | (ships) |
 
-Total: **22 weeks ≈ 5 months**
+Total: **22 weeks ≈ 5 months** (planned). Phase 0/1/2 actuals to date:
+3 days + ~2 days + 3 days under Claude + Codex parallel-mode.
 
 Full roadmap: `/specs/06-roadmap/ROADMAP.md`
 

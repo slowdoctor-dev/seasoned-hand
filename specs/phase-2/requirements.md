@@ -208,35 +208,38 @@ session. Detailed specs at `/specs/phase-2/stories/story-2.X.md`.
 | ID | Story title | Est | Deps | Closes | Status |
 |---|---|---|---|---|---|
 | 2.1  | Phase 2 scaffolds — requirements.md + DEBT.md | 0.5h | — | — | done |
-| 2.2  | V006 migration + ProjectStore + TaskStore | 2.5h | 2.1 | — | ready |
-| 2.3  | V007 + V008 + V009 migrations + remaining stores | 3h | 2.2 | — | ready |
-| 2.4  | Channel framework — traits + ChannelRegistration + ChannelRegistry | 2h | 2.1 | — | ready |
-| 2.5  | IntakeRouter + DeliveryRouter | 2h | 2.4, 2.3 | — | ready |
-| 2.6  | Sandbox-side renderer toolchain (Pandoc + python-pptx + openpyxl) | 3h | 2.1 | — | ready |
-| 2.7  | Brief shape + DeliverableSpec typed schema | 1.5h | 2.2 | — | ready |
-| 2.8  | Initializer::run_with_confirmation (Briefing + confirm gate) | 2h | 2.7 | — | ready |
-| 2.9  | ChatChannel (wraps existing WS as IntakeProvider + DeliverySink) | 1h | 2.4, 2.5 | — | ready |
-| 2.10 | WebhookChannel (intake + delivery + notify, three role impls) | 2.5h | 2.4, 2.5 | — | ready |
-| 2.11 | EmailChannel (IMAP intake + SMTP delivery + notify) | 3h | 2.4, 2.5 | — | ready |
-| 2.12 | NtfyChannel (notify-only) + NotifyWorker | 2h | 2.4 | — | ready |
-| 2.13 | CliChannel (process-local intake + stdout delivery) | 1.5h | 2.4 | — | ready |
-| 2.14 | task_deliver LLM tool + RendererDispatcher | 2.5h | 2.6, 2.3 | — | ready |
-| 2.15 | Provenance manifest builder + GET /v1/tasks/:id/provenance route | 2h | 2.3, 2.5 | — | ready |
-| 2.16 | Durable pause/resume + event-stream replay rebuild | 3h | 2.2 | — | ready |
-| 2.17 | Workspace TTL + cleanup cron | 2h | 2.2 | Phase 0 DEBT #16 | ready |
-| 2.18 | Verifier Worker real XREADGROUP loop | 3h | — | DEBT #15 | ready |
-| 2.19 | SandboxGitShell shell-injection fix | 1h | — | DEBT #14 | ready |
-| 2.20 | NarratorHook classifier-slot wiring through AppState::new | 1.5h | — | story-1.15 | ready |
-| 2.21 | seasoned-hand CLI binary + subcommand surface | 3h | 2.13 + routes | — | ready |
-| 2.22 | Frontend: ProjectList + Deliverables + Decisions tabs | 3h | 2.2, 2.3 | — | ready |
-| 2.23 | Frontend: Briefing card + confirm/edit/cancel UI | 2.5h | 2.8 | — | ready |
-| 2.24 | Frontend: Playwright bootstrap + smoke coverage | 2.5h | 2.22, 2.23 | DEBT #9 | ready |
-| 2.25 | Phase 2 E2E (deterministic 50-step + briefing + email roundtrip) | 3h | 2.2-2.20 | — | ready |
-| 2.26 | Phase 2 live-LLM workflow_dispatch jobs | 2h | 2.25 | — | ready |
-| 2.27 | Phase 2 closeout (retrospective + DEBT audit + status flips) | 1.5h | 2.26 | — | ready |
+| 2.2  | V006 migration + ProjectStore + TaskStore | 2.5h | 2.1 | — | done |
+| 2.3  | V007 + V008 + V009 migrations + remaining stores | 3h | 2.2 | — | done |
+| 2.4  | Channel framework — traits + ChannelRegistration + ChannelRegistry | 2h | 2.1 | — | done |
+| 2.5  | IntakeRouter + DeliveryRouter | 2h | 2.4, 2.3 | — | done |
+| 2.6  | Sandbox-side renderer toolchain (Pandoc + python-pptx + openpyxl) | 3h | 2.1 | — | done |
+| 2.7  | Brief shape + DeliverableSpec typed schema | 1.5h | 2.2 | — | done |
+| 2.8  | Initializer::run_with_confirmation (Briefing + confirm gate) | 2h | 2.7 | — | done |
+| 2.9  | ChatChannel (wraps existing WS as IntakeProvider + DeliverySink) | 1h | 2.4, 2.5 | — | done |
+| 2.10 | WebhookChannel (intake + delivery + notify, three role impls) | 2.5h | 2.4, 2.5 | — | done |
+| 2.11 | EmailChannel (IMAP intake + SMTP delivery + notify) | 3h | 2.4, 2.5 | — | done |
+| 2.12 | NtfyChannel (notify-only) + NotifyWorker | 2h | 2.4 | — | done |
+| 2.13 | CliChannel (process-local intake + stdout delivery) | 1.5h | 2.4 | — | done |
+| 2.14 | task_deliver LLM tool + RendererDispatcher | 2.5h | 2.6, 2.3 | — | done |
+| 2.15 | Provenance manifest builder + GET /v1/tasks/:id/provenance route | 2h | 2.3, 2.5 | — | done |
+| 2.16 | Durable pause/resume + event-stream replay rebuild | 3h | 2.2 | — | done |
+| 2.17 | Workspace TTL + cleanup cron | 2h | 2.2 | Phase 0 DEBT #16 | done |
+| 2.18 | Verifier Worker real XREADGROUP loop | 3h | — | DEBT #15 | done |
+| 2.19 | SandboxGitShell shell-injection fix | 1h | — | DEBT #14 | done |
+| 2.20 | NarratorHook classifier-slot wiring through AppState::new | 1.5h | — | story-1.15 | done |
+| 2.21 | seasoned-hand CLI binary + subcommand surface | 3h | 2.13 + routes | — | done |
+| 2.22 | Frontend: ProjectList + Deliverables + Decisions tabs | 3h | 2.2, 2.3 | — | done |
+| 2.23 | Frontend: Briefing card + confirm/edit/cancel UI | 2.5h | 2.8 | — | done |
+| 2.24 | Frontend: Playwright bootstrap + smoke coverage | 2.5h | 2.22, 2.23 | DEBT #9 | done |
+| 2.25 | Phase 2 E2E (deterministic 50-step + briefing + email roundtrip) | 3h | 2.2-2.20 | — | done |
+| 2.26 | Phase 2 live-LLM workflow_dispatch jobs | 2h | 2.25 | — | done |
+| 2.27 | Phase 2 closeout (retrospective + DEBT audit + status flips) | 1.5h | 2.26 | — | done |
 
 **Total**: 27 stories, ~59 h budgeted across 5 weeks at ~3 h/day
-(75 h available; 16 h slack).
+(75 h available; 16 h slack). **Actual**: 27/27 shipped across
+2026-05-13 → 2026-05-15 (3 calendar days) under Claude + Codex
+parallel-mode; closeout commit ships 2026-05-16. See
+`specs/phase-2/RETROSPECTIVE.md` for the post-close review.
 
 **Parallelisable seams**:
 - After 2.1: `{2.2, 2.6, 2.18, 2.19, 2.20}` — 5 parallel

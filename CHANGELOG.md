@@ -17,6 +17,168 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] — 2026-05-16
+
+Phase 2 release: Employee interface (OS-shape). 27 stories shipped.
+Spec reference: `/specs/phase-2/RETROSPECTIVE.md`.
+
+### Added
+- **Project / Task / Subtask schema** (story 2.2, `d30674e`): V006
+  migration adds `projects` + `tasks` (status machine
+  `drafted → briefed → confirmed → running ⇄ paused → completed |
+  failed | cancelled`), nullable `tenant_id` on every new row.
+  `ProjectStore` + `TaskStore` with `find_or_create_inbox`.
+- **Deliverable / Intake / Delivery / Notify / Skill stores** (story
+  2.3, `2c36eae`): V007 `deliverables`, V008 `intake_events` +
+  `delivery_events` + `notify_events`, V009 reserves `skills` +
+  `playbooks` (empty; Phase 3 populates).
+- **Channel framework** (story 2.4, `93fff98`): `IntakeProvider` +
+  `DeliverySink` + `NotifySink` traits, `ChannelRegistration` builder,
+  `ChannelRegistry`. One `*Channel` struct per integration implements
+  1-3 role traits.
+- **IntakeRouter + DeliveryRouter + `GET /v1/channels`** (story 2.5,
+  `030ffcd`): fan-in `mpsc::Sender<IntakeEvent>` drained by
+  `IntakeRouter::run`; `DeliveryRouter::deliver_task` resolves a
+  registered `DeliverySink` per task reply-target.
+- **Sandbox-side renderer toolchain** (story 2.6, `bb752f7`):
+  startup-time `apt install pandoc texlive-xetex` + `pip install
+  python-pptx openpyxl` (~30-60 s per session; pre-baked image is
+  DEBT #2).
+- **`Brief` shape + `DeliverableSpec` typed schema** (story 2.7,
+  `e89cb17`): `Brief { goal, phases[], success_criteria[],
+  expected_deliverables: DeliverableSpec[] }`; `DeliverableFormat`
+  enum (markdown / json / csv / docx / pdf / html / pptx / xlsx /
+  code / url).
+- **Initializer briefing-confirm gate** (story 2.8, `86a8893` + 2.8b
+  `d1006ff`): `Initializer::run_with_confirmation` emits Misc
+  `briefing_pending` + ServerEvent `Briefing{briefing_call_id}`, waits
+  for `briefing_confirm | edit | cancel` on a per-task mpsc, falls
+  back to 5-min auto-confirm. WS `briefing_confirm` verb routes
+  through `forward_briefing_confirm` keyed by `briefing_senders`.
+- **ChatChannel** (story 2.9, `5e32d74`): wraps existing WS as a
+  `Channel`; `AppState::new` registers it as the always-on baseline.
+- **WebhookChannel** (story 2.10, `b19ec7f`): `POST /v1/intake/webhook`
+  (intake, token-gated) + `DeliverySink` (HTTP POST to
+  `reply_target.url`) + `NotifySink` (HTTP POST notify). Default-deny
+  SSRF posture in `assert_public_address` (loopback / private /
+  link-local rejected; `WEBHOOK_DELIVERY_ALLOWLIST` env bypasses
+  per-CIDR). Replaces `with_channels` with
+  `AppState::register_channel(ChannelRegistration)`.
+- **EmailChannel** (story 2.11, `e4894e6`): IMAP poll intake + SMTP
+  delivery + SMTP notify. `INTAKE_EMAIL_ALLOWED_SENDERS` regex allow-list.
+- **NtfyChannel + NotifyWorker** (story 2.12, `ef54b2a`):
+  Redis-Stream `notify_request` consumer + dispatch loop;
+  `NtfyChannel` ships notify-only.
+- **CliChannel** (story 2.13, `f8fe092`): in-process `IntakeProvider`
+  + `DeliverySink` (stdout); registered via
+  `AppState::register_cli_channel` (closes DEBT #23 in story 2.21a).
+- **`task_deliver` LLM tool + `RendererDispatcher`** (story 2.14,
+  `f663501`): Worker-mode-only tool, server-side renderer dispatch by
+  filename extension (md / txt / json / csv raw; docx / pdf / html
+  via Pandoc; pptx via python-pptx; xlsx via openpyxl).
+- **Provenance manifest** (story 2.15, `f37b6fa`): mandatory exit
+  gate; `build_manifest(...)` produces an `intake → brief →
+  decisions → verifier_verdicts → checkpoints → delivered_to` trail;
+  `GET /v1/tasks/:id/provenance` returns the manifest.
+- **Durable pause / resume + event-stream replay** (story 2.16,
+  `2b9734c`): WS `task_pause` gains `durable: bool` (default `true`);
+  resume rebuilds sandbox from event-stream replay when the container
+  is gone, reconstructs Plan + feature-list + progress.
+- **Workspace TTL + cleanup cron** (story 2.17, `ce7de1d`):
+  `WorkspaceTtlCron` honors task state (active: never GC, paused:
+  none / configurable, completed: 30 d, failed/cancelled: 7 d,
+  drafted/briefed: 1 d) + admin `POST /v1/admin/sandbox/cleanup`.
+  Closes Phase 0 DEBT #16.
+- **Verifier Worker XREADGROUP loop** (story 2.18, `8eda594`):
+  `Worker::run` bootstraps consumer group via `XGROUP CREATE` +
+  `XREADGROUP GROUP verifier-workers <worker-{host}-{pid}> BLOCK 5000
+  COUNT 16`; per-session FIFO via `DashMap<SessionId, Mutex>`; global
+  cap via `Semaphore`. Closes Phase 1 DEBT #15.
+- **NarratorHook classifier-slot wiring** (story 2.20, `ed6aa83`):
+  `AppState::new` wires the classifier-slot LLM path through the
+  Dispatcher build sequence; closes story-1.15 exec-note.
+- **`seasoned-hand` CLI binary** (story 2.21a / 2.21b, `527ff75` /
+  `6adabe0`): `init`, `server`, `project list/create/archive`, `task
+  new/list/show/pause/resume/cancel/brief/deliverable/provenance`,
+  `inbox`, `brief confirm/edit/cancel`, `channel list/test/logs`
+  (logs is stub — DEBT #30).
+- **Frontend ProjectList + DeliverablesTab + DecisionsTab** (story
+  2.22, `b8a86b9`): left-panel ProjectList above TaskList; right-panel
+  Deliverables tab + Decisions tab in AgentComputer.
+- **Frontend BriefingCard** (story 2.23, `e820488`): Chat-panel
+  inline renderer intercepts `Briefing` events; confirm / edit /
+  cancel buttons emit WS `briefing_confirm` cmd.
+- **Frontend Playwright bootstrap + smoke coverage** (story 2.24,
+  `aff80fd`): Playwright 1.60 + 7 chromium specs; `pnpm test:e2e`
+  wired; `frontend-e2e` CI job (workflow_dispatch). Closes Phase 1
+  DEBT #9.
+- **Phase 2 deterministic E2E** (story 2.25, `18e3d0d`):
+  `phase2_overnight_default_path` on the default `cargo test
+  --workspace` path (wiremocked); `phase2_webhook_roundtrip`
+  ignored-by-default.
+- **Phase 2 live-LLM workflow_dispatch jobs** (story 2.26, `27d3770`):
+  `phase2-live-overnight` and `phase2-webhook-roundtrip` CI jobs gated
+  on operator trigger + provider keys.
+
+### Changed
+- **Task state machine widened** (story 2.8 / DEBT #19):
+  `Drafted / Briefed / Confirmed → Cancelled` added to
+  `legal_transitions` so `BriefingAction::Cancel` can fire from the
+  briefing gate.
+- **`AppState::register_channel(ChannelRegistration)`** replaces
+  `with_channels(ChannelRegistry)` (story 2.10 / DEBT #17):
+  per-channel merge; chat baseline survives every subsequent
+  registration.
+- **WS `task_create` flow inverted** (story 2.9 → 2.8b): handler now
+  pushes an `IntakeEvent` through the `IntakeRouter` (closes DEBT
+  #15); session row + AgentRunner spawn move into
+  `WsInitializerSpawner` post-briefing-confirm.
+- **`task_deliver` persists absolute `rendered_content_path`** (story
+  2.26 / DEBT #32): resolves workspace-relative path against
+  `SandboxClient::workspace_host_path` before writing the deliverables
+  row; `EmailChannel::deliver` can `tokio::fs::read(...)` directly.
+
+### Fixed
+- **SandboxGitShell shell-injection** (story 2.19, `43a06d8`):
+  `commit_phase` switched from `format!("git commit -m \"{phase_title}\"")`
+  to `git commit -F /workspace/.commit-msg/<phase_id>.txt`; 6 malicious
+  payloads now contained. Closes Phase 1 DEBT #14.
+- **Frontend automated tests** (story 2.24, `aff80fd`): Playwright
+  bootstrap + 7 chromium specs covering the new Phase 1 and Phase 2
+  surfaces. Closes Phase 1 DEBT #9.
+- **Verifier Worker XREADGROUP loop** (story 2.18, `8eda594`):
+  replaces the polling shim; verdicts now flow end-to-end through
+  Redis Streams. Closes Phase 1 DEBT #15.
+- **Workspace cleanup cron** (story 2.17, `ce7de1d`): paid down Phase
+  0 DEBT #16 — orphan sandbox workspaces no longer accumulate
+  indefinitely.
+
+### Deferred (phase-2/DEBT.md)
+- SSRF allow-list bypass still operator-trusted (#1) — Phase 5 tightens
+- Pre-baked sandbox renderer image (#2) — Phase 3+
+- Code-as-deliverable git-tree-only (#3) — Phase 4
+- Email allow-list operator-curated (#4) — Phase 5
+- Provenance manifest size budget 100 KB inline (#5) — Phase 3+
+- Skill / playbook tables empty (#6) — Phase 3 fills
+- **Verifier rollback default still opt-in** (#7) — carries Phase 1
+  DEBT #3 into Phase 3 (no precision data accumulated yet from
+  `phase2-live-overnight` jobs)
+- CLI auth (#8) — Phase 5
+- EmailChannel discards attachment bytes (#18) — Phase 3
+- Initializer loose `in_reply_to_call_id` match (#20)
+- Non-chat channels don't forward briefing events (#21)
+- e2e + phase1_gaia tests don't send `briefing_confirm` (#22)
+- Provenance `brief.confirmed_at` / `IntakeProvenance` synthesis
+  stubs (#24, #25)
+- `resume_task` in-memory handle proxy (#27)
+- Replay cost baseline resets to zero on rebuild (#28)
+- `task new --no-auto-confirm` metadata flag not honored by spawner
+  (#29)
+- `seasoned-hand channel logs` is a stub (#30)
+- BriefingCard eviction / reload / server-error UX (#31)
+
+---
+
 ## [0.1.0] — 2026-05-13
 
 Phase 1 release: Manus 5-layer deep execution. 23 stories shipped.

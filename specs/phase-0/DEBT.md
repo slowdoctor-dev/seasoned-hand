@@ -166,7 +166,7 @@
   that allows the Chromium-needed syscalls but no more. Or migrate to
   Firecracker microVMs (ADR-004 Alternative A) for enterprise tier.
 
-### ~~16. Sandbox workspace cleanup is manual (orphan dirs accumulate)~~ — CLOSED in story 2.17 (ce7de1d)
+### ~~16. Sandbox workspace cleanup is manual (orphan dirs accumulate)~~ ✅ resolved 2026-05-15 (story 2.17, commit `ce7de1d`)
 - **Origin**: story 0.8
 - **Severity**: **Low**
 - **What**: `SandboxClient::destroy` removes the container but does NOT
