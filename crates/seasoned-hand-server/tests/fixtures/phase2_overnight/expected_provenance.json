@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "task_id": "<redacted-id>",
+  "project_id": "<redacted-id>",
+  "tenant_id": null,
+  "intake": {
+    "channel": "email",
+    "intake_id": "imap:phase2-overnight-abc123@phase2-overnight.example",
+    "received_at": 0,
+    "metadata": {
+      "from": "operator@phase2-overnight.example",
+      "subject": "[sh] Summarize the Q4 deck",
+      "message_id": "<abc123@phase2-overnight.example>"
+    }
+  },
+  "brief": {
+    "brief_event_id": 0,
+    "confirmed": true,
+    "edits_applied": 0
+  },
+  "sessions": [
+    {
+      "id": "<redacted-id>",
+      "started_at": 0,
+      "ended_at": 0,
+      "end_reason": "paused"
+    },
+    {
+      "id": "<redacted-id>",
+      "started_at": 0
+    }
+  ],
+  "decisions": [],
+  "verifier_verdicts": [],
+  "checkpoints": [],
+  "metrics": {
+    "tool_calls": 0,
+    "cost_cents": 0,
+    "wall_seconds": 0,
+    "sessions_count": 2,
+    "pause_resume_cycles": 1,
+    "verifier_runs": 0
+  },
+  "delivered_to": [],
+  "rendered_content_sha256": "<redacted>",
+  "source_content_sha256": "<redacted>",
+  "citations": [1, 2]
+}

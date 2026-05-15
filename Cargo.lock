@@ -2168,6 +2168,7 @@ dependencies = [
  "dashmap",
  "futures-util",
  "ipnet",
+ "lettre",
  "reqwest",
  "rusqlite",
  "seasoned-hand-core",

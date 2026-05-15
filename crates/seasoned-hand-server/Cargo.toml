@@ -29,3 +29,6 @@ wiremock = "0.6"
 tokio-tungstenite = "0.24"
 tower = "0.5"
 tempfile = "3"
+# Story 2.25: inspect raw bytes of captured outbound mail in phase2_overnight.rs.
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
+async-trait = "0.1"

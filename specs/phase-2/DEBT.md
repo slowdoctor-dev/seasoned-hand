@@ -704,6 +704,40 @@
   Could also drop the `tail` flag and have the route default to live
   tail if the cost is the same.
 
+### 32. `task_deliver` stores workspace-relative `rendered_content_path` but `EmailChannel::deliver` reads it as absolute
+- **Origin**: surfaced by story 2.25 (`crates/seasoned-hand-server/tests/phase2_overnight.rs`),
+  rooted in `crates/seasoned-hand-core/src/deliverable/task_deliver.rs`
+  (writes `rendered.workspace_path` verbatim) +
+  `crates/seasoned-hand-core/src/channel/email/mod.rs::deliver`
+  (calls `tokio::fs::read(&deliverable.rendered_content_path)` directly).
+- **Severity**: **Medium** (only bites real email-channel deliveries; chat /
+  webhook handlers don't read file bytes, so default `cargo test` is clean
+  outside this overnight test).
+- **What**: `task_deliver` persists `rendered_content_path` as the
+  workspace-relative form returned by `fingerprint_artifact` (e.g.
+  `.deliverables/phase2-summary.docx`). The Phase 0/1 frontend / chat
+  consumers only round-trip that string as a `file_ref` field (no I/O), so
+  this was never noticed. `EmailChannel::DeliverySink` is the first
+  consumer that reads the bytes off disk — and it treats the column value
+  as an absolute path. Live email delivery fails with
+  `No such file or directory` for every overnight workflow that doesn't
+  happen to be CWD-rooted at the workspace.
+- **Why**: Architecture §2.7 / §2.9 don't pin whether `rendered_content_path`
+  is workspace-relative or absolute. Chat / webhook channels stayed
+  forgiving by accident. Fixing this inside 2.25 would either widen
+  `task_deliver`'s contract (resolve via `SandboxClient::workspace_host_path`
+  before persisting) or thread a `SandboxClient` reference into
+  `EmailChannel::deliver` — either change touches surfaces beyond the
+  acceptance-gate test's scope.
+- **Pay down**: Phase 2 close-out story (2.27) or a dedicated fix-up:
+  pick a side and commit — recommend resolving the absolute path
+  inside `task_deliver` so the column stores the canonical workspace
+  path, then `EmailChannel::deliver` reads it directly. The test
+  worked-around by `UPDATE deliverables SET rendered_content_path = ?`
+  to the absolute form (workspace_host_path + relative) before
+  triggering delivery; that workaround MUST disappear once the
+  task_deliver side is fixed.
+
 ---
 
 ## Categories quick-reference (same as Phase 0 / Phase 1)
