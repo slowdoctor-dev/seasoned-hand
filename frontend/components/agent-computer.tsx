@@ -2,15 +2,25 @@
 
 import { useEffect, useState } from "react";
 import { BrowserTab } from "@/components/agent-computer/browser-tab";
+import { DecisionsTab } from "@/components/agent-computer/decisions-tab";
+import { DeliverablesTab } from "@/components/agent-computer/deliverables-tab";
 import { EditorTab } from "@/components/agent-computer/editor-tab";
 import { TerminalTab } from "@/components/agent-computer/terminal-tab";
 import { VerifierTab } from "@/components/agent-computer/verifier-tab";
 import type { ServerEvent } from "@/lib/ws-types";
 
-type Tab = "browser" | "terminal" | "editor" | "verifier" | "files";
+type Tab =
+  | "browser"
+  | "terminal"
+  | "editor"
+  | "verifier"
+  | "deliverables"
+  | "decisions"
+  | "files";
 
 type Props = {
   sessionId: string | null;
+  taskId: string | null;
   events: ServerEvent[];
   eventIndex: Map<number, ServerEvent>;
 };
@@ -20,8 +30,21 @@ const TABS: { id: Tab; label: string; disabled?: boolean; note?: string }[] = [
   { id: "terminal", label: "Terminal" },
   { id: "editor", label: "Editor" },
   { id: "verifier", label: "Verifier" },
+  { id: "deliverables", label: "Deliverables" },
+  { id: "decisions", label: "Decisions" },
   { id: "files", label: "Files", disabled: true, note: "Phase 1" },
 ];
+
+function isPersistedTab(value: string | null): value is Tab {
+  return (
+    value === "browser" ||
+    value === "terminal" ||
+    value === "editor" ||
+    value === "verifier" ||
+    value === "deliverables" ||
+    value === "decisions"
+  );
+}
 
 function storageKey(sessionId: string | null): string {
   return `sh.tab.${sessionId ?? "no-session"}`;
@@ -30,18 +53,13 @@ function storageKey(sessionId: string | null): string {
 function initialTab(sessionId: string | null): Tab {
   if (typeof window === "undefined") return "browser";
   const saved = window.sessionStorage.getItem(storageKey(sessionId));
-  if (
-    saved === "browser" ||
-    saved === "terminal" ||
-    saved === "editor" ||
-    saved === "verifier"
-  ) {
+  if (isPersistedTab(saved)) {
     return saved;
   }
   return "browser";
 }
 
-export function AgentComputer({ sessionId, events, eventIndex }: Props) {
+export function AgentComputer({ sessionId, taskId, events, eventIndex }: Props) {
   const [active, setActive] = useState<Tab>(() => initialTab(sessionId));
 
   useEffect(() => {
@@ -102,6 +120,14 @@ export function AgentComputer({ sessionId, events, eventIndex }: Props) {
         {active === "editor" && <EditorTab sessionId={sessionId} />}
         {active === "verifier" && (
           <VerifierTab
+            sessionId={sessionId}
+            events={events}
+            eventIndex={eventIndex}
+          />
+        )}
+        {active === "deliverables" && <DeliverablesTab taskId={taskId} />}
+        {active === "decisions" && (
+          <DecisionsTab
             sessionId={sessionId}
             events={events}
             eventIndex={eventIndex}

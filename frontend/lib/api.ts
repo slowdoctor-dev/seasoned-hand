@@ -29,6 +29,16 @@ async function get<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`POST ${path} -> ${res.status}`);
+  return (await res.json()) as T;
+}
+
 export function listSessions(limit = 50): Promise<SessionSummary[]> {
   return get<SessionSummary[]>(`/v1/sessions?limit=${limit}`);
 }
@@ -74,4 +84,118 @@ export function listVerifications(
 
 export function getVerification(id: string): Promise<Verification> {
   return get<Verification>(`/v1/verifications/${encodeURIComponent(id)}`);
+}
+
+// Phase 2 / story 2.22: project + task + deliverable DTOs.
+// Mirrors crates/seasoned-hand-core/src/project/{project,task}.rs and
+// crates/seasoned-hand-core/src/deliverable/mod.rs. Hand-mirrored; ts-rs
+// codegen stays deferred per phase-2 architecture §5.
+
+export type ProjectStatus = "active" | "archived";
+
+export type Project = {
+  id: string;
+  tenant_id: string | null;
+  title: string;
+  description: string | null;
+  status: ProjectStatus;
+  created_at: number;
+  updated_at: number;
+};
+
+export type TaskStatus =
+  | "drafted"
+  | "briefed"
+  | "confirmed"
+  | "running"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type Task = {
+  id: string;
+  project_id: string;
+  tenant_id: string | null;
+  title: string;
+  brief: unknown | null;
+  status: TaskStatus;
+  expected_due_at: number | null;
+  completed_at: number | null;
+  failure_reason: string | null;
+  parent_task_id: string | null;
+  schedule: string | null;
+  skill_attached_event_id: number | null;
+  created_at: number;
+  updated_at: number;
+};
+
+export type Deliverable = {
+  id: string;
+  task_id: string;
+  tenant_id: string | null;
+  format: string;
+  source_content_path: string | null;
+  source_content_sha256: string | null;
+  rendered_content_path: string;
+  rendered_content_sha256: string;
+  content_size: number;
+  citations: number[] | null;
+  provenance_manifest: unknown;
+  created_at: number;
+};
+
+export type TaskDeliverablesResponse = {
+  deliverables: Deliverable[];
+  // Latest session_id for the task — used to construct the workspace
+  // proxy download URL (`/v1/workspace/:session_id/<path>`). `null` when
+  // no session has been created yet.
+  latest_session_id: string | null;
+};
+
+export function listProjects(limit = 50): Promise<Project[]> {
+  return get<Project[]>(`/v1/projects?limit=${limit}`);
+}
+
+export function getProject(id: string): Promise<Project> {
+  return get<Project>(`/v1/projects/${encodeURIComponent(id)}`);
+}
+
+export function createProject(
+  title: string,
+  description?: string | null,
+): Promise<Project> {
+  return postJson<Project>("/v1/projects", { title, description });
+}
+
+export function listTasks(projectId: string, limit = 50): Promise<Task[]> {
+  return get<Task[]>(
+    `/v1/projects/${encodeURIComponent(projectId)}/tasks?limit=${limit}`,
+  );
+}
+
+export function getTask(id: string): Promise<Task> {
+  return get<Task>(`/v1/tasks/${encodeURIComponent(id)}`);
+}
+
+export function getTaskDeliverables(
+  taskId: string,
+): Promise<TaskDeliverablesResponse> {
+  return get<TaskDeliverablesResponse>(
+    `/v1/tasks/${encodeURIComponent(taskId)}/deliverables`,
+  );
+}
+
+// Phase 2 / story 2.15: provenance manifest accessor — re-used by 2.22
+// callers that want intake/brief/sessions context without pulling in
+// the full Deliverable row.
+export type ProvenanceResponse = {
+  deliverable_id: string;
+  manifest: unknown;
+};
+
+export function getTaskProvenance(taskId: string): Promise<ProvenanceResponse> {
+  return get<ProvenanceResponse>(
+    `/v1/tasks/${encodeURIComponent(taskId)}/provenance`,
+  );
 }

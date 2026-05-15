@@ -807,8 +807,14 @@ PATCH  /v1/projects/:id { title?, status? }
 GET    /v1/projects/:id/tasks?status&limit&cursor
 
 GET    /v1/tasks/:id
-GET    /v1/tasks/:id/deliverables
-GET    /v1/tasks/:id/deliverables/:did/content    # raw bytes of rendered artifact
+GET    /v1/tasks/:id/deliverables                 # response is { deliverables, latest_session_id }
+                                                  # — the latest_session_id is paired in so the
+                                                  # frontend can build the download URL via the
+                                                  # existing /v1/workspace/:session_id/*sub_path
+                                                  # proxy (Phase 0). No per-deliverable `:did/content`
+                                                  # route is needed; the workspace proxy was built
+                                                  # for exactly this. Multi-deliverable tasks are
+                                                  # Phase 3+; one Deliverable per task today.
 GET    /v1/tasks/:id/notifications
 GET    /v1/tasks/:id/intake                       # the originating IntakeEvent
 GET    /v1/tasks/:id/deliveries                   # where the deliverable was sent

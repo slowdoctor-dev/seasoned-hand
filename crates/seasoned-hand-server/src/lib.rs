@@ -1287,6 +1287,10 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/projects/:id/tasks", get(list_project_tasks_handler))
         .route("/v1/tasks/:id", get(get_task_handler))
         .route(
+            "/v1/tasks/:id/deliverables",
+            get(list_task_deliverables_handler),
+        )
+        .route(
             "/v1/tasks/:id/pause",
             axum::routing::post(post_task_pause_handler),
         )
@@ -2101,6 +2105,59 @@ async fn get_task_handler(
             ))
         }
     }
+}
+
+/// Story 2.22 backend: list every Deliverable row for a task and return
+/// the latest session_id alongside. The frontend AgentComputer
+/// `DeliverablesTab` joins these to build a download URL via the
+/// existing `GET /v1/workspace/:session_id/*sub_path` proxy.
+#[derive(Debug, serde::Serialize)]
+struct TaskDeliverablesResponse {
+    deliverables: Vec<seasoned_hand_core::deliverable::Deliverable>,
+    latest_session_id: Option<String>,
+}
+
+async fn list_task_deliverables_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Path(task_id): Path<String>,
+) -> Result<Json<TaskDeliverablesResponse>, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
+    state.tasks.get(&task_id).await.map_err(|e| match e {
+        seasoned_hand_core::project::TaskError::NotFound(_) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "task_not_found".into(),
+            }),
+        ),
+        other => {
+            tracing::error!(error = %other, "list_task_deliverables::lookup");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            )
+        }
+    })?;
+    let deliverables = state
+        .deliverables
+        .list_by_task(&task_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "list_task_deliverables");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            )
+        })?;
+    let latest_session_id = ws::lookup_latest_session_for_task(&state, &task_id).await;
+    Ok(Json(TaskDeliverablesResponse {
+        deliverables,
+        latest_session_id,
+    }))
 }
 
 #[derive(Debug, Deserialize, Default)]

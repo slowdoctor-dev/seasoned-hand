@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { AgentComputer } from "@/components/agent-computer";
 import { Chat } from "@/components/chat";
+import { ProjectList } from "@/components/project-list";
 import { TaskList } from "@/components/task-list";
 import { ThreePanelLayout } from "@/components/three-panel-layout";
 import { useAgentSocket } from "@/lib/ws";
@@ -14,6 +15,13 @@ const WS_URL =
     : process.env.NEXT_PUBLIC_WS_URL ?? `ws://${window.location.hostname}:3000/ws`;
 
 export function HomeShell() {
+  // Story 2.22: HomeShell owns activeProjectId + activeTaskId + active
+  // sessionId so TaskList / Chat / AgentComputer can coordinate. The
+  // archive sentinel `__archive__` keeps archive-mode behavior pure
+  // frontend; in project mode the user clicks tasks (taskId), in archive
+  // mode the user clicks sessions (sessionId, legacy Phase 0/1 flow).
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const { events, send } = useAgentSocket(WS_URL);
 
@@ -31,7 +39,29 @@ export function HomeShell() {
 
   return (
     <ThreePanelLayout
-      left={<TaskList activeSessionId={sessionId} onSelect={setSessionId} />}
+      left={
+        <aside className="flex h-full flex-col border-r">
+          <ProjectList
+            activeProjectId={activeProjectId}
+            onSelect={(id) => {
+              setActiveProjectId(id);
+              // Switching project clears the active task selection but
+              // leaves sessionId alone — chat's WS subscription survives
+              // a project hop, which is what users expect mid-task.
+              setActiveTaskId(null);
+            }}
+          />
+          <div className="flex-1 overflow-hidden">
+            <TaskList
+              activeProjectId={activeProjectId}
+              activeTaskId={activeTaskId}
+              activeSessionId={sessionId}
+              onSelectTask={setActiveTaskId}
+              onSelectSession={setSessionId}
+            />
+          </div>
+        </aside>
+      }
       center={
         <Chat
           sessionId={sessionId}
@@ -43,6 +73,7 @@ export function HomeShell() {
       right={
         <AgentComputer
           sessionId={sessionId}
+          taskId={activeTaskId}
           events={events}
           eventIndex={eventIndex}
         />

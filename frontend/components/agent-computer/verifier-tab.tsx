@@ -9,6 +9,7 @@
 // refs: /specs/phase-1/stories/story-1.18.md
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { EvidenceChip } from "@/components/agent-computer/evidence-chip";
 import {
   getVerification,
   listVerifications,
@@ -220,43 +221,6 @@ function VerdictBadge({ verdict }: { verdict: "pass" | "fail" }) {
       className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${cls}`}
     >
       {verdict}
-    </span>
-  );
-}
-
-function EvidenceChip({
-  eventId,
-  eventIndex,
-}: {
-  eventId: number;
-  eventIndex: Map<number, ServerEvent>;
-}) {
-  const [open, setOpen] = useState(false);
-  const ev = eventIndex.get(eventId);
-  if (!ev) {
-    return (
-      <span
-        className="cursor-default rounded bg-gray-200 px-2 py-0.5 text-[11px] text-gray-500 dark:bg-gray-800"
-        title="Event is older than the currently loaded window"
-      >
-        #{eventId} (older than loaded window)
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex flex-col items-start">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="rounded bg-blue-100 px-2 py-0.5 text-[11px] text-blue-800 hover:bg-blue-200 dark:bg-blue-900 dark:text-blue-100"
-      >
-        #{eventId}
-      </button>
-      {open && (
-        <pre className="mt-1 max-h-40 max-w-md overflow-auto rounded bg-white p-2 text-[10px] dark:bg-black">
-          {JSON.stringify(ev, null, 2)}
-        </pre>
-      )}
     </span>
   );
 }
