@@ -584,7 +584,7 @@
   for the old session and writes the matching delta onto the new
   session's `cost_cents`. Until then, cost caps reset per rebuild.
 
-### 23. CliChannel not registered into the production AppState
+### ~~23. CliChannel not registered into the production AppState~~ — CLOSED in story 2.21a
 - **Origin**: story 2.13, `crates/seasoned-hand-core/src/channel/cli.rs`
 - **Severity**: **Low**
 - **What**: `CliChannel` is built + unit-tested but never registered
@@ -604,6 +604,15 @@
   calls it from the CLI binary's `task new` path. The same
   `Arc<CliChannel>` is shared between the in-process IntakeEvent
   push site and the registered `DeliverySink` slot.
+- **Resolution (story 2.21a)**: `AppState` now owns
+  `cli_channel: Arc<CliChannel>` (built by `AppState::new`).
+  `AppState::register_cli_channel(self) -> Self` registers the same
+  Arc into the `ChannelRegistry` under both intake and delivery
+  slots; `main.rs` calls it once after `register_ntfy_channel` so
+  the headless production server always exposes the `cli` slot via
+  `GET /v1/channels`. Story 2.21b's `task new --blocking` will read
+  `AppState::cli_channel.register_pending(...)` directly to set up
+  the in-process oneshot path.
 
 ---
 

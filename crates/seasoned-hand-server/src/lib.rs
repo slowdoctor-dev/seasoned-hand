@@ -24,6 +24,7 @@ use seasoned_hand_core::capability::ModelCapabilities;
 use seasoned_hand_core::channel::{
     ChannelRegistration, ChannelRegistry,
     chat::ChatChannel,
+    cli::CliChannel,
     email::{
         AllowList, AsyncImapFetcher, EmailChannel, ImapConfig, LettreSmtpTransport, SmtpConfig,
     },
@@ -183,6 +184,15 @@ pub struct AppState {
     /// run a single cycle on demand.
     pub workspace_ttl_cron:
         Arc<seasoned_hand_core::task::WorkspaceTtlCron<seasoned_hand_core::sandbox::SandboxClient>>,
+    /// Story 2.21a / Phase 2 DEBT #23: registered `CliChannel` shared
+    /// between (a) the in-process `register_pending` / `submit` site
+    /// the CLI binary will use when it shares an `AppState` with the
+    /// server (story 2.21b `task new --blocking`) and (b) the
+    /// `DeliveryRouter`'s `cli` reply_target slot. None until
+    /// [`AppState::register_cli_channel`] runs from `main.rs`; the
+    /// channel itself is harmless to register early — its
+    /// `IntakeProvider::run` parks on shutdown.
+    pub cli_channel: Arc<CliChannel>,
 }
 
 /// Story 2.20: configuration bundle for the NarratorHook's
@@ -517,6 +527,7 @@ impl AppState {
             briefing_senders,
             notify_config,
             workspace_ttl_cron,
+            cli_channel: Arc::new(CliChannel::new()),
         };
         // Story 2.8b: attach the confirm-gate Initializer spawner so
         // every Created intake event flows through to the briefing
@@ -681,6 +692,29 @@ impl AppState {
     pub fn with_notify_config(mut self, config: Arc<NotifyConfig>) -> Self {
         self.notify_config = config;
         self
+    }
+
+    /// Story 2.21a / Phase 2 DEBT #23: register the `CliChannel` already
+    /// built by `AppState::new` into the channel registry under both the
+    /// intake and delivery slots. Notify is intentionally unfilled —
+    /// terminal push semantics live on ntfy / email per `channel/cli.rs`
+    /// docs. Idempotent in practice: `register_channel` rebuilds the
+    /// registry from existing entries, so calling this twice just
+    /// re-points the slot at the same `Arc<CliChannel>`.
+    ///
+    /// `main.rs` calls this after `register_ntfy_channel` so the CLI
+    /// slot is always present in production AppState. The 2.21b
+    /// `task new --blocking` path will read
+    /// `AppState::cli_channel.register_pending(...)` directly so the
+    /// in-process oneshot path works without round-tripping through
+    /// HTTP.
+    pub fn register_cli_channel(self) -> Self {
+        let channel = self.cli_channel.clone();
+        self.register_channel(
+            ChannelRegistration::new(seasoned_hand_core::channel::cli::CHANNEL_NAME)
+                .with_intake(channel.clone())
+                .with_delivery(channel),
+        )
     }
 
     /// Story 2.20: attach the NarratorHook's classifier-slot LLM path.
@@ -1239,6 +1273,31 @@ pub fn app(state: AppState) -> Router {
         // when `?deliverable_id=...` is supplied. Spilled (file-ref)
         // manifests are transparently inflated.
         .route("/v1/tasks/:id/provenance", get(get_task_provenance_handler))
+        // Story 2.21a: project + task surface for the `seasoned-hand`
+        // CLI binary. Loopback-only (Phase 2 single-operator); Phase 5
+        // multi-user will lift the constraint behind real auth.
+        .route(
+            "/v1/projects",
+            get(list_projects_handler).post(create_project_handler),
+        )
+        .route(
+            "/v1/projects/:id/archive",
+            axum::routing::post(archive_project_handler),
+        )
+        .route("/v1/projects/:id/tasks", get(list_project_tasks_handler))
+        .route("/v1/tasks/:id", get(get_task_handler))
+        .route(
+            "/v1/tasks/:id/pause",
+            axum::routing::post(post_task_pause_handler),
+        )
+        .route(
+            "/v1/tasks/:id/resume",
+            axum::routing::post(post_task_resume_handler),
+        )
+        .route(
+            "/v1/tasks/:id/cancel",
+            axum::routing::post(post_task_cancel_handler),
+        )
         .with_state(state)
 }
 
@@ -1499,6 +1558,27 @@ fn now_unix_micros() -> i64 {
 }
 
 // ---------------------------------------------------------------------------
+// Loopback guard helper — shared by Phase 1 admin routes (1.13b rollback,
+// 2.17 cleanup) AND the Phase 2 CLI surface (2.21a /v1/projects + /v1/tasks).
+// Phase 2 single-operator deployments bind the server to `127.0.0.1`;
+// Phase 5 multi-user will replace this with real auth, but the
+// guard's job stays the same — keep these routes off the public surface.
+// ---------------------------------------------------------------------------
+
+fn require_loopback(remote: std::net::SocketAddr) -> Result<(), (StatusCode, Json<ApiError>)> {
+    if remote.ip().is_loopback() {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            Json(ApiError {
+                error: "forbidden_non_loopback".into(),
+            }),
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Story 1.13b: admin rollback handler. Loopback-bound, token-gated.
 // ---------------------------------------------------------------------------
 
@@ -1530,14 +1610,7 @@ async fn post_checkpoint_rollback_handler(
         ));
     }
     // Guard 2: loopback only.
-    if !remote.ip().is_loopback() {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ApiError {
-                error: "forbidden_non_loopback".into(),
-            }),
-        ));
-    }
+    require_loopback(remote)?;
     // Guard 3: token header match.
     let token_hdr = headers
         .get("X-Seasoned-Hand-Admin-Token")
@@ -1698,14 +1771,7 @@ async fn post_admin_sandbox_cleanup_handler(
         ));
     }
     // Guard 2: loopback only.
-    if !remote.ip().is_loopback() {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ApiError {
-                error: "forbidden_non_loopback".into(),
-            }),
-        ));
-    }
+    require_loopback(remote)?;
     // Guard 3: token header match.
     let token_hdr = headers
         .get("X-Seasoned-Hand-Admin-Token")
@@ -1819,6 +1885,366 @@ async fn get_task_provenance_handler(
         "get_task_provenance",
         get_task_provenance(&task_id, q, deps).await,
     )
+}
+
+// ---------------------------------------------------------------------------
+// Story 2.21a: project + task HTTP routes that back the
+// `seasoned-hand` CLI binary. Loopback-only — Phase 5 multi-user will
+// add real auth and lift the constraint (BASELINE §8). The pause /
+// resume / cancel routes delegate to the shared `ws::handle_task_*`
+// helpers so the WS and HTTP entrypoints stay structurally identical.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Default)]
+struct ProjectsListQuery {
+    limit: Option<usize>,
+    cursor: Option<i64>,
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateProjectBody {
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    tenant_id: Option<String>,
+}
+
+async fn list_projects_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Query(q): Query<ProjectsListQuery>,
+) -> Result<Json<Vec<seasoned_hand_core::project::Project>>, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
+    let status = match q.status.as_deref() {
+        Some("active") => Some(seasoned_hand_core::project::ProjectStatus::Active),
+        Some("archived") => Some(seasoned_hand_core::project::ProjectStatus::Archived),
+        Some(other) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: format!("unknown status: {other}"),
+                }),
+            ));
+        }
+        None => None,
+    };
+    let limit = q.limit.unwrap_or(50);
+    state
+        .projects
+        .list(status, q.cursor, limit)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "list_projects");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            )
+        })
+}
+
+async fn create_project_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Json(body): Json<CreateProjectBody>,
+) -> Result<(StatusCode, Json<seasoned_hand_core::project::Project>), (StatusCode, Json<ApiError>)>
+{
+    require_loopback(remote)?;
+    if body.title.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "empty_title".into(),
+            }),
+        ));
+    }
+    let id = state
+        .projects
+        .insert(seasoned_hand_core::project::NewProject {
+            tenant_id: body.tenant_id,
+            title: body.title,
+            description: body.description,
+        })
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "create_project");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            )
+        })?;
+    let row = state.projects.get(&id).await.map_err(|e| {
+        tracing::error!(error = %e, "create_project::get");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: "internal_error".into(),
+            }),
+        )
+    })?;
+    Ok((StatusCode::CREATED, Json(row)))
+}
+
+async fn archive_project_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
+    match state
+        .projects
+        .set_status(&id, seasoned_hand_core::project::ProjectStatus::Archived)
+        .await
+    {
+        Ok(()) => Ok(StatusCode::NO_CONTENT),
+        Err(seasoned_hand_core::project::ProjectError::NotFound(_)) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "project_not_found".into(),
+            }),
+        )),
+        Err(e) => {
+            tracing::error!(error = %e, "archive_project");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            ))
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct TasksListQuery {
+    limit: Option<usize>,
+    cursor: Option<i64>,
+    status: Option<String>,
+}
+
+async fn list_project_tasks_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Path(project_id): Path<String>,
+    Query(q): Query<TasksListQuery>,
+) -> Result<Json<Vec<seasoned_hand_core::project::Task>>, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
+    let status = match q.status.as_deref() {
+        Some(s) => match seasoned_hand_core::project::TaskStatus::from_db_str(s) {
+            Ok(st) => Some(st),
+            Err(_) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError {
+                        error: format!("unknown status: {s}"),
+                    }),
+                ));
+            }
+        },
+        None => None,
+    };
+    let limit = q.limit.unwrap_or(50);
+    state
+        .tasks
+        .list_by_project(&project_id, status, q.cursor, limit)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            tracing::error!(error = %e, "list_project_tasks");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            )
+        })
+}
+
+async fn get_task_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Path(id): Path<String>,
+) -> Result<Json<seasoned_hand_core::project::Task>, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
+    match state.tasks.get(&id).await {
+        Ok(task) => Ok(Json(task)),
+        Err(seasoned_hand_core::project::TaskError::NotFound(_)) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "task_not_found".into(),
+            }),
+        )),
+        Err(e) => {
+            tracing::error!(error = %e, "get_task");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            ))
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct TaskPauseBody {
+    #[serde(default)]
+    durable: Option<bool>,
+}
+
+async fn post_task_pause_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Path(task_id): Path<String>,
+    body: Option<Json<TaskPauseBody>>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
+    // Confirm the task exists so the 404 path mirrors `get_task_handler`
+    // before we touch session state.
+    state.tasks.get(&task_id).await.map_err(|e| match e {
+        seasoned_hand_core::project::TaskError::NotFound(_) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "task_not_found".into(),
+            }),
+        ),
+        other => {
+            tracing::error!(error = %other, "task_pause::lookup");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            )
+        }
+    })?;
+    let durable = body.and_then(|Json(b)| b.durable).unwrap_or(true);
+    let session_id = ws::lookup_latest_session_for_task(&state, &task_id)
+        .await
+        .ok_or((
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "no_active_session".into(),
+            }),
+        ))?;
+    map_lifecycle_result(ws::handle_task_pause(&state, &session_id, durable).await)
+}
+
+async fn post_task_resume_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Path(task_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
+    state.tasks.get(&task_id).await.map_err(|e| match e {
+        seasoned_hand_core::project::TaskError::NotFound(_) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "task_not_found".into(),
+            }),
+        ),
+        other => {
+            tracing::error!(error = %other, "task_resume::lookup");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            )
+        }
+    })?;
+    let session_id = ws::lookup_latest_session_for_task(&state, &task_id)
+        .await
+        .ok_or((
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "no_active_session".into(),
+            }),
+        ))?;
+    map_lifecycle_result(ws::handle_task_resume(&state, &session_id).await)
+}
+
+async fn post_task_cancel_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Path(task_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
+    // Drive the Task state machine first — Phase 2 widened
+    // `legal_transitions` so Drafted/Briefed/Confirmed/Running/Paused
+    // all → Cancelled. Terminal task → 409 wrong_state. NotFound → 404.
+    match state
+        .tasks
+        .set_status(&task_id, seasoned_hand_core::project::TaskStatus::Cancelled)
+        .await
+    {
+        Ok(()) => {}
+        Err(seasoned_hand_core::project::TaskError::NotFound(_)) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: "task_not_found".into(),
+                }),
+            ));
+        }
+        Err(seasoned_hand_core::project::TaskError::IllegalTransition { from, .. }) => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(ApiError {
+                    error: format!("wrong_state:{}", from.as_db_str()),
+                }),
+            ));
+        }
+        Err(other) => {
+            tracing::error!(error = %other, "task_cancel::set_status");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            ));
+        }
+    }
+    // If there's a live session, cascade the cancel through the same
+    // ws helper so sandbox teardown + Misc emission run exactly once.
+    // No active session is fine — Drafted/Briefed task cancels never
+    // had one to begin with.
+    if let Some(session_id) = ws::lookup_latest_session_for_task(&state, &task_id).await
+        && let Err(reason) = ws::handle_task_cancel(&state, &session_id).await
+    {
+        // Already-terminal session is fine on a cancel — the task row
+        // is now Cancelled regardless. Surface other errors.
+        if reason != "wrong_state" {
+            tracing::warn!(
+                %reason,
+                %session_id,
+                "task_cancel: session-side teardown reported a non-terminal error"
+            );
+        }
+    }
+    Ok(StatusCode::ACCEPTED)
+}
+
+fn map_lifecycle_result(
+    res: Result<(), String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    match res {
+        Ok(()) => Ok(StatusCode::ACCEPTED),
+        Err(reason) => {
+            let status = match reason.as_str() {
+                "wrong_state" => StatusCode::CONFLICT,
+                "unknown_session" => StatusCode::NOT_FOUND,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            Err((status, Json(ApiError { error: reason })))
+        }
+    }
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/seasoned-hand-core",
     "crates/seasoned-hand-server",
+    "crates/seasoned-hand-cli",
 ]
 
 [workspace.package]

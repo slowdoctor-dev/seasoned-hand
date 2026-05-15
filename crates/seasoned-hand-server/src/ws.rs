@@ -512,7 +512,7 @@ async fn session_state(state: &AppState, session_id: &str) -> Result<Option<Stri
     Ok(found)
 }
 
-async fn handle_task_pause(
+pub(crate) async fn handle_task_pause(
     state: &AppState,
     session_id: &str,
     durable: bool,
@@ -588,7 +588,7 @@ async fn latest_event_id(state: &AppState, session_id: &str) -> Option<i64> {
         .await
 }
 
-async fn handle_task_resume(state: &AppState, session_id: &str) -> Result<(), String> {
+pub(crate) async fn handle_task_resume(state: &AppState, session_id: &str) -> Result<(), String> {
     let current = session_state(state, session_id)
         .await?
         .ok_or_else(|| "unknown_session".to_string())?;
@@ -626,6 +626,32 @@ async fn handle_task_resume(state: &AppState, session_id: &str) -> Result<(), St
         let _ = runner.resume_session(&sid).await;
     });
     Ok(())
+}
+
+/// Reverse of [`lookup_session_task_id`] — find the most recent session
+/// for a task. Used by the story 2.21a `/v1/tasks/:id/{pause,resume,cancel}`
+/// HTTP routes to route task-keyed lifecycle commands through the same
+/// session-keyed helpers ([`handle_task_pause`] / [`handle_task_resume`] /
+/// [`handle_task_cancel`]) that the WS path uses. Returns `None` when
+/// the task has no associated session row yet (e.g. an intake Misc
+/// arrived but the Initializer hasn't spawned a session).
+pub(crate) async fn lookup_latest_session_for_task(
+    state: &AppState,
+    task_id: &str,
+) -> Option<String> {
+    let tid = task_id.to_string();
+    state
+        .db
+        .with_conn(move |conn| {
+            conn.query_row(
+                "SELECT id FROM sessions WHERE task_id = ? \
+                  ORDER BY created_at DESC LIMIT 1",
+                rusqlite::params![tid],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+        })
+        .await
 }
 
 async fn lookup_session_task_id(state: &AppState, session_id: &str) -> Option<String> {
@@ -667,7 +693,7 @@ async fn run_durable_resume(state: &AppState, task_id: &str) -> Result<(), Strin
     Ok(())
 }
 
-async fn handle_task_cancel(state: &AppState, session_id: &str) -> Result<(), String> {
+pub(crate) async fn handle_task_cancel(state: &AppState, session_id: &str) -> Result<(), String> {
     let current = session_state(state, session_id)
         .await?
         .ok_or_else(|| "unknown_session".to_string())?;

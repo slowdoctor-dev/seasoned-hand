@@ -117,6 +117,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|_| seasoned_hand_core::channel::ntfy::DEFAULT_HOST.into());
         state = state.register_ntfy_channel(ntfy_host);
     }
+
+    // Story 2.21a / Phase 2 DEBT #23: register the always-on `cli`
+    // channel into the registry. The same `Arc<CliChannel>` already
+    // lives on `state.cli_channel` (built by `AppState::new`) — this
+    // step just wires it into the `ChannelRegistry` so the
+    // `DeliveryRouter` can route `cli` reply_targets and `GET
+    // /v1/channels` lists it.
+    state = state.register_cli_channel();
     let notify_config_path =
         std::env::var("NOTIFY_CONFIG_PATH").unwrap_or_else(|_| "config/notify.toml".into());
     let notify_config =
