@@ -25,6 +25,41 @@ import {
 
 const OUT_DIR = "/tmp/sh-screenshots";
 
+/** Build a stream of narrate Message events. The chat panel renders
+ * each as an inline em-dash italic note; enough of them push earlier
+ * Misc-rendered events above the auto-scrolled viewport. */
+function narrateLines(
+  sessionId: string,
+  baseTsSec: number,
+  contents: string[],
+): Array<{
+  type: "event";
+  id: string;
+  session_id: string;
+  ts: number;
+  payload: {
+    kind: "Message";
+    role: "assistant";
+    ui: "narrate";
+    content: string;
+    call_id: string;
+  };
+}> {
+  return contents.map((content, i) => ({
+    type: "event",
+    id: `narrate-evt-${i + 1}`,
+    session_id: sessionId,
+    ts: baseTsSec + i + 1,
+    payload: {
+      kind: "Message",
+      role: "assistant",
+      ui: "narrate",
+      content,
+      call_id: `narrate-${i + 1}`,
+    },
+  }));
+}
+
 // Opt-in: set SH_SCREENSHOTS=1 to run. Default `pnpm test:e2e`
 // otherwise picks up this file via the e2e/ glob and pays ~80 s for
 // PNGs nobody asked for.
@@ -240,6 +275,12 @@ test.describe("Phase 2 screenshots", () => {
       created_at: 0,
       updated_at: 0,
     };
+    // Recent timestamps so the Deliverables row reads like a real
+    // recent completion instead of "1/1/1970, 9:00:00 AM". The frontend
+    // reads `created_at` as microseconds-since-epoch (Rust persists
+    // micros; the column flows through unchanged), so ms × 1000.
+    const nowMicros = Date.now() * 1000;
+    const twoHoursAgo = nowMicros - 2 * 60 * 60 * 1000 * 1000;
     const deliverable = {
       id: "d1",
       task_id: "t1",
@@ -252,11 +293,30 @@ test.describe("Phase 2 screenshots", () => {
       content_size: 18342,
       citations: null,
       provenance_manifest: {},
-      created_at: 0,
+      created_at: twoHoursAgo,
+    };
+    const deliverable2 = {
+      id: "d2",
+      task_id: "t1",
+      tenant_id: null,
+      format: "markdown",
+      source_content_path: null,
+      source_content_sha256: null,
+      rendered_content_path: "deliverables/fix-plan.md",
+      rendered_content_sha256: "def456",
+      content_size: 3421,
+      citations: null,
+      provenance_manifest: {},
+      created_at: twoHoursAgo + 180_000_000,
     };
     await mockProjectsList(page, [project]);
     await mockProjectTasks(page, "p1", [task]);
-    await mockTaskDeliverables(page, "t1", [deliverable], "sess-1");
+    await mockTaskDeliverables(
+      page,
+      "t1",
+      [deliverable, deliverable2],
+      "sess-1",
+    );
 
     await page.goto("/");
     await mock.waitOpen();
@@ -275,6 +335,9 @@ test.describe("Phase 2 screenshots", () => {
     await mock.install(page);
     await mockProjectsList(page, []);
     await mockSessionsList(page);
+    // Quiet the AgentComputer's sandbox fetch — sandbox=null shows
+    // "Sandbox starts when..." instead of "Failed to fetch".
+    await mockSessionDetail(page, "mock-session-1", null);
 
     await page.goto("/");
     await mock.waitOpen();
@@ -292,15 +355,32 @@ test.describe("Phase 2 screenshots", () => {
         c.payload.session_id === "mock-session-1",
     );
 
+    // Recent timestamps for the decision rows so the right panel shows
+    // a current-looking date instead of mid-2023 / "Invalid Date".
+    // DecisionsTab renders event `ts` via the Phase 1 event-timestamp
+    // helpers which expect seconds-since-epoch (NOT microseconds — that's
+    // the unit DeliverablesTab uses for its `created_at` field; the two
+    // fields drift, see Phase 2 DEBT pay-down candidates).
+    const nowSec = Math.floor(Date.now() / 1000);
+    const tsAction = nowSec - 600;
+    const tsDecision1 = nowSec - 540;
+    const tsDecision2 = nowSec - 480;
+    const tsNarrate = nowSec - 60;
+
     // Decision events use the flat `source`/`reason`/`evidence_event_ids`
     // shape at payload top-level (DecisionsTab reads ev.payload directly,
-    // not ev.payload.data).
+    // not ev.payload.data). The chat panel doesn't suppress them — its
+    // generic Misc renderer would show `decision: {...JSON...}`. To keep
+    // the demo screenshot clean we follow the decisions with narrate
+    // Message events; the chat auto-scrolls to bottom, so the friendlier
+    // em-dash italic narrates end up in view and the raw decision JSON
+    // gets pushed above the visible scroll area.
     await mock.script([
       {
         type: "event",
         id: "10",
         session_id: "mock-session-1",
-        ts: 1700_000_000,
+        ts: tsAction,
         payload: {
           kind: "Action",
           source: "shell",
@@ -310,7 +390,7 @@ test.describe("Phase 2 screenshots", () => {
       miscEvent({
         id: "11",
         sessionId: "mock-session-1",
-        ts: 1700_000_001,
+        ts: tsDecision1,
         kindTag: "decision",
         extra: {
           source: "Verifier",
@@ -321,7 +401,7 @@ test.describe("Phase 2 screenshots", () => {
       miscEvent({
         id: "12",
         sessionId: "mock-session-1",
-        ts: 1700_000_002,
+        ts: tsDecision2,
         kindTag: "decision",
         extra: {
           source: "plan_advance",
@@ -329,6 +409,23 @@ test.describe("Phase 2 screenshots", () => {
           evidence_event_ids: [10, 11],
         },
       }),
+      // Narrate Messages — the chat's NarrateLine renderer surfaces
+      // these as inline em-dash italic notes. With enough of them, the
+      // auto-scrolled chat scroller hides the raw decision JSON above.
+      ...narrateLines(
+        "mock-session-1",
+        tsNarrate,
+        [
+          "Triaging the failing GitHub Actions run on the main branch.",
+          "Pulled the last 200 lines of build.log — `cargo test` exited with 101.",
+          "Two failing tests: `verifier::worker::xreadgroup_consumes_one_entry` and a flaky WS test.",
+          "Bisecting against the last green run on origin/main…",
+          "Bisection isolated commit a3f9c2 — the cargo lockfile bump.",
+          "Reverted the lockfile bump locally; both failing tests now pass.",
+          "Drafting the root-cause summary into ci-root-cause.docx.",
+          "Verifier pass — deliverable ready.",
+        ],
+      ),
     ]);
 
     await page.getByRole("button", { name: "Decisions" }).click();
@@ -338,7 +435,30 @@ test.describe("Phase 2 screenshots", () => {
     });
     await firstRow.waitFor({ state: "visible" });
     await firstRow.click();
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(400);
+
+    // Hide the chat panel's fallback-rendered decision rows for the
+    // demo screenshot. The chat's generic Misc renderer shows decision
+    // events as `decision: {"kind":"Misc",...JSON...}` — accurate
+    // production behaviour but visually noisy when the DecisionsTab is
+    // the focus of the shot. Walk the chat scroller, find any element
+    // whose text starts with "decision:" + JSON, hide it.
+    await page.evaluate(() => {
+      const all = Array.from(document.querySelectorAll<HTMLElement>("*"));
+      for (const el of all) {
+        const text = el.textContent ?? "";
+        if (
+          /^\s*decision:\s*\{"kind":"Misc"/.test(text) &&
+          el.children.length === 0
+        ) {
+          // Hide the nearest container row, not the inner text node only,
+          // so we don't leave an empty row gap.
+          const row = el.closest<HTMLElement>("li, article, div") ?? el;
+          row.style.display = "none";
+        }
+      }
+    });
+    await page.waitForTimeout(100);
     await page.screenshot({
       path: `${OUT_DIR}/05-decisions-tab.png`,
       fullPage: false,
