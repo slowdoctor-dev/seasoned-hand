@@ -35,6 +35,52 @@ export type DeliverableEventPayload = {
   citations: number[];
 };
 
+// Phase 2 / story 2.7: structured Brief shape mirrored from
+// crates/seasoned-hand-core/src/project/brief.rs. The Initializer
+// (story 2.8) re-emits this as a Misc{kind:"briefing"} event under
+// payload.brief, which story 2.23's BriefingCard renders.
+export type DeliverableFormat =
+  | "markdown"
+  | "json"
+  | "csv"
+  | "docx"
+  | "pdf"
+  | "html"
+  | "pptx"
+  | "xlsx"
+  | "code"
+  | "url";
+
+export type BriefPhase = {
+  id: number;
+  title: string;
+  capabilities?: string[];
+};
+
+export type DeliverableSpec = {
+  filename: string;
+  format: DeliverableFormat;
+  description?: string;
+};
+
+export type Brief = {
+  goal: string;
+  phases: BriefPhase[];
+  success_criteria: string[];
+  expected_deliverables: DeliverableSpec[];
+};
+
+// Phase 2 / story 2.8: partial-update shape consumed by
+// BriefingConfirm action="edit". Each field is optional — present
+// values overwrite the current brief, absent values stay. Mirrors
+// crates/seasoned-hand-core/src/agent/init/briefing.rs PartialBrief.
+export type PartialBrief = {
+  goal?: string;
+  phases?: BriefPhase[];
+  success_criteria?: string[];
+  expected_deliverables?: DeliverableSpec[];
+};
+
 export type ServerEvent = {
   type: "event";
   id: string;
@@ -84,6 +130,21 @@ export type CommandPayload =
       session_id: string;
       in_reply_to_call_id: string;
       content: string;
+    }
+  // Phase 2 / story 2.8b: the briefing-confirm verb the chat client
+  // emits in response to a Misc{kind:"briefing"} event. Server-side
+  // forwarding is keyed by task_id (NOT session_id) — the per-task
+  // mpsc the Initializer's confirm gate is waiting on is registered
+  // at task_create time in AppState::briefing_senders.
+  //
+  // The Rust CommandPayload::BriefingConfirm flattens edits to a
+  // sibling field; only consulted when action == "edit".
+  | {
+      cmd: "briefing_confirm";
+      task_id: string;
+      in_reply_to_call_id: string;
+      action: "confirm" | "edit" | "cancel";
+      edits?: PartialBrief;
     };
 
 export type ClientCommand = {

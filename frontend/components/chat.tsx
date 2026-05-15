@@ -1,9 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  BriefingCard,
+  type BriefingResolution,
+} from "@/components/chat/briefing-card";
 import { deriveInputMode } from "@/lib/chat-state";
 import type { UseAgentSocket } from "@/lib/ws";
-import type { ServerEvent } from "@/lib/ws-types";
+import type { Brief, ServerEvent } from "@/lib/ws-types";
 
 type Props = {
   sessionId: string | null;
@@ -12,11 +16,21 @@ type Props = {
   send: UseAgentSocket["send"];
 };
 
+type LocalResolution = { kind: "confirmed" | "cancelled"; at: number };
+
 export function Chat({ sessionId, onSessionCreated, events, send }: Props) {
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [stickToBottom, setStickToBottom] = useState(true);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  // Optimistic resolution side-channel: Confirm/Cancel acks succeed
+  // before the server emits any matching Misc echo, so the card needs
+  // a client-side record of "we sent this verb" to flip out of
+  // pending. Server-driven states (auto_confirmed / superseded) are
+  // derived from events directly and don't need to live here.
+  const [localResolutions, setLocalResolutions] = useState<
+    Map<string, LocalResolution>
+  >(() => new Map());
 
   // Subscribe whenever sessionId changes.
   useEffect(() => {
@@ -27,6 +41,66 @@ export function Chat({ sessionId, onSessionCreated, events, send }: Props) {
   const sessionEvents = useMemo(
     () => events.filter((e) => e.session_id === sessionId),
     [events, sessionId],
+  );
+
+  // Story 2.23: index briefing-related Misc events per session so the
+  // BriefingCard can resolve its `task_id` (carried only on the
+  // briefing_pending sibling event), detect supersedence (a newer
+  // briefing for the same task), and surface auto-confirm. The wire
+  // shape for Misc is `{kind:"Misc", kind_tag:"briefing", data:{...}}`
+  // so the call_id / task_id / brief fields live under payload.data.
+  const briefingIndex = useMemo(() => {
+    const taskByCall = new Map<string, string>();
+    const latestCallByTask = new Map<string, string>();
+    const autoConfirmed = new Set<string>();
+    for (const ev of sessionEvents) {
+      const p = ev.payload as { kind?: string; kind_tag?: string };
+      if (p.kind !== "Misc") continue;
+      const tag = p.kind_tag ?? p.kind ?? "";
+      const data =
+        ((ev.payload as { data?: Record<string, unknown> }).data) ?? {};
+      const callId =
+        typeof data.briefing_call_id === "string" ? data.briefing_call_id : null;
+      if (tag === "briefing_pending") {
+        const taskId = typeof data.task_id === "string" ? data.task_id : null;
+        if (callId && taskId) taskByCall.set(callId, taskId);
+      } else if (tag === "briefing") {
+        if (callId) {
+          const taskId = taskByCall.get(callId);
+          if (taskId) latestCallByTask.set(taskId, callId);
+        }
+      } else if (tag === "briefing_auto_confirmed") {
+        if (callId) autoConfirmed.add(callId);
+      }
+    }
+    return { taskByCall, latestCallByTask, autoConfirmed };
+  }, [sessionEvents]);
+
+  const onLocalResolve = useCallback(
+    (callId: string, kind: "confirmed" | "cancelled") => {
+      setLocalResolutions((prev) => {
+        const next = new Map(prev);
+        next.set(callId, { kind, at: Date.now() });
+        return next;
+      });
+    },
+    [],
+  );
+
+  const resolveBriefingResolution = useCallback(
+    (callId: string, taskId: string | null): BriefingResolution => {
+      if (briefingIndex.autoConfirmed.has(callId)) {
+        return { kind: "auto_confirmed" };
+      }
+      const local = localResolutions.get(callId);
+      if (local) return local;
+      if (taskId !== null) {
+        const latest = briefingIndex.latestCallByTask.get(taskId);
+        if (latest && latest !== callId) return { kind: "superseded" };
+      }
+      return { kind: "pending" };
+    },
+    [briefingIndex, localResolutions],
   );
 
   const mode = useMemo(
@@ -94,11 +168,34 @@ export function Chat({ sessionId, onSessionCreated, events, send }: Props) {
           </p>
         ) : (
           <ul className="flex flex-col gap-2">
-            {sessionEvents.map((e) => (
-              <li key={`${e.session_id}:${e.id}`}>
-                <EventRow event={e} />
-              </li>
-            ))}
+            {sessionEvents.map((e) => {
+              const briefing = extractBriefing(e);
+              if (briefing) {
+                const taskId =
+                  briefingIndex.taskByCall.get(briefing.callId) ?? null;
+                const resolution = resolveBriefingResolution(
+                  briefing.callId,
+                  taskId,
+                );
+                return (
+                  <li key={`${e.session_id}:${e.id}`}>
+                    <BriefingCard
+                      brief={briefing.brief}
+                      briefingCallId={briefing.callId}
+                      taskId={taskId}
+                      resolution={resolution}
+                      send={send}
+                      onLocalResolve={onLocalResolve}
+                    />
+                  </li>
+                );
+              }
+              return (
+                <li key={`${e.session_id}:${e.id}`}>
+                  <EventRow event={e} />
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
@@ -124,6 +221,26 @@ export function Chat({ sessionId, onSessionCreated, events, send }: Props) {
       </form>
     </section>
   );
+}
+
+// Story 2.23: peek at a ServerEvent and, if it's a Misc{kind:"briefing"},
+// return the parsed Brief + call_id so the Chat scroller can swap the
+// row for a BriefingCard. The wire wraps Misc data under payload.data
+// (see ws.rs build_payload), so brief / briefing_call_id live there.
+function extractBriefing(
+  event: ServerEvent,
+): { callId: string; brief: Brief } | null {
+  const p = event.payload as { kind?: string; kind_tag?: string };
+  if (p.kind !== "Misc") return null;
+  const tag = p.kind_tag ?? p.kind ?? "";
+  if (tag !== "briefing") return null;
+  const data = (event.payload as { data?: Record<string, unknown> }).data;
+  if (!data || typeof data !== "object") return null;
+  const callId =
+    typeof data.briefing_call_id === "string" ? data.briefing_call_id : null;
+  const brief = data.brief;
+  if (!callId || !brief || typeof brief !== "object") return null;
+  return { callId, brief: brief as Brief };
 }
 
 function EventRow({ event }: { event: ServerEvent }) {
@@ -180,6 +297,20 @@ function EventRow({ event }: { event: ServerEvent }) {
       const kind = (p as { kind_tag?: string; kind?: string }).kind_tag
         ?? (p as { kind_tag?: string; kind?: string }).kind
         ?? "misc";
+      // Story 2.23: the briefing protocol's three Misc tags are
+      // subsumed by BriefingCard's state machine (rendered separately
+      // in the Chat scroller), so suppress them here to keep the
+      // event stream readable. `briefing` itself is replaced by the
+      // card; `briefing_pending` only carries the task_id sidecar the
+      // card derives from; `briefing_auto_confirmed` flips the card's
+      // pill instead of standing alone.
+      if (
+        kind === "briefing" ||
+        kind === "briefing_pending" ||
+        kind === "briefing_auto_confirmed"
+      ) {
+        return null;
+      }
       const text = JSON.stringify(p).slice(0, 80);
       return (
         <p className="text-xs italic text-gray-500">

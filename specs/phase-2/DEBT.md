@@ -639,6 +639,51 @@
   spec.require_confirm, .. }`. One-story scope; bundle with a future
   story that's already touching the spawner.
 
+### 31. BriefingCard has three rough edges (eviction / reload / server-error UX)
+- **Origin**: story 2.23,
+  `frontend/components/chat/briefing-card.tsx` +
+  `frontend/components/chat.tsx`
+- **Severity**: **Low**
+- **What**: Three small gaps left in the Phase-2 briefing UI:
+  1. **Eviction**. `useAgentSocket` caps the per-tab event buffer at
+     `EVENTS_CAP = 1000` (FIFO). If a session emits 1000+ events
+     before a Briefing renders, the older `briefing_pending` sidecar
+     may be evicted; the card then can't resolve `task_id` and the
+     three buttons disable with "Cannot resolve briefing — task id
+     not yet known". Phase 2 doesn't hit this in practice (the
+     briefing fires within the first 5-10 events of a task) but the
+     failure mode is silent.
+  2. **Reload**. The Confirm/Cancel optimistic resolution lives in
+     React state (`localResolutions`). On reload it's lost: the card
+     reverts to "Pending" and the three buttons re-enable, even
+     though the server has long since moved on. Clicking Confirm
+     again returns `no_pending_briefing` and the card finally settles
+     on the error row.
+  3. **Server-side validation errors**. If the Edit JSON parses but
+     fails `Brief::validate` server-side (e.g. `goal_empty`, the
+     `briefing_invalid{reason:"…"}` Misc), the card never sees it —
+     the response lands as generic Misc text in the chat scroller
+     (decision/task_state-style snippet) below the still-active card.
+- **Why**: All three need plumbing the FE doesn't have yet. (1)
+  requires either a backfill HTTP fetch on missing call_id or
+  promoting `task_id` to the Briefing event itself (server-side
+  spec change). (2) requires persisting resolution to localStorage
+  or rebuilding it from a server-emitted Misc on confirm/cancel
+  (today neither verb echoes back a Misc the FE can listen for —
+  only the downstream `task_state` flips). (3) requires correlating
+  `briefing_invalid` Misc events with their preceding Edit cmd's
+  `briefing_call_id` (the server emits these without a back-pointer
+  today).
+- **Pay down**: Pick the highest-impact one first. (3) is cheapest:
+  add `briefing_call_id` to the `briefing_invalid` Misc payload in
+  `Initializer::run_confirm_gate` so the card can intercept and
+  show inline. (2) follows by either persisting confirmed/cancelled
+  call_ids to localStorage or having the server emit
+  `briefing_confirmed`/`briefing_cancelled` Misc events alongside
+  the `task_state` transition (cleaner — server is single source of
+  truth). (1) is the smallest practical risk; defer until a session
+  actually trips it.
+
 ### 30. `seasoned-hand channel logs` is a stub
 - **Origin**: story 2.21b,
   `crates/seasoned-hand-cli/src/commands/channel.rs`
