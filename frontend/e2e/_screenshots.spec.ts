@@ -18,6 +18,7 @@ import { MockAgentSocket, miscEvent } from "./helpers/mock-ws";
 import {
   mockProjectTasks,
   mockProjectsList,
+  mockSessionDetail,
   mockSessionsList,
   mockTaskDeliverables,
 } from "./helpers/fixtures";
@@ -134,6 +135,11 @@ test.describe("Phase 2 screenshots", () => {
     await mock.install(page);
     await mockProjectsList(page, []);
     await mockSessionsList(page);
+    // Stub the session-detail fetch so the AgentComputer panel doesn't
+    // surface "Failed to load: Failed to fetch" while the BriefingCard
+    // is the focus. sandbox=null is enough — the right panel falls
+    // back to its "Sandbox not ready" placeholder.
+    await mockSessionDetail(page, "mock-session-1", null);
 
     await page.goto("/");
     await mock.waitOpen();
