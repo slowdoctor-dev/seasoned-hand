@@ -179,6 +179,35 @@ jobs:
           SH_E2E_WS_URL: ws://127.0.0.1:3001/ws
         run: cargo test -p seasoned-hand-server --test phase1_gaia -- --ignored --nocapture
 
+  frontend-e2e:
+    name: Frontend e2e (Playwright, workflow_dispatch only)
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+      - name: Install Playwright Chromium
+        run: pnpm playwright install chromium --with-deps
+      - name: Run Playwright tests
+        run: pnpm test:e2e
+
   markdown-lint:
     name: Markdown (specs and docs)
     runs-on: ubuntu-latest

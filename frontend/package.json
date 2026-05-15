@@ -11,7 +11,8 @@
     "start": "next start --port ${PORT:-3001}",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "echo \"no frontend tests yet — see DEBT.md\" && exit 0"
+    "test": "echo \"no frontend tests yet — see DEBT.md\" && exit 0",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -25,6 +26,7 @@
     "react-resizable-panels": "^4.11.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

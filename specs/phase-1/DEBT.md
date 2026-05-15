@@ -131,17 +131,26 @@ notes) — append them below as item 14+ when the decision is made.
   cron). Whichever phase lands #16 should also add Track C-specific
   retention.
 
-### 9. Frontend has no automated test coverage
-- **Origin**: inherited from Phase 0 retrospective; Phase 1 adds
+### ~~9. Frontend has no automated test coverage~~ — CLOSED in story 2.24 (<SHA>)
+- ~~**Origin**: inherited from Phase 0 retrospective; Phase 1 adds
   three new UI surfaces (narration lane, verdict pane, 3-track
-  BrowserTab) without test infrastructure.
-- **Severity**: **Medium**
-- **What**: Phase 0 closed with manual-smoke-only frontend. Phase 1
+  BrowserTab) without test infrastructure.~~
+- ~~**Severity**: **Medium**~~
+- ~~**What**: Phase 0 closed with manual-smoke-only frontend. Phase 1
   adds significantly more UI without addressing this. Risk:
-  regressions in the new UI surfaces go undetected until E2E.
-- **Pay down**: Phase 2 — bring up Playwright or Vitest+RTL, write
+  regressions in the new UI surfaces go undetected until E2E.~~
+- ~~**Pay down**: Phase 2 — bring up Playwright or Vitest+RTL, write
   baseline coverage for narration filter, verdict rendering, and
-  3-track strip. Phase 1 itself does NOT pay this down.
+  3-track strip. Phase 1 itself does NOT pay this down.~~
+- **Status (story 2.24)**: Playwright 1.60 added as a frontend devDep
+  with `pnpm test:e2e` wired up; 7 chromium specs cover the Phase 1
+  surfaces (chat narration, verifier verdict pane, 3-track browser
+  layout) plus the four Phase 2 additions (ProjectList, BriefingCard,
+  DeliverablesTab, DecisionsTab). HTTP fixtures mock the /v1 routes
+  via `page.route`; the BriefingCard confirm round-trip is exercised
+  against a `page.routeWebSocket` mock that auto-acks every command.
+  CI gains a `frontend-e2e` job gated on `workflow_dispatch` only
+  (Phase 3+ may promote it to the default matrix).
 
 ### 10. Verifier evidence_event_ids resolution is lazy / story-local
 - **Origin**: architecture.md §12 open question 1
