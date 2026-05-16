@@ -26,10 +26,17 @@ LLM providers. See ADR-001.
 Methodology pattern (Business Analyst → Architect → PM → Dev personas)
 applied at phase boundaries. See `/docs/methodology.md`.
 
+**Brief**
+The structured data shape (Phase 2 `crates/seasoned-hand-core/src/agent/init`
+`Brief` struct) the Initializer authors from a one-line user task: goal,
+phases, success criteria, deliverable specs, capabilities. Distinct from
+"Briefing", which is the flow that produces it.
+
 **Briefing**
-The phase between user delegation and execution. Agent interprets the
-one-line task, asks for clarification only on decisive ambiguities,
-proposes a plan, and starts when confirmed.
+The phase between user delegation and execution. The Initializer interprets
+the one-line task, authors a `Brief`, and waits at the confirm gate. Agent
+starts when the user confirms / edits / cancels (or 5-minute auto-confirm
+fires). See `/specs/phase-2/architecture.md` §2.7.
 
 **Capability detection**
 Startup-time check that each configured model supports its slot's required
@@ -62,7 +69,9 @@ Daily story workflow. See GSD.
 **Event stream**
 Append-only SQLite table that records every Message, Action, Observation,
 Plan, Knowledge, Datasource, Skill, and Misc event. Single source of truth
-for runtime state. 7 types total.
+for runtime state. 8 types total (Knowledge / Datasource / Skill are
+reserved for Phase 3+ Curator emission; the V002 CHECK constraint and the
+Rust `EventType` enum carry them today).
 
 **Glossary**
 4th layer of learning artifacts: organizational terms, people, systems,
@@ -112,6 +121,14 @@ Structured artifact (goal + phases + current_phase_id) that serves as
 the agent's PCB. Created at task start, advanced explicitly via
 `plan_advance`, restructured via `plan_update`. Always at top of
 context (sticky). See ADR-010.
+
+**Provenance manifest**
+The full evidence trail attached to a Phase 2 deliverable: intake row +
+brief confirm/edit lineage + plan phases + tool-call events +
+verifier verdict + checkpoint refs. JSON in `deliverables.provenance_manifest`
+up to 100 KB inline; spills to `/workspace/.provenance/<task_id>.json`
+beyond that. Closes the "where did this come from?" question for every
+deliverable. See `/specs/phase-2/architecture.md` §6 + Phase 2 DEBT #5.
 
 **plan_advance, plan_update, plan_create**
 Three plan-related tool actions:
@@ -176,19 +193,48 @@ See ARCHITECTURE.md § 6.
 
 ## Architecture pieces
 
-**Axum**
-The Rust HTTP framework we use for the control plane. Built on Tokio.
-
 **AIO Sandbox**
 The specific Docker image we use for per-session sandboxes. Ships with
 Ubuntu + Chromium + tmux + VNC + ttyd.
 
+**Axum**
+The Rust HTTP framework we use for the control plane. Built on Tokio.
+
 **Bollard**
 The Rust Docker SDK we use to manage AIO Sandbox containers.
+
+**ChannelRegistration**
+The Phase 2 builder shape that registers one channel (chat, webhook,
+email, ntfy, cli) into the `ChannelRegistry` under any combination of
+the three roles: intake, delivery, notify. Symmetric — every channel
+that delivers work in can also deliver results back out. See
+`crates/seasoned-hand-core/src/channel/mod.rs` +
+`/specs/phase-2/architecture.md` §2.7.
+
+**DeliveryRouter**
+In-process Tokio coordinator that routes a completed deliverable to the
+correct `DeliverySink` impl based on the task's `reply_target` (chat,
+webhook, email, ntfy, cli). Append-only audit row to `delivery_events`.
+Phase 2 story 2.5. See `crates/seasoned-hand-core/src/delivery/`.
 
 **FTS5**
 SQLite's full-text search extension. Used for playbook matching and
 session history search.
+
+**IntakeRouter**
+In-process Tokio coordinator that drains a single fan-in
+`mpsc::Sender<IntakeEvent>` from every long-lived `IntakeProvider`
+(webhook, email, cli) plus the WS chat handler, persists the intake row,
+creates the drafted Task, and spawns the Initializer via an
+`InitializerSpawner`. Phase 2 story 2.5 + 2.8b. See
+`crates/seasoned-hand-core/src/intake/router.rs`.
+
+**NotifyWorker**
+Redis XREADGROUP consumer that drains the `notify_request` stream and
+dispatches to `NotifySink` impls per the `config/notify.toml` per-trigger
+routing table. Worker (not router) because it lives across process
+restarts via Redis PEL; pairs with `verifier::Worker` as the project's
+two Redis-consumer-group surfaces. Phase 2 story 2.12.
 
 **Rig**
 The Rust LLM agent framework we use for the agent loop. Provides
@@ -200,6 +246,14 @@ Rust's async runtime. Powers all concurrent work in the control plane.
 **WAL (Write-Ahead Logging)**
 SQLite mode we use for the event stream. Allows concurrent readers during
 writes. See ADR-005.
+
+**WorkspaceTtlCron**
+Phase 2 sandbox cleanup cron that walks every workspace directory and
+removes those whose session has exceeded a per-status TTL (default:
+30 d completed, 7 d failed/cancelled, 1 d drafted/briefed; running +
+paused never GC). Closes Phase 0 DEBT #16. Admin manual trigger at
+`POST /v1/admin/sandbox/cleanup`. See
+`crates/seasoned-hand-core/src/task/ttl.rs`.
 
 ---
 
