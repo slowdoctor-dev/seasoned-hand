@@ -40,6 +40,12 @@ impl LlmClient {
     /// Defaults: `BIFROST_BASE_URL` (or http://localhost:4000/v1)
     /// and optional `BIFROST_MASTER_KEY` (Phase 0 typically unused
     /// per architecture §9 — bound to 127.0.0.1 without auth).
+    ///
+    /// `BIFROST_MASTER_KEY` is read but never sent on outbound calls
+    /// today: Phase 0 deploys Bifrost loopback-only with master-key
+    /// enforcement disabled (Phase 0 DEBT #8). The env-var read is
+    /// forward-compat scaffolding so the Phase 5 multi-user wiring can
+    /// flip enforcement on without changing the read site.
     pub fn from_env() -> Self {
         let base_url =
             std::env::var("BIFROST_BASE_URL").unwrap_or_else(|_| "http://localhost:4000/v1".into());

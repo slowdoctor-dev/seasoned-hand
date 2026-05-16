@@ -1,3 +1,17 @@
+//! Diversity injector for the stuck-tracker strategy-change prompt.
+//!
+//! Four hand-picked variant phrasings rotate per session via a DashMap
+//! cursor. Architecture §5 principle #6 ("diversity injection") requires
+//! varied phrasing to prevent the LLM from few-shot-locking onto a
+//! repeated stuck-prompt; four was the simplest count that gives the
+//! injector a full cycle before any single variant repeats inside a
+//! typical 50-step task. Phase 1 DEBT #7 schedules the eventual promotion
+//! of these to a Curator-managed DB table (Phase 4+); the Rust const
+//! array is the deliberately-simple Phase 1 baseline.
+//!
+//! refs: /specs/01-architecture/ARCHITECTURE.md §5 principle #6,
+//! /specs/phase-1/DEBT.md #7, /specs/phase-1/stories/story-1.12.md
+
 use dashmap::DashMap;
 
 pub const VARIANTS: [&str; 4] = [

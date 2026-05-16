@@ -1,4 +1,16 @@
 //! Stuck-response detection for the agent runner.
+//!
+//! Tracks consecutive duplicate assistant outputs and escalates in two
+//! stages: at 2 duplicates inject a strategy-change prompt (Phase 1
+//! diversity injector picks the variant); at 4 duplicates terminate the
+//! session as ERROR. The 2/4 thresholds are intentionally tight — Manus
+//! validation showed agents trapped in a duplicate-response loop never
+//! recover without an external nudge, so the cheaper option is to
+//! interrupt early and fail loudly per PRINCIPLE #10
+//! (failure-tolerant, never failure-hiding). Story 0.14 + 0.15 closed
+//! Phase 0 DEBT #23 by wiring these into `agent::AgentRunner::run`.
+//!
+//! refs: /specs/phase-0/stories/story-0.14.md, story-0.15.md
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};

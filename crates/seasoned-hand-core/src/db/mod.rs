@@ -24,6 +24,14 @@ pub enum DbError {
     WalNotEnabled(String),
 }
 
+/// Single-connection SQLite pool guarded by a `tokio::sync::Mutex`.
+///
+/// Phase 0 ships one writer; every read and write serializes through
+/// this lock (Phase 0 DEBT #1). The trade-off was deliberate: a real
+/// pool (`r2d2-sqlite`, `deadpool-sqlite`) adds dependency surface +
+/// configuration for a single-user single-task workload that the
+/// criterion benches showed never contends. Phase 5 multi-user is the
+/// pay-down trigger.
 #[derive(Clone)]
 pub struct DbPool {
     inner: Arc<Mutex<Connection>>,

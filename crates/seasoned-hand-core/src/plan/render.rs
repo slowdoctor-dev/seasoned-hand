@@ -1,5 +1,12 @@
 use crate::plan::{Phase, PhaseStatus, Plan};
 
+/// Render the plan as a sticky-context-friendly string capped at
+/// roughly `token_cap` tokens. Each phase title gets an initial budget
+/// derived from `token_cap / phases × 3` (the `× 3` is a rough
+/// chars-per-token heuristic for English text — close enough that the
+/// `shrink_longest_title` loop below rarely runs more than 1-2 passes
+/// to fit the cap). Minimum per-title budget is 8 chars so the marker
+/// `[active]` still reads coherently.
 pub fn sticky_render(plan: &Plan, token_cap: usize) -> String {
     let mut phases = plan.phases.clone();
     phases.sort_by_key(|p| p.id);
