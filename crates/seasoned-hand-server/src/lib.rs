@@ -834,9 +834,11 @@ struct ProgressQuery {
 
 async fn list_events(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Path(session_id): Path<String>,
     Query(params): Query<EventsQueryParams>,
 ) -> Result<Json<Vec<seasoned_hand_core::events::Event>>, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
     let event_type = match params.event_type.as_deref() {
         Some(s) => Some(EventType::from_str(s).map_err(|_| {
             (
@@ -930,8 +932,10 @@ pub struct SessionsListParams {
 
 async fn list_sessions(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Query(params): Query<SessionsListParams>,
 ) -> Result<Json<Vec<SessionSummary>>, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
     let limit = params.limit.unwrap_or(50).clamp(1, 500) as i64;
     let sessions = state
         .db
@@ -968,8 +972,10 @@ async fn list_sessions(
 
 async fn get_session(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionDetail>, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
     let id_for_query = session_id.clone();
     let summary = state
         .db
@@ -1041,15 +1047,19 @@ enum WorkspaceResponse {
 
 async fn workspace_root(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Path(session_id): Path<String>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
     workspace_proxy_inner(state, session_id, String::new()).await
 }
 
 async fn workspace_proxy(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Path((session_id, sub_path)): Path<(String, String)>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
     workspace_proxy_inner(state, session_id, sub_path).await
 }
 
@@ -1175,8 +1185,10 @@ async fn cost_snapshot(
 
 async fn get_feature_list(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Path(session_id): Path<String>,
 ) -> Result<Json<FeatureList>, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
     let bytes = state
         .sandbox
         .read_workspace_file(&session_id, "feature-list.json")
@@ -1202,9 +1214,11 @@ async fn get_feature_list(
 
 async fn get_progress(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Path(session_id): Path<String>,
     Query(q): Query<ProgressQuery>,
 ) -> Result<String, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
     let bytes = state
         .sandbox
         .read_workspace_file(&session_id, "progress.txt")
@@ -2873,6 +2887,40 @@ mod tests {
         )
         .await;
         let err = outcome.expect_err("remote + wrong token still 403, not 401");
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        assert_eq!(err.1.0.error, "forbidden_non_loopback");
+    }
+
+    /// /specs/REVIEW.md DEBT #48 + #59 close: the Phase 0/1 session + workspace
+    /// GET routes were not loopback-gated. Every other `/v1/tasks/:id/*`
+    /// sibling was. Smoke-cover one representative handler per group from
+    /// each new gate so future contributors can't silently drop a guard.
+    #[tokio::test]
+    async fn list_sessions_refuses_non_loopback_remote() {
+        let state = empty_state().await;
+        let remote: std::net::SocketAddr = "10.0.0.42:12345".parse().unwrap();
+        let outcome = list_sessions(
+            State(state),
+            axum::extract::ConnectInfo(remote),
+            Query(SessionsListParams { limit: None }),
+        )
+        .await;
+        let err = outcome.expect_err("non-loopback must be 403");
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        assert_eq!(err.1.0.error, "forbidden_non_loopback");
+    }
+
+    #[tokio::test]
+    async fn workspace_root_refuses_non_loopback_remote() {
+        let state = empty_state().await;
+        let remote: std::net::SocketAddr = "203.0.113.7:443".parse().unwrap();
+        let outcome = workspace_root(
+            State(state),
+            axum::extract::ConnectInfo(remote),
+            Path("any-session-id".to_string()),
+        )
+        .await;
+        let err = outcome.expect_err("non-loopback must be 403");
         assert_eq!(err.0, StatusCode::FORBIDDEN);
         assert_eq!(err.1.0.error, "forbidden_non_loopback");
     }
