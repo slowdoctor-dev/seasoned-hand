@@ -109,7 +109,7 @@ impl SandboxClient {
             .ok_or_else(|| SandboxError::NotFound(session_id.to_string()))?;
         let path = handle
             .workspace_host_path
-            .join(normalize_workspace_relative_path(relative_path));
+            .join(normalize_workspace_relative_path(relative_path)?);
         Ok(tokio::fs::read(path).await?)
     }
 
@@ -125,7 +125,7 @@ impl SandboxClient {
             .ok_or_else(|| SandboxError::NotFound(session_id.to_string()))?;
         let path = handle
             .workspace_host_path
-            .join(normalize_workspace_relative_path(relative_path));
+            .join(normalize_workspace_relative_path(relative_path)?);
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -582,10 +582,37 @@ impl SandboxClient {
     }
 }
 
-fn normalize_workspace_relative_path(path: &str) -> &str {
-    path.strip_prefix("/workspace/")
+/// Normalize an LLM- or operator-supplied workspace-relative path:
+/// strip the `/workspace/` prefix and any leading slashes, then reject
+/// any `..` segment. Without the `..` reject, a path like
+/// `../../etc/passwd` would resolve outside the workspace bind-mount
+/// when joined to `handle.workspace_host_path`, enabling host
+/// path-traversal from any caller of `task_deliver` / `read_workspace_file` /
+/// `write_workspace_file*` (REVIEW §1/B + §1/G, proposed DEBT #38).
+///
+/// We also reject null bytes (Rust `Path` would silently accept them
+/// but the underlying OS calls truncate at them).
+fn normalize_workspace_relative_path(path: &str) -> Result<&str, SandboxError> {
+    if path.contains('\0') {
+        return Err(SandboxError::InvalidWorkspace(format!(
+            "null byte in path: {path:?}"
+        )));
+    }
+    let stripped = path
+        .strip_prefix("/workspace/")
         .or_else(|| path.strip_prefix("workspace/"))
-        .unwrap_or_else(|| path.trim_start_matches('/'))
+        .unwrap_or_else(|| path.trim_start_matches('/'));
+    // Use Path::Component to catch `..` regardless of how the segment
+    // was spelled (e.g. `foo/../bar`, `../bar`, `bar/..`). Plain
+    // `contains("..")` would miss `..` between other segments.
+    for component in std::path::Path::new(stripped).components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err(SandboxError::InvalidWorkspace(format!(
+                "parent-dir segment rejected: {path:?}"
+            )));
+        }
+    }
+    Ok(stripped)
 }
 
 pub fn container_name(session_id: &str) -> String {

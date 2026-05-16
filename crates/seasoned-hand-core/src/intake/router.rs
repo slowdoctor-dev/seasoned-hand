@@ -227,11 +227,35 @@ impl IntakeRouter {
         // persisted, so we log and surface `session_id: None` instead of
         // tearing down the intake path. The caller can probe
         // `HandleOutcome::Created.session_id` to decide whether to retry.
+        // `session_id_hint` flows from intake metadata (operator- or
+        // webhook-supplied) straight into `sessions.id` (primary key)
+        // and later into `workspace_root.join(session_id)` plus the
+        // docker container name. An attacker who can submit intake
+        // (today: anyone with the webhook intake token) can plant a
+        // `..`-laden id that the TTL cron later resolves into a
+        // host-side `rm -rf` outside the workspace bind-mount. Strict
+        // UUID-like allowlist closes that. We drop (not error) so the
+        // intake still creates the task — the spawner just mints a
+        // fresh UUID. (REVIEW §1/G, proposed DEBT #35)
         let session_id_hint = event
             .metadata
             .get("session_id_hint")
             .and_then(serde_json::Value::as_str)
+            .filter(|hint| is_safe_session_id(hint))
             .map(str::to_string);
+        if event
+            .metadata
+            .get("session_id_hint")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+            && session_id_hint.is_none()
+        {
+            tracing::warn!(
+                channel = %event.channel,
+                intake_id = %event.intake_id,
+                "intake_router: dropping unsafe session_id_hint metadata field"
+            );
+        }
         let max_steps = event
             .metadata
             .get("max_steps")
@@ -280,6 +304,24 @@ impl IntakeRouter {
 fn is_unique_violation(err: &IntakeStoreError) -> bool {
     let msg = err.to_string();
     msg.contains("UNIQUE") || msg.contains("unique")
+}
+
+/// Accept a `session_id_hint` only if it matches the same strict
+/// alphabet used by server-minted UUIDs (`[A-Za-z0-9-]`, length
+/// 1..=64). Anything else is dropped silently — the spawner mints a
+/// fresh UUID and the task still proceeds.
+///
+/// See `handle_event`'s threat model (REVIEW §1/G, proposed DEBT #35):
+/// the hint flows into `sessions.id` (primary key) → `workspace_root.join(...)` →
+/// `tokio::fs::remove_dir_all(...)` on the TTL cron + the docker
+/// container name. `..` segments here are a host-side path-traversal
+/// primitive.
+fn is_safe_session_id(hint: &str) -> bool {
+    if hint.is_empty() || hint.len() > 64 {
+        return false;
+    }
+    hint.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 /// Truncate brief input to a single line ≤ 200 chars for the Task's

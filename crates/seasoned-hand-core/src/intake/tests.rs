@@ -478,6 +478,88 @@ async fn intake_router_tolerates_spawner_error() {
     assert_eq!(rows.len(), 1);
 }
 
+/// Proposed DEBT #35: the `session_id_hint` in IntakeEvent metadata
+/// flows into `sessions.id` PK + workspace + container name. An attacker
+/// who can submit intake (today: anyone with the webhook intake token)
+/// can plant a `..`-laden id that the TTL cron later resolves into a
+/// host-side `rm -rf`. Verify that:
+///   1. A UUID-shaped hint reaches the spawner verbatim.
+///   2. A path-traversal hint is dropped (warned, not errored) — the
+///      spawner sees `session_id_hint: None` and mints a fresh UUID.
+#[tokio::test]
+async fn intake_router_drops_unsafe_session_id_hint() {
+    use crate::intake::spawner::{InitializerSpawner, SpawnError, SpawnReceipt, SpawnSpec};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct CapturingSpawner {
+        seen: Mutex<Vec<SpawnSpec>>,
+    }
+    #[async_trait]
+    impl InitializerSpawner for CapturingSpawner {
+        async fn spawn(&self, spec: SpawnSpec) -> Result<SpawnReceipt, SpawnError> {
+            self.seen.lock().unwrap().push(spec);
+            Ok(SpawnReceipt {
+                session_id: "minted-by-spawner".into(),
+            })
+        }
+    }
+
+    let (router, _intake_store, _task_store, _project_store) = router_harness("webhook").await;
+    let spawner = Arc::new(CapturingSpawner::default());
+    if router
+        .attach_initializer_spawner(spawner.clone() as Arc<dyn InitializerSpawner>)
+        .is_err()
+    {
+        panic!("first attach should succeed");
+    }
+
+    // (1) Safe UUID-ish hint flows through.
+    let mut ev_safe = sample_event("webhook", "intake-safe", 1_000);
+    ev_safe.metadata = serde_json::json!({
+        "session_id_hint": "a1b2c3d4-1234-5678-9abc-def012345678",
+    });
+    router.handle_event(ev_safe).await.unwrap();
+
+    // (2) Path-traversal hint is dropped (not errored).
+    let mut ev_unsafe = sample_event("webhook", "intake-unsafe", 1_001);
+    ev_unsafe.metadata = serde_json::json!({
+        "session_id_hint": "../../etc/passwd",
+    });
+    router
+        .handle_event(ev_unsafe)
+        .await
+        .expect("intake still succeeds; only the hint is dropped");
+
+    // (3) Other disallowed shapes also drop.
+    for bad in &["with space", "has/slash", "has\\back", "$(whoami)", "x;rm", ""] {
+        let mut ev = sample_event("webhook", &format!("intake-bad-{bad:?}"), 1_002);
+        ev.metadata = serde_json::json!({ "session_id_hint": bad });
+        router
+            .handle_event(ev)
+            .await
+            .expect("intake still succeeds; only the hint is dropped");
+    }
+
+    let seen = spawner.seen.lock().unwrap();
+    assert_eq!(seen.len(), 8, "all 8 events reach the spawner");
+    assert_eq!(
+        seen[0].session_id_hint.as_deref(),
+        Some("a1b2c3d4-1234-5678-9abc-def012345678"),
+        "safe UUID hint preserved"
+    );
+    assert_eq!(
+        seen[1].session_id_hint, None,
+        "path-traversal hint dropped"
+    );
+    for (i, spec) in seen.iter().enumerate().skip(2) {
+        assert_eq!(
+            spec.session_id_hint, None,
+            "bad-shape #{i} should drop the hint"
+        );
+    }
+}
+
 /// Side-test: confirm the runner respects the shutdown token and
 /// drains in-flight events instead of dropping them. Belt-and-braces
 /// for the long-lived `run()` loop wired into `AppState`.

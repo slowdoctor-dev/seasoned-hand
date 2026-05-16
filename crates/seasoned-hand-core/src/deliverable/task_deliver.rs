@@ -256,6 +256,16 @@ impl Tool for TaskDeliver {
                 "unknown_format: {target_filename}"
             )));
         };
+        // LLM-supplied target_filename feeds shell commands (pandoc /
+        // python-pptx / openpyxl) and `workspace_host_path.join(...)`.
+        // Without a strict allowlist, `..` segments escape the workspace
+        // bind-mount on the host, and shell metacharacters land in the
+        // renderer command line. The deliverable filename is the leaf
+        // name of an artifact (`Q4-summary.docx`) — not a path or a
+        // shell expression — so we enforce a strict basename-only
+        // alphabet here. (REVIEW §1/B, proposed DEBT #36)
+        validate_deliverable_filename(&target_filename)
+            .map_err(|reason| ToolError::InvalidArgs(format!("invalid_filename: {reason}")))?;
 
         // Resolve task_id from sessions.task_id (set at session-row
         // insert time by WsInitializerSpawner). Missing → tool errors
@@ -621,6 +631,40 @@ fn truncate(s: &str, n: usize) -> String {
     }
 }
 
+/// Reject any `target_filename` that isn't a strict basename. See the
+/// call site for the threat model (REVIEW §1/B, proposed DEBT #36).
+///
+/// Accepts: `[A-Za-z0-9._-]+` of length 1..=120, with at least one
+/// non-`.` character (no `..`, no `.`), with a non-`.` first character
+/// (no hidden files), with at least one `.` to carry the extension.
+///
+/// Returns the reason string on rejection so callers can surface it
+/// via the `invalid_filename:` error sub-code.
+fn validate_deliverable_filename(name: &str) -> Result<(), &'static str> {
+    if name.is_empty() {
+        return Err("empty");
+    }
+    if name.len() > 120 {
+        return Err("too_long");
+    }
+    if name.starts_with('.') {
+        return Err("leading_dot");
+    }
+    if !name.contains('.') {
+        return Err("missing_extension");
+    }
+    if name.contains("..") {
+        return Err("parent_dir_segment");
+    }
+    for ch in name.chars() {
+        let ok = ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-');
+        if !ok {
+            return Err("disallowed_character");
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -963,5 +1007,79 @@ mod tests {
     fn task_deliver_registered_in_builtin_catalog() {
         let reg = register_builtin_tools();
         assert!(reg.contains_key("task_deliver"));
+    }
+
+    /// Validator accepts every test-fixture filename + a few realistic
+    /// shapes; rejects path-traversal and shell metacharacters. Closes
+    /// proposed DEBT #36 (REVIEW §1/B).
+    #[test]
+    fn validate_deliverable_filename_accepts_and_rejects() {
+        // Accept: real fixtures + sane variants.
+        assert!(validate_deliverable_filename("out.md").is_ok());
+        assert!(validate_deliverable_filename("phase2-summary.docx").is_ok());
+        assert!(validate_deliverable_filename("Q4_report.xlsx").is_ok());
+        assert!(validate_deliverable_filename("notes-2026-05-16.pptx").is_ok());
+
+        // Reject: path traversal. Any rejection is correct — the
+        // important property is the input is denied. We pin specific
+        // codes only where stable.
+        assert!(validate_deliverable_filename("../etc/passwd.md").is_err());
+        assert!(validate_deliverable_filename("..hidden.md").is_err());
+        assert_eq!(
+            validate_deliverable_filename("foo..bar.md"),
+            Err("parent_dir_segment")
+        );
+        assert!(validate_deliverable_filename("/etc/passwd.md").is_err());
+        assert!(validate_deliverable_filename("..").is_err());
+
+        // Reject: shell metacharacters.
+        assert_eq!(
+            validate_deliverable_filename("x; rm -rf /.md"),
+            Err("disallowed_character")
+        );
+        assert_eq!(
+            validate_deliverable_filename("x$(whoami).md"),
+            Err("disallowed_character")
+        );
+        assert_eq!(
+            validate_deliverable_filename("x`id`.md"),
+            Err("disallowed_character")
+        );
+        assert_eq!(
+            validate_deliverable_filename("x|y.md"),
+            Err("disallowed_character")
+        );
+
+        // Reject: path separators.
+        assert_eq!(
+            validate_deliverable_filename("sub/dir.md"),
+            Err("disallowed_character")
+        );
+        assert_eq!(
+            validate_deliverable_filename("sub\\dir.md"),
+            Err("disallowed_character")
+        );
+
+        // Reject: control / null.
+        assert_eq!(
+            validate_deliverable_filename("x\0.md"),
+            Err("disallowed_character")
+        );
+
+        // Reject: structural.
+        assert_eq!(validate_deliverable_filename(""), Err("empty"));
+        assert_eq!(
+            validate_deliverable_filename("noextension"),
+            Err("missing_extension")
+        );
+        assert_eq!(
+            validate_deliverable_filename(".hidden.md"),
+            Err("leading_dot")
+        );
+        let too_long = format!("{}.md", "a".repeat(120));
+        assert_eq!(
+            validate_deliverable_filename(&too_long),
+            Err("too_long")
+        );
     }
 }

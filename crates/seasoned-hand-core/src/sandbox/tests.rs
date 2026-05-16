@@ -19,6 +19,50 @@ fn ports_constant_match_aio_sandbox_defaults() {
 }
 
 #[test]
+fn normalize_workspace_relative_path_strips_prefix_and_blocks_traversal() {
+    // Accept: normal workspace-relative paths.
+    assert_eq!(
+        normalize_workspace_relative_path("foo/bar.txt").unwrap(),
+        "foo/bar.txt"
+    );
+    assert_eq!(
+        normalize_workspace_relative_path("/workspace/foo/bar.txt").unwrap(),
+        "foo/bar.txt"
+    );
+    assert_eq!(
+        normalize_workspace_relative_path("workspace/foo/bar.txt").unwrap(),
+        "foo/bar.txt"
+    );
+    assert_eq!(
+        normalize_workspace_relative_path("/foo/bar.txt").unwrap(),
+        "foo/bar.txt"
+    );
+
+    // Reject: any `..` segment, regardless of position.
+    for bad in &[
+        "../etc/passwd",
+        "/workspace/../etc/passwd",
+        "foo/../../etc",
+        "foo/..",
+        "..",
+        "workspace/../bar",
+    ] {
+        let err = normalize_workspace_relative_path(bad)
+            .expect_err(&format!("{bad} should be rejected"));
+        assert!(
+            matches!(err, SandboxError::InvalidWorkspace(_)),
+            "{bad} → wrong error variant: {err:?}"
+        );
+    }
+
+    // Reject: null byte (Rust's Path silently accepts; underlying OS
+    // calls would truncate at the NUL).
+    let err = normalize_workspace_relative_path("foo\0bar.txt")
+        .expect_err("null byte should be rejected");
+    assert!(matches!(err, SandboxError::InvalidWorkspace(_)));
+}
+
+#[test]
 fn new_client_records_image_and_workspace() {
     let tmp = tempfile::tempdir().unwrap();
     let client = SandboxClient::new(
