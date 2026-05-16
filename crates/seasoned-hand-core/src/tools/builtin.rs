@@ -1353,6 +1353,19 @@ impl Tool for CheckpointRollback {
             }
         };
 
+        // Codex review Finding E: validate the persisted `git_sha` is a
+        // proper hex commit id (`[0-9a-f]{40}` for SHA-1, or up to 64 for
+        // SHA-256) before shell interpolation. Normal checkpoint creation
+        // captures the value from `git rev-parse HEAD` so this passes,
+        // but the persistence layer accepts arbitrary input — a future
+        // DB tamper or migration corruption must not become an injection.
+        if !is_valid_git_sha(&row.git_sha) {
+            return Ok(tool_err(
+                "invalid_git_sha",
+                json!({"checkpoint_id": checkpoint_id, "git_sha": row.git_sha}),
+            ));
+        }
+
         // Run the revert against the sandbox's /v1/shell/exec. We pass
         // through `sandbox_post`; non-zero exit codes are surfaced as
         // `revert_failed` tool errors so the caller can act.
@@ -1390,8 +1403,17 @@ impl Tool for CheckpointRollback {
         // Emit Misc so build_messages surfaces the rollback to the
         // agent's next iteration (architecture §2.6: agent must see a
         // follow-up describing the revert).
-        let _ = ctx
-            .events
+        //
+        // Codex review Finding D / DEBT #67: previously this used `let _
+        // = …` and silently swallowed the append failure. That risked
+        // leaving git (reverted) + DB (`mark_rolled_back` succeeded) +
+        // event stream (no Misc) in an incoherent 2-of-3 state. The
+        // rollback is now best-effort coherent: if the append fails the
+        // operator gets a `rollback_event_append_failed` tool error
+        // (with the rolled_back row still committed — git + DB are
+        // already past the point of no return) so they know the agent
+        // loop has stale visibility and can re-emit a status by hand.
+        ctx.events
             .append(crate::events::NewEvent {
                 session_id: ctx.session_id.clone(),
                 event_type: crate::events::EventType::Misc,
@@ -1404,7 +1426,12 @@ impl Tool for CheckpointRollback {
                     "rolled_back_by": rolled_back_by,
                 }),
             })
-            .await;
+            .await
+            .map_err(|e| {
+                ToolError::Backend(format!(
+                    "rollback_event_append_failed (git + DB already reverted; manual reconciliation needed): {e}"
+                ))
+            })?;
 
         Ok(ToolOutput {
             ok: true,
@@ -1436,6 +1463,20 @@ fn now_micros_for_rollback() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_micros() as i64)
         .unwrap_or(0)
+}
+
+/// Belt-and-suspenders validator for `checkpoints.git_sha` before it
+/// reaches a sandbox shell command. Accepts the standard SHA-1 hex
+/// length (40) and the SHA-256 length git is migrating to (64), both
+/// lowercase hex per `git rev-parse HEAD` output. Codex review
+/// Finding E: the persistence layer takes arbitrary `NewCheckpoint.git_sha`
+/// strings; this guard stops a tampered/corrupted row from injecting
+/// shell metacharacters via `git -C /workspace revert --no-commit {sha}`.
+fn is_valid_git_sha(sha: &str) -> bool {
+    matches!(sha.len(), 40 | 64)
+        && sha
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 fn parse_phases(args: &Value) -> Result<Vec<Phase>, ToolError> {

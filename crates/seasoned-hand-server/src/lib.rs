@@ -1349,20 +1349,26 @@ impl From<seasoned_hand_core::channel::ChannelHealth> for ChannelHealthDto {
     }
 }
 
-async fn list_channels_handler(State(state): State<AppState>) -> Json<Vec<ChannelHealthDto>> {
+async fn list_channels_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+) -> Result<Json<Vec<ChannelHealthDto>>, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
     let snapshot = state
         .channels
         .health()
         .into_iter()
         .map(ChannelHealthDto::from)
         .collect();
-    Json(snapshot)
+    Ok(Json(snapshot))
 }
 
 async fn get_channel_health_handler(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Path(name): Path<String>,
 ) -> Result<Json<ChannelHealthDto>, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
     state
         .channels
         .health()
@@ -1397,9 +1403,11 @@ struct ChannelTestResponse {
 /// stories 2.9–2.13 (each can specialise `dry-run`).
 async fn post_channel_test_handler(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Path(name): Path<String>,
     Query(q): Query<ChannelTestQuery>,
 ) -> Result<Json<ChannelTestResponse>, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
     let role = q.role.as_deref().unwrap_or("delivery");
     let registered = match role {
         "intake" => state.channels.get_intake(&name).is_some(),
@@ -1875,9 +1883,11 @@ fn render_outcome<T: serde::Serialize>(
 
 async fn list_checkpoints_handler(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Path(session_id): Path<String>,
     Query(q): Query<seasoned_hand_core::checkpoint::routes::ListQuery>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
     use seasoned_hand_core::checkpoint::routes::list_checkpoints;
     render_outcome(
         "list_checkpoints",
@@ -1892,9 +1902,11 @@ async fn list_checkpoints_handler(
 
 async fn list_verifications_handler(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Path(session_id): Path<String>,
     Query(q): Query<VerifyListQuery>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
     render_outcome(
         "list_verifications",
         list_verifications(&state.verifications, &session_id, q).await,
@@ -1903,8 +1915,10 @@ async fn list_verifications_handler(
 
 async fn get_verification_handler(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Path(id): Path<String>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
     render_outcome(
         "get_verification",
         get_verification(&state.verifications, &id).await,

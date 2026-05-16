@@ -541,7 +541,7 @@ async fn checkpoint_rollback_happy_path_marks_row_and_emits_misc() {
     Mock::given(method("POST"))
         .and(path("/v1/shell/exec"))
         .and(body_partial_json(serde_json::json!({
-            "command": "git -C /workspace revert --no-commit aaaa1111"
+            "command": "git -C /workspace revert --no-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "exit_code": 0, "stdout": "", "stderr": ""
@@ -569,7 +569,7 @@ async fn checkpoint_rollback_happy_path_marks_row_and_emits_misc() {
         .insert(crate::checkpoint::NewCheckpoint {
             session_id: "s1".into(),
             plan_phase_id: 1,
-            git_sha: "aaaa1111".into(),
+            git_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             label: None,
             triggered_by_event_id: 1,
         })
@@ -612,7 +612,7 @@ async fn checkpoint_rollback_happy_path_marks_row_and_emits_misc() {
     assert!(
         evs.iter().any(|e| {
             e.data.get("kind").and_then(serde_json::Value::as_str) == Some("checkpoint_rollback")
-                && e.data.get("git_sha").and_then(serde_json::Value::as_str) == Some("aaaa1111")
+                && e.data.get("git_sha").and_then(serde_json::Value::as_str) == Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         }),
         "checkpoint_rollback Misc event must be emitted with the git_sha"
     );
@@ -648,7 +648,7 @@ async fn checkpoint_rollback_surfaces_revert_failure() {
         .insert(crate::checkpoint::NewCheckpoint {
             session_id: "s1".into(),
             plan_phase_id: 1,
-            git_sha: "bbbb2222".into(),
+            git_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
             label: None,
             triggered_by_event_id: 1,
         })

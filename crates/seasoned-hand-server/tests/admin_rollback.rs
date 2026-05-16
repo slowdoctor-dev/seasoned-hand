@@ -61,7 +61,7 @@ async fn build_harness(session_state: &str, admin_token: Option<&str>) -> Harnes
         .insert(NewCheckpoint {
             session_id: session_id.clone(),
             plan_phase_id: 1,
-            git_sha: "abc1234deadbeef".into(),
+            git_sha: "abc1234deadbeefcafef00ddeadbeefcafef00dd".into(),
             label: None,
             triggered_by_event_id: 1,
         })

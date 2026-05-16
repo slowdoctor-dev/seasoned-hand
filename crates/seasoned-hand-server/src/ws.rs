@@ -144,8 +144,27 @@ pub enum ServerEnvelope {
     },
 }
 
-pub async fn ws_upgrade(State(state): State<AppState>, ws: WebSocketUpgrade) -> impl IntoResponse {
+/// `/ws` upgrade entry. Loopback-gated per Codex review DEBT #66 — Phase 2
+/// added sensitive verbs (`briefing_confirm`, `task_pause/resume/cancel`)
+/// to a previously control-only socket; Phase 0 DEBT #7 (no WS auth)
+/// remains the umbrella, and until Phase 5 multi-user lands real auth
+/// the only safe bound is the loopback peer the operator runs locally.
+/// Non-loopback peers get a 403 before the protocol upgrade so no
+/// half-open WS state is created.
+pub async fn ws_upgrade(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    ws: WebSocketUpgrade,
+) -> axum::response::Response {
+    if !remote.ip().is_loopback() {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({"error": "forbidden_non_loopback"})),
+        )
+            .into_response();
+    }
     ws.on_upgrade(move |socket| ws_session(socket, state))
+        .into_response()
 }
 
 async fn ws_session(socket: WebSocket, state: AppState) {
