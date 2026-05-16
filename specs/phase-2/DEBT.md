@@ -1273,6 +1273,177 @@ NEVER list).
 
 ---
 
+## Codex review follow-ups (`/tmp/codex-review.md`, 2026-05-17)
+
+Seeded by Codex (gpt-5.5-high)'s pass over the pre-Phase-3 hardening
+batch (`a1057e8..a082c59`). Codex validated Claude's two inline
+rejections (frontend timestamp drift, recite wiring), agreed with one
+of the three deferrals (SimplifyLlm DEBT #54), corrected Claude's
+reasoning on a second (ToolMaskPolicy DEBT #55 — collapse can be
+one-file, not 4-5 as Claude framed; deferral itself tolerated), and
+pushed back on the third (`pub` shrinkage half of DEBT #58 — worth
+doing). It also caught one real text-drift Claude introduced in
+ADR-011 (tool count arithmetic + plan-tool classification) and
+surfaced 7 new findings.
+
+Codex follow-up commits (chronological):
+
+- `3721c37` — fix(security): close M-severity findings (DEBT #65/#66/#67 + Finding E)
+- `ff1e425` — docs: ADR-011 errata — tool count math + plan-tool classification
+- `c4e9adc` — test(security): regression sweep for all loopback gates (DEBT #69)
+- `ddf358b` — chore: code hygiene — pub shrinkage / plan caps / screenshot cap (DEBT #58 + #68 + #71)
+- `35654f0` — docs(phase-3): apply Codex review feedback to INPUTS + OPEN_QUESTIONS
+
+Seven of seven Codex-surfaced findings closed in this follow-up
+sequence. The two policy decisions (DEBT #66 /ws gate, DEBT #70
+channel routes) landed alongside the security commit at user's
+direction.
+
+### ~~65. Loopback-gate Phase 1 verifier + checkpoint read routes~~ — CLOSED in Codex follow-up (`3721c37`)
+- **Origin**: Codex review §5 Finding A
+- **Severity**: **Medium**
+- **What**: Same shape as DEBT #48 + #59 Claude closed in `18d472d`.
+  `/v1/sessions/:id/verifications`, `/v1/verifications/:id`,
+  `/v1/sessions/:id/checkpoints` were missed by Claude's sub-agent
+  sweep — they're Phase 1 sibling routes to the Phase 0/1 GETs Codex
+  was looking at. On `HOST=0.0.0.0` binds each leaked verifier
+  verdicts / reasons / evidence event ids / checkpoint shas /
+  labels.
+- **Resolution (`3721c37`)**: Added `ConnectInfo<SocketAddr>` +
+  `require_loopback(remote)?` to all three handlers
+  (`crates/seasoned-hand-server/src/lib.rs:1876+`). Regression tests
+  landed in `c4e9adc` as part of DEBT #69.
+
+### ~~66. WS `/ws` not loopback / origin / auth-gated~~ — CLOSED in Codex follow-up (`3721c37`)
+- **Origin**: Codex review §5 Finding C
+- **Severity**: **Medium** (policy gap)
+- **What**: Phase 0 DEBT #7 (no WS auth) is the umbrella. Phase 2
+  added the sensitive verbs (`briefing_confirm`,
+  `task_pause/resume/cancel`) to a previously control-only socket.
+  Codex pushed for an explicit decision before Phase 3 widened the
+  WS verb set further.
+- **User decision**: gate `/ws` to loopback-only until Phase 5
+  multi-user auth lands. Documented as the operator-bound contract;
+  matches the same posture as the HTTP routes around it.
+- **Resolution (`3721c37`)**: `ws_upgrade` now extracts
+  `ConnectInfo<SocketAddr>`; non-loopback peers get a 403 with
+  `{"error":"forbidden_non_loopback"}` BEFORE the WebSocket upgrade
+  protocol runs, so no half-open WS state is created.
+  `crates/seasoned-hand-server/src/ws.rs:147-167`.
+
+### ~~67. Checkpoint rollback state coherence~~ — CLOSED in Codex follow-up (`3721c37`)
+- **Origin**: Codex review §5 Finding D
+- **Severity**: **Medium**
+- **What**: Rollback has three side effects: git revert,
+  `checkpoints.rolled_back_at` UPDATE, and a `checkpoint_rollback`
+  Misc event append. The third was previously `let _ = ctx.events.append(...)`
+  — silently discarded any failure. If the append failed, git + DB
+  said rolled-back but the event stream didn't, leaving the agent's
+  next iteration with stale visibility.
+- **Resolution (`3721c37`)**: The append failure is now surfaced as
+  a `rollback_event_append_failed` `ToolError::Backend` with a
+  message naming the manual reconciliation required (git + DB are
+  already past the point of no return when this fires, so it cannot
+  be fully atomic — operator gets visibility instead).
+  `crates/seasoned-hand-core/src/tools/builtin.rs:1390-1414`.
+
+### ~~68. Plan rendering resource-exhaustion edge~~ — CLOSED in Codex follow-up (`ddf358b`)
+- **Origin**: Codex review §5 Finding F
+- **Severity**: **Low/Medium**
+- **What**: `PlanManager::create` / `::update` rejected only empty
+  phase lists. An LLM-controlled `plan_update` could submit thousands
+  of phases or KB-long titles, inflating `plans.phases` column size
+  and pressuring `sticky_render`'s per-iteration shrink loop. UTF-8
+  was already safe (`.chars()` boundaries); cost was the issue.
+- **Resolution (`ddf358b`)**: New `validate_phases_shape(&phases)`
+  helper with `MAX_PHASES = 64` + `MAX_TITLE_CHARS = 200` caps.
+  Surfaces as `PlanError::InvalidPhases("too many phases (max 64)")`
+  / `("phase title too long (max 200 chars)")`.
+  `crates/seasoned-hand-core/src/plan/mod.rs:88-115, 103-108, 174-179`.
+
+### ~~69. Regression test sweep for newly-gated routes~~ — CLOSED in Codex follow-up (`c4e9adc`)
+- **Origin**: Codex review §4
+- **Severity**: **Low/Medium**
+- **What**: Claude's hardening pass added only 2 direct negative
+  tests (`list_sessions`, `workspace_root`) for the 7 newly-gated
+  routes in DEBT #48 + #59. Plus the 3 new routes from #65 and the
+  3 from #70 (channels) brought the untested-gate count to 11.
+- **Resolution (`c4e9adc`)**: Added 11 direct negative tests via a
+  shared `assert_handler_refuses_non_loopback` helper:
+  `get_session`, `list_events`, `workspace_proxy` (the `:sub_path`
+  variant), `get_feature_list`, `get_progress`, `list_checkpoints_handler`,
+  `list_verifications_handler`, `get_verification_handler`,
+  `list_channels_handler`, `get_channel_health_handler`,
+  `post_channel_test_handler`. `/ws` is covered indirectly — same
+  `is_loopback()` predicate, but `ws_upgrade` returns
+  `axum::response::Response` directly so it can't use the table
+  helper. Lib unit-tests: 8 → 19.
+
+### ~~70. Channel introspection routes not loopback-gated~~ — CLOSED in Codex follow-up (`3721c37`)
+- **Origin**: Codex review §5 Finding B
+- **Severity**: **Low now / Medium later**
+- **What**: `/v1/channels`, `/v1/channels/:name/health`,
+  `/v1/channels/:name/test`. Today the `/test` handler is a
+  registration/role check (Codex Section 5 line 296), so impact is
+  info disclosure. If Phase 4 extends `/test` to real synthetic
+  delivery / intake round-trips, this becomes Medium.
+- **User decision**: gate now; cheap (3-line fix) + future-proofs
+  the `/test` extension.
+- **Resolution (`3721c37`)**: All three handlers extract
+  `ConnectInfo<SocketAddr>` + call `require_loopback(remote)?`.
+  Regression tests in `c4e9adc`.
+  `crates/seasoned-hand-server/src/lib.rs:1352-1437`.
+
+### ~~71. Browser Track C screenshot has no byte cap~~ — CLOSED in Codex follow-up (`ddf358b`)
+- **Origin**: Codex review §5 Finding G
+- **Severity**: **Low**
+- **What**: `capture_track_c` previously buffered + wrote any size
+  response from `/v1/browser/screenshot`. Today the sandbox is
+  trusted, but a compromised or buggy browser endpoint could return
+  arbitrary bytes; a 50-step browser-heavy task could accrue
+  gigabytes of PNGs.
+- **Resolution (`ddf358b`)**: New `MAX_SCREENSHOT_BYTES = 8 MiB`
+  ceiling (well above legitimate noVNC captures, well below
+  memory-pressure threshold). Over-cap responses emit
+  `browser_track_c_skipped` Misc with `reason: "too_large"` + the
+  actual byte count + the max.
+  `crates/seasoned-hand-core/src/browser/tracks/mod.rs:204-242`.
+
+### Codex Finding E (no DEBT number — closed inline) — git_sha hex validation
+- **Origin**: Codex review §5 Finding E
+- **Severity**: **Low under normal operation, Medium under DB-tamper
+  or migration-corruption assumptions**
+- **What**: The shell command `git -C /workspace revert --no-commit
+  {row.git_sha}` interpolated a string straight from
+  `checkpoints.git_sha`. Normal `git rev-parse HEAD` captures a
+  clean 40-char SHA, but `NewCheckpoint::git_sha` is `String` and
+  accepts anything. A tampered/corrupted row could carry shell
+  metacharacters.
+- **Resolution (`3721c37`)**: New `is_valid_git_sha(sha)` helper
+  accepts only lowercase `[0-9a-f]{40|64}` (SHA-1 / SHA-256). Two
+  test fixtures bumped from short fake SHAs to 40-char valid form.
+  `crates/seasoned-hand-core/src/tools/builtin.rs:1468-1477`.
+
+### Codex §2.2 — ToolMaskPolicy reasoning correction
+Codex tolerated Claude's DEBT #55 deferral but disagreed with the
+reasoning. Claude framed it as "4-5 files of churn"; Codex pointed
+out the const-slice version can be one-file (mask.rs alone — trait,
+callers, test fixtures all unchanged; only the `impl` body
+substituted). Reasoning corrected in Phase 2 DEBT #55 entry for
+future reference; defer status unchanged.
+
+### Codex §3.3 — ADR-011 tool count + plan-tool errata — CLOSED in (`ff1e425`)
+Codex caught a real arithmetic error in Claude's ADR-011 §2.4 prose:
+the original said `29 + 3 + 4 + 1 = 38` but that sums to 37, AND
+the prose claimed all three plan tools (plan_create / plan_advance /
+plan_update) were "internal, not exposed via dispatcher" when in
+fact `plan_advance` and `plan_update` ARE registered. Plus a
+clarity nit on the cancel-state phrasing in the new §2.2.1 Tasks
+subsection. All three fixes landed within the ADR-011 v1.1 envelope
+as documented errata, no v1.2 bump needed.
+
+---
+
 ## Categories quick-reference (same as Phase 0 / Phase 1)
 
 | Severity | Meaning |

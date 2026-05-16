@@ -29,6 +29,17 @@
 > - Phase 2 DEBT #62 — `spec-check.sh` phase-version gate
 > - Phase 2 DEBT #63 — Frontend `pnpm test` stub
 > - Phase 1 DEBT #3 — Verifier rollback default (see Phase 2 DEBT #7)
+>
+> Closed by the Codex follow-up sequence (2026-05-17) before Phase 3
+> kickoff (informational — these no longer carry to Phase 3):
+>
+> - Phase 2 DEBT #65 — Phase 1 verifier + checkpoint route loopback
+> - Phase 2 DEBT #66 — /ws loopback gate
+> - Phase 2 DEBT #67 — checkpoint rollback state coherence
+> - Phase 2 DEBT #68 — plan phase/title caps
+> - Phase 2 DEBT #69 — loopback regression test sweep
+> - Phase 2 DEBT #70 — channel introspection routes loopback
+> - Phase 2 DEBT #71 — Track C screenshot byte cap
 
 ---
 
