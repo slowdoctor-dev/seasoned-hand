@@ -21,23 +21,31 @@ It's a hand that gets seasoned by the work you give it.
 
 ## Status
 
-**Phase -1** — Planning complete. Phase 0 (foundation) starting.
+**Phase 2 complete → Phase 3 starting.** Foundation (Phase 0), Manus 5-layer
+deep execution (Phase 1), and the employee interface (Phase 2 — briefing
+gate, deliverables, provenance, channel framework, durable pause/resume)
+have shipped. The learning system lands in Phase 3.
 
-See [`/specs/01-architecture/ARCHITECTURE.md`](specs/01-architecture/ARCHITECTURE.md) for the full design.
+See [`CHANGELOG.md`](CHANGELOG.md) for what each phase shipped,
+[`BASELINE.md`](BASELINE.md) §6 for the 6-phase roadmap, and
+[`/specs/01-architecture/ARCHITECTURE.md`](specs/01-architecture/ARCHITECTURE.md)
+for the immutable system design.
 
 ## Architecture (one paragraph)
 
 Think of it as an operating system. The **kernel** is a Manus-style agent runtime (Rust + Rig + Tokio). **Syscalls** are 32+ tools (file, shell, browser, search, deploy). **User programs** are playbooks — procedures the agent extracts from verified work and reuses next time. A **curator** runs in the background, consolidating and cleaning learning artifacts. **Memory** persists across sessions in SQLite (FTS5 searchable). Tasks run in isolated Docker sandboxes.
 
-## Quick start (not yet — Phase 0 in progress)
+## Quick start
 
 ```bash
 git clone https://github.com/slowdoctor-dev/seasoned-hand
 cd seasoned-hand
 cp .env.example .env  # fill in API keys
-docker compose up
+docker compose up -d
 open http://localhost:3000
 ```
+
+Full setup walkthrough: [`docs/getting-started.md`](docs/getting-started.md).
 
 ## Development methodology
 
@@ -61,7 +69,7 @@ open http://localhost:3000
   /00-philosophy/      ← VISION, PRINCIPLES, NON_GOALS
   /01-architecture/
     ARCHITECTURE.md    ← overall (immutable)
-    /decisions/        ← ADR-001 to ADR-008
+    /decisions/        ← ADR-001 to ADR-010
   /06-roadmap/
     ROADMAP.md
   /07-research/        ← external interviews (e.g., Manus direct Q&A)
