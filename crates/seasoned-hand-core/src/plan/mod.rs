@@ -89,6 +89,32 @@ pub enum PlanError {
     InvalidPhases(&'static str),
 }
 
+/// Codex review DEBT #68: cap the LLM-controlled plan shape before
+/// `sticky_render` runs. Without bounds, a malicious or runaway
+/// `plan_update` could submit thousands of phases or KB-long titles
+/// and inflate the per-iteration sticky context cost. These caps are
+/// conservative — real-world plans top out around 10 phases with
+/// short titles — but defended via tests so the bound is visible.
+pub(crate) const MAX_PHASES: usize = 64;
+pub(crate) const MAX_TITLE_CHARS: usize = 200;
+
+fn validate_phases_shape(phases: &[Phase]) -> Result<(), PlanError> {
+    if phases.is_empty() {
+        return Err(PlanError::InvalidPhases("must include at least one phase"));
+    }
+    if phases.len() > MAX_PHASES {
+        return Err(PlanError::InvalidPhases("too many phases (max 64)"));
+    }
+    for phase in phases {
+        if phase.title.chars().count() > MAX_TITLE_CHARS {
+            return Err(PlanError::InvalidPhases(
+                "phase title too long (max 200 chars)",
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct PlanManager {
     pool: DbPool,
@@ -106,9 +132,7 @@ impl PlanManager {
         goal: &str,
         phases: Vec<Phase>,
     ) -> Result<Plan, PlanError> {
-        if phases.is_empty() {
-            return Err(PlanError::InvalidPhases("must include at least one phase"));
-        }
+        validate_phases_shape(&phases)?;
         let now = now_micros()?;
         let plan_id = Uuid::new_v4().to_string();
         let session = session_id.to_string();
@@ -172,9 +196,7 @@ impl PlanManager {
         phases: Vec<Phase>,
         source: PlanMutationSource,
     ) -> Result<Plan, PlanError> {
-        if phases.is_empty() {
-            return Err(PlanError::InvalidPhases("must include at least one phase"));
-        }
+        validate_phases_shape(&phases)?;
         let now = now_micros()?;
         let session = session_id.to_string();
         let snapshot = self

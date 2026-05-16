@@ -11,7 +11,7 @@ use crate::plan::{PlanManager, render::sticky_render};
 const SYSTEM_PROMPT: &str = "You are Seasoned Hand. Use exactly one tool call per iteration. \
 Return a tool call every turn; call idle when the task is complete.";
 
-pub async fn build_messages(
+pub(crate) async fn build_messages(
     events: &SqliteEventStore,
     plan_manager: &PlanManager,
     session_id: &str,

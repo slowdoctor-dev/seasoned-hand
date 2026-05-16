@@ -654,7 +654,7 @@ async fn backoff_or_cancel(shutdown: &CancellationToken, dur: Duration) -> bool 
 /// Hard wall-clock cap wrapper around `handle_request`. On timeout,
 /// emits the watchdog event and returns Ok(None) (caller should XACK
 /// the message — Gate decides session state, story 1.10).
-pub async fn handle_request_with_watchdog(
+pub(crate) async fn handle_request_with_watchdog(
     worker: &Worker,
     req: &VerifyRequest,
 ) -> Result<Option<String>, WorkerError> {

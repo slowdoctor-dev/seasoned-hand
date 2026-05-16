@@ -24,7 +24,10 @@ pub mod routes;
 pub mod worker;
 
 pub use persistence::{VerificationStore, VerifierPersistenceError};
-pub use worker::{VerifierRuntimeConfig, Worker, WorkerDeps, handle_request_with_watchdog};
+pub use worker::{VerifierRuntimeConfig, Worker, WorkerDeps};
+// `handle_request_with_watchdog` is `pub(crate)` in worker.rs and reached
+// directly via `crate::verifier::worker::handle_request_with_watchdog` —
+// no re-export needed.
 
 /// Trigger source for a single verifier run. Stored as `trigger_kind`
 /// (one of `TaskComplete`/`Invalidation`/`CircuitBreaker`) plus the

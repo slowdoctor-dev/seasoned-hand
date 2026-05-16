@@ -201,6 +201,16 @@ async fn capture_track_b(
     .await;
 }
 
+/// Codex review DEBT #71: cap the in-memory + on-disk size of a single
+/// Track C screenshot. Today the sandbox is trusted (operator-controlled
+/// Chromium), but a compromised or buggy `/v1/browser/screenshot`
+/// endpoint could return arbitrary bytes and a 50-step browser-heavy
+/// task could accrue gigabytes of PNGs in `/workspace/.tracks/`.
+/// 8 MiB is comfortably above legitimate noVNC viewport captures
+/// (typically 200-400 KB per `agent::diversity` PRINCIPLES #6 sweep)
+/// and well below a memory-pressure threshold.
+const MAX_SCREENSHOT_BYTES: usize = 8 * 1024 * 1024;
+
 async fn capture_track_c(hook: &PostBrowserActionHook, call_id: &str, ctx: &ToolContext) {
     let fetch = ctx.sandbox.browser_screenshot(&ctx.session_id);
     let png = match tokio::time::timeout(hook.screenshot_timeout, fetch).await {
@@ -224,6 +234,21 @@ async fn capture_track_c(hook: &PostBrowserActionHook, call_id: &str, ctx: &Tool
             return;
         }
     };
+
+    if png.len() > MAX_SCREENSHOT_BYTES {
+        hook.emit_misc(
+            &ctx.session_id,
+            "browser_track_c_skipped",
+            json!({
+                "call_id": call_id,
+                "reason": "too_large",
+                "size_bytes": png.len(),
+                "max_bytes": MAX_SCREENSHOT_BYTES,
+            }),
+        )
+        .await;
+        return;
+    }
 
     let path = format!("/workspace/.tracks/{call_id}.png");
     if let Err(error) = ctx

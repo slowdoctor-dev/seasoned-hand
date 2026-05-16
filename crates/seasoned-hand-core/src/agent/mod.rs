@@ -35,7 +35,7 @@ pub mod stuck;
 
 use breaker::{BreakerRegistry, CircuitBreaker};
 use diversity::DiversityInjector;
-pub use prompt::build_messages;
+pub(crate) use prompt::build_messages;
 use recite::{ReciteScheduler, recite_tick};
 use stuck::{StuckAction, StuckTracker};
 
