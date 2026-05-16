@@ -2938,4 +2938,182 @@ mod tests {
         assert_eq!(err.0, StatusCode::FORBIDDEN);
         assert_eq!(err.1.0.error, "forbidden_non_loopback");
     }
+
+    /// Codex review DEBT #69 — extend the loopback regression sweep
+    /// to cover every gate added in commits 18d472d + 3721c37. If a
+    /// future contributor removes `require_loopback(remote)?` from
+    /// any of these handlers, this set catches it.
+    ///
+    /// Coverage matrix:
+    /// - DEBT #48 / #59 — list_sessions ✓ (covered above),
+    ///   workspace_root ✓ (covered above), get_session, list_events,
+    ///   workspace_proxy, get_feature_list, get_progress
+    /// - DEBT #65 (Codex Finding A) — list_checkpoints_handler,
+    ///   list_verifications_handler, get_verification_handler
+    /// - DEBT #66 (user-approved /ws gate) — covered via the WS test
+    ///   below since the upgrade returns axum::response::Response
+    ///   directly (not the standard handler `Result<_, (StatusCode,
+    ///   Json<ApiError>)>` shape).
+    /// - DEBT #70 — list_channels_handler, get_channel_health_handler,
+    ///   post_channel_test_handler
+    async fn assert_handler_refuses_non_loopback<F, Fut, T>(handler: F)
+    where
+        F: FnOnce(std::net::SocketAddr) -> Fut,
+        Fut: std::future::Future<Output = Result<T, (StatusCode, Json<ApiError>)>>,
+        T: std::fmt::Debug,
+    {
+        let remote: std::net::SocketAddr = "10.0.0.42:12345".parse().unwrap();
+        let outcome = handler(remote).await;
+        let err = outcome.expect_err("non-loopback must be 403");
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        assert_eq!(err.1.0.error, "forbidden_non_loopback");
+    }
+
+    #[tokio::test]
+    async fn get_session_refuses_non_loopback_remote() {
+        let state = empty_state().await;
+        assert_handler_refuses_non_loopback(|remote| {
+            get_session(
+                State(state.clone()),
+                axum::extract::ConnectInfo(remote),
+                Path("any".into()),
+            )
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn list_events_refuses_non_loopback_remote() {
+        let state = empty_state().await;
+        assert_handler_refuses_non_loopback(|remote| {
+            list_events(
+                State(state.clone()),
+                axum::extract::ConnectInfo(remote),
+                Path("any".into()),
+                Query(EventsQueryParams {
+                    after_id: None,
+                    event_type: None,
+                    limit: None,
+                }),
+            )
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn workspace_proxy_sub_path_refuses_non_loopback_remote() {
+        let state = empty_state().await;
+        assert_handler_refuses_non_loopback(|remote| {
+            workspace_proxy(
+                State(state.clone()),
+                axum::extract::ConnectInfo(remote),
+                Path(("any".into(), "sub/path.txt".into())),
+            )
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn get_feature_list_refuses_non_loopback_remote() {
+        let state = empty_state().await;
+        assert_handler_refuses_non_loopback(|remote| {
+            get_feature_list(
+                State(state.clone()),
+                axum::extract::ConnectInfo(remote),
+                Path("any".into()),
+            )
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn get_progress_refuses_non_loopback_remote() {
+        let state = empty_state().await;
+        assert_handler_refuses_non_loopback(|remote| {
+            get_progress(
+                State(state.clone()),
+                axum::extract::ConnectInfo(remote),
+                Path("any".into()),
+                Query(ProgressQuery { lines: None }),
+            )
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn list_checkpoints_refuses_non_loopback_remote() {
+        let state = empty_state().await;
+        assert_handler_refuses_non_loopback(|remote| {
+            list_checkpoints_handler(
+                State(state.clone()),
+                axum::extract::ConnectInfo(remote),
+                Path("any".into()),
+                Query(seasoned_hand_core::checkpoint::routes::ListQuery::default()),
+            )
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn list_verifications_refuses_non_loopback_remote() {
+        let state = empty_state().await;
+        assert_handler_refuses_non_loopback(|remote| {
+            list_verifications_handler(
+                State(state.clone()),
+                axum::extract::ConnectInfo(remote),
+                Path("any".into()),
+                Query(VerifyListQuery::default()),
+            )
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn get_verification_refuses_non_loopback_remote() {
+        let state = empty_state().await;
+        assert_handler_refuses_non_loopback(|remote| {
+            get_verification_handler(
+                State(state.clone()),
+                axum::extract::ConnectInfo(remote),
+                Path("any".into()),
+            )
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn list_channels_refuses_non_loopback_remote() {
+        let state = empty_state().await;
+        assert_handler_refuses_non_loopback(|remote| {
+            list_channels_handler(State(state.clone()), axum::extract::ConnectInfo(remote))
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn get_channel_health_refuses_non_loopback_remote() {
+        let state = empty_state().await;
+        assert_handler_refuses_non_loopback(|remote| {
+            get_channel_health_handler(
+                State(state.clone()),
+                axum::extract::ConnectInfo(remote),
+                Path("any".into()),
+            )
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn post_channel_test_refuses_non_loopback_remote() {
+        let state = empty_state().await;
+        assert_handler_refuses_non_loopback(|remote| {
+            post_channel_test_handler(
+                State(state.clone()),
+                axum::extract::ConnectInfo(remote),
+                Path("any".into()),
+                Query(ChannelTestQuery { role: None }),
+            )
+        })
+        .await;
+    }
 }
