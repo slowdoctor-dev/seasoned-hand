@@ -1032,6 +1032,240 @@ the closing SHA.
 
 ---
 
+## Pre-Phase-3 cross-phase review (REVIEW.md, 2026-05-16)
+
+Seeded by `/specs/REVIEW.md` (the cross-phase pre-Phase-3 audit that
+followed the Phase 2-specific REVIEW.md). Entries #48–#64 below are
+the new findings from that pass. The hardening commits that closed
+items in this pass are referenced inline:
+
+- `18d472d` — fix(security): loopback-gate workspace + sessions
+- `4b6f932` — docs(readme): flip phase status to Phase 2 → Phase 3
+- `f99574e` — docs(glossary): add 7 Phase 2 terms
+- `5e1d790` — docs(plan): module preamble
+- `becf4da` — docs: WHY-comments on Phase 0/1 constants
+- `082688c` — style(tools): drop WHAT-only section dividers
+- `66cdc3f` — docs(agent): /// summaries on Phase 0/1 public types
+
+Eight of seventeen items closed in this pass; the rest remain open
+and route to either Phase 3 polish, Phase 5 multi-user, or
+human-approval gates (`AGENTS.md` / `ARCHITECTURE.md` are on the §9
+NEVER list).
+
+### ~~48. `/v1/workspace/:session_id/*` not loopback-gated~~ — CLOSED in cross-phase hardening pass (`18d472d`)
+- **Origin**: REVIEW §1 Section A
+- **Severity**: **Medium** (only bounded by Phase 2 single-operator +
+  default `HOST=127.0.0.1`)
+- **What**: Every `/v1/tasks/:id/*` sibling used
+  `require_loopback(remote)?`; the Phase 0-era workspace proxy did
+  not. On `HOST=0.0.0.0` binds anyone could read deliverables,
+  prompts, intermediate code via a guessable session UUID.
+- **Resolution**: Added the `ConnectInfo<SocketAddr>` extractor +
+  `require_loopback(remote)?` call to `workspace_root` /
+  `workspace_proxy`. Regression test
+  `workspace_root_refuses_non_loopback_remote` added.
+
+### 49. AGENTS.md §13/§14 + README.md phase status stale — partially closed (`4b6f932`)
+- **Origin**: REVIEW §3 Section H
+- **Severity**: **Medium**
+- **What**: After Phase 0/1/2 closed, README.md announced
+  "Phase -1 — Planning complete. Phase 0 starting" and AGENTS.md §13
+  said "Phase: -1 (planning) → Phase 0 starting"; AGENTS.md §14 listed
+  "ADR-001 to ADR-008" though ADR-009 + ADR-010 exist.
+- **Status (`4b6f932`)**: README.md half closed — phase status flipped
+  to "Phase 2 complete → Phase 3 starting", Quick-start unblocked,
+  ADR list bumped to ADR-010.
+- **Open**: AGENTS.md half. AGENTS.md is on the AGENTS.md §9 NEVER
+  list; needs explicit human approval before edit. Same applies to
+  the eventual ARCHITECTURE.md fixes under #51 below.
+- **Pay down**: Single human-approved doc commit alongside #51 (and
+  the ADR-011 if Phase 3 prefers a version-bump approach).
+
+### ~~50. GLOSSARY missing 5-7 load-bearing Phase 2 terms~~ — CLOSED in cross-phase hardening pass (`f99574e`)
+- **Origin**: REVIEW §3 Section G
+- **Severity**: **Medium**
+- **What**: `ChannelRegistration`, `IntakeRouter`, `DeliveryRouter`,
+  `NotifyWorker`, `WorkspaceTtlCron`, `Provenance manifest`, and the
+  `Brief` vs `Briefing` distinction were each referenced 5-15× in
+  specs + code but absent from `/GLOSSARY.md`.
+- **Resolution**: Seven new entries alphabetically (six architecture
+  pieces + one core-concept split). Drive-by fix: corrected the
+  Event-stream entry from "7 types total" to 8 with a note that
+  `Knowledge`/`Datasource`/`Skill` are Phase 3+ Curator slots.
+
+### 51. ARCHITECTURE.md v1.0 text drift — consolidated (subsumes Phase 1 DEBT #1, #2)
+- **Origin**: REVIEW §3 Section A
+- **Severity**: **Medium**
+- **What**: Three cross-phase items belong in one consolidated
+  ADR-011 + v1.1 bump:
+  - §2.2 sessions states list 5; V004 + code have 6 (`VERIFYING`
+    added by Phase 1 story 1.9 via the table-recreate dance at
+    `migrations/V004__verifications.sql:25-47`).
+  - `TaskStatus` 8-variant Phase 2 state machine
+    (`Drafted/Briefed/Confirmed/Running/Paused/Completed/Failed/Cancelled`,
+    `crates/seasoned-hand-cli/src/format.rs:21-29`) is not described
+    in the immutable doc — only `sessions.state` is.
+  - Existing Phase 1 DEBT #1 (tool count 32→38) + #2 (Next.js 15→16)
+    text drifts.
+- **Pay down**: One human-approved ADR-011 + ARCHITECTURE.md v1.1
+  bump alongside #49 AGENTS.md half. `ARCHITECTURE.md` is on the §9
+  NEVER list; needs explicit human approval before edit.
+
+### 52. `crates/seasoned-hand-server/src/lib.rs` 2879-line split
+- **Origin**: REVIEW §4 Section F
+- **Severity**: **Medium**
+- **What**: The Phase 0+1+2 HTTP surface (~40 routes + handlers +
+  helpers) all lives in one file. Largest prod file in the repo. Diff
+  review + merge-conflict cost will grow superlinearly as Phase 3
+  adds learning-API handlers.
+- **Pay down**: Phase 3 warm-up — split into
+  `lib/{tasks,projects,channels,admin,workspace,intake,delivery}.rs`.
+  ~8-12 hours; defers cleanly.
+
+### ~~53. `plan/mod.rs` missing module doc-block~~ — CLOSED in cross-phase hardening pass (`5e1d790`)
+- **Origin**: REVIEW §2 Module charters
+- **Severity**: **Low**
+- **What**: 27 of 28 modules in `seasoned-hand-core/src/` had a 3-20
+  line `//!` preamble citing spec + ADRs + closing story SHA.
+  `plan/mod.rs` started with `use std::sync::Arc;` — bare.
+- **Resolution**: 13-line preamble citing ADR-010 + ARCHITECTURE.md
+  §2.3 + story 1.1 + the Phase 0 DEBT #25 close.
+
+### 54. `SimplifyLlm` trait collapse to concrete + `#[cfg(test)]` mock
+- **Origin**: REVIEW §2 Trait surfaces
+- **Severity**: **Low**
+- **What**: 1 prod impl (`PlannerSimplifyLlm`) + 1 test impl
+  (`RecordingSimplify`); the trait shape is pure test seam.
+- **Status (this pass)**: **Deferred.** Closer inspection: the test
+  impl carries real value (records prompt shape, returns canned
+  content), and any collapse would either introduce an enum variant
+  or restructure the test fixture. The Phase 2 REVIEW's "~60 LOC
+  saved" estimate was optimistic — actual savings ~20 LOC. L-severity;
+  not worth the test-surface churn before Phase 3.
+- **Pay down**: Phase 3+ if/when the renderer-simplify path grows a
+  second prod variant.
+
+### 55. `ToolMaskPolicy` collapse or data-driven
+- **Origin**: REVIEW §2 Trait surfaces
+- **Severity**: **Low**
+- **What**: 1 prod impl (`DefaultMaskPolicy`) + 0 test impls; the
+  20-line match statement could be a `const MASK_RULES` slice.
+- **Status (this pass)**: **Deferred.** The trait is consumed via
+  `Arc<dyn ToolMaskPolicy>` injection at 4 call sites (`agent/mod.rs`,
+  `dispatch/mod.rs`, `agent/tests.rs`, `task_deliver.rs` tests); a
+  const-slice version saves ~6 LOC but loses the inline WHY-comments
+  ("Story 1.13b: ...", "Story 2.14: ...") that explain each rule.
+  L-severity; defer.
+- **Pay down**: Phase 3+ if the mask rules grow non-trivially.
+
+### ~~56. WHAT-only section dividers in `tools/builtin.rs`~~ — CLOSED in cross-phase hardening pass (`082688c`)
+- **Origin**: REVIEW §4 Section A
+- **Severity**: **Low**
+- **What**: Five `// ===== name =====` dividers restated the
+  `pub struct Name;` two lines below — pure WHAT noise.
+- **Resolution**: Removed the 5 pure dividers. Kept the 2 dividers
+  that carry actual WHY commentary (story 0.9 sandbox-tool subset
+  rationale at line ~290; story 0.7 StubTool shape contract at
+  line ~1017).
+
+### ~~57. WHY-comments missing on Phase 0/1 constants~~ — CLOSED in cross-phase hardening pass (`becf4da`)
+- **Origin**: REVIEW §4 Section A
+- **Severity**: **Low**
+- **What**: Five Phase 0/1 sites carried hard-coded constants without
+  inline WHY: `agent/stuck.rs` 2/4 thresholds, `agent/diversity.rs`
+  4-variant array, `llm/mod.rs` BIFROST_MASTER_KEY placeholder,
+  `db/mod.rs` DbPool `Arc<Mutex<Connection>>` choice,
+  `plan/render.rs` `* 3` chars-per-token heuristic.
+- **Resolution**: Each site now carries a 2-5 line `///` or `//!`
+  citing the relevant phase DEBT entry / ADR.
+
+### 58. `pub` shrinkage + missing `///` summaries on Phase 0/1 types — partially closed (`66cdc3f`)
+- **Origin**: REVIEW §4 Section B + H
+- **Severity**: **Low**
+- **What**: Phase 0/1 carried a handful of public types without
+  `///` summaries (`RunRequest`, `RunResult`, `AgentRunner`,
+  `AgentRunnerDeps` in `agent/mod.rs`) and a few `pub` items whose
+  only callers are sibling modules in the same crate
+  (`agent::build_messages`, `verifier::Worker::handle_request_with_watchdog`).
+- **Status (`66cdc3f`)**: The four agent/mod.rs types now have
+  one-line `///` summaries. `CheckpointManager::run` already had its
+  Phase 1 baseline WHY-comment.
+- **Open**: The `pub` → `pub(crate)` shrinkages on
+  `build_messages` + `handle_request_with_watchdog`. Both have
+  legitimate same-crate sibling callers; shrinking visibility would
+  just shuffle keywords for zero observable change. Phase 3 housekeeping.
+
+### 59. `GET /v1/sessions*` GET routes not loopback-gated — CLOSED (`18d472d`, same commit as #48)
+- **Origin**: REVIEW §1 Section A
+- **Severity**: **Medium**
+- **What**: `/v1/sessions`, `/v1/sessions/:id`, `/v1/sessions/:id/events`,
+  `/v1/sessions/:id/feature-list`, `/v1/sessions/:id/progress`
+  exposed session inventory + event payloads + workspace-derived
+  feature-list / progress files on non-loopback binds.
+- **Resolution**: Same commit as #48 added the
+  `ConnectInfo<SocketAddr>` extractor + `require_loopback(remote)?` to
+  all five handlers. Test fixtures `tests/events.rs` boot helper
+  migrated to `into_make_service_with_connect_info`;
+  `tests/feature_list.rs` migrated from `app.oneshot(...)` to real
+  TcpListener + reqwest pattern. New regression test
+  `list_sessions_refuses_non_loopback_remote` covers the gate.
+
+### 60. Phase 1 large-file split set
+- **Origin**: REVIEW §4 Section F
+- **Severity**: **Low**
+- **What**: Beyond the Phase 2 review's existing
+  `task_deliver.rs` (1082L), `notify/worker.rs` (621L),
+  `channel/email/mod.rs` (621L) split candidates, cross-phase sweep
+  surfaced four more borderline prod files: `agent/mod.rs` (725L),
+  `sandbox/mod.rs` (715L), `verifier/worker.rs` (677L),
+  `agent/init/mod.rs` (657L).
+- **Pay down**: Bundle into a single Phase 3 polish PR alongside
+  DEBT #52.
+
+### 61. EventType `Knowledge` / `Datasource` / `Skill` reserved but unwired
+- **Origin**: REVIEW §3 Section B
+- **Severity**: **Low** (informational — Phase 3 territory)
+- **What**: `EventType` enum + V002 CHECK constraint both carry 8
+  variants. Three of them (`Knowledge`, `Datasource`, `Skill`) have
+  no production emit path. Phase 3 Curator populates them.
+- **Pay down**: Phase 3 — write the emit sites + add a one-line doc
+  comment on the enum variants noting "Phase 3+ Curator emission".
+
+### 62. `spec-check.sh` hard-coded tool count lacks phase-version gate
+- **Origin**: REVIEW §3 Section E
+- **Severity**: **Low**
+- **What**: `scripts/spec-check.sh:65-72` hard-codes
+  `expected=39` (38 unique tools + the `task_deliver` registration
+  override). Correct at HEAD but detached from spec; Phase 3 adding a
+  learning tool will silently fail the gate until manually updated.
+- **Pay down**: Phase 3 housekeeping — extract to a const + cite the
+  spec section + maintain alongside any tool-catalog change.
+
+### 63. Frontend `pnpm test` is a passing stub
+- **Origin**: REVIEW §3 Section E
+- **Severity**: **Low**
+- **What**: `frontend/package.json` test script exits 0 without
+  running anything. Playwright lives at `pnpm test:e2e` and runs
+  only under `workflow_dispatch`. The `just verify` chain → `pnpm
+  test` is a no-op gate.
+- **Pay down**: Phase 3 — when FE unit tests land, replace the
+  stub. Until then, the `test:e2e` workflow_dispatch jobs are the
+  load-bearing FE verification surface.
+
+### 64. `tenant_id: None` 100% hardcoded — Phase 5 conversion meta-DEBT
+- **Origin**: REVIEW §1 Section J + §2 tenant_id ceremony
+- **Severity**: **Low** (informational — Phase 5 territory)
+- **What**: Every production construction site that builds an
+  `IntakeEvent`, `Deliverable`, `Brief`, `DeliveryEvent`, etc.
+  passes `tenant_id: None`. The field exists as forward-compat for
+  the Phase 5 NOT-NULL flip.
+- **Pay down**: Phase 5 multi-user — single atomic commit that
+  (a) drops `Option` wrap on the field, (b) updates all 55+
+  construction sites, (c) updates DB load-paths, (d) wires the
+  auth layer to fill the value at boundary.
+
+---
+
 ## Categories quick-reference (same as Phase 0 / Phase 1)
 
 | Severity | Meaning |
