@@ -182,20 +182,23 @@ This mirrors how Seasoned Hand itself works (recursive principle).
 
 ## 13. Current state
 
-- **Phase**: -1 (planning) → Phase 0 starting
+- **Phase**: 2 complete → Phase 3 starting
 - **Branch**: main
-- **Next milestone**: complete Phase 0 (27 stories)
+- **Next milestone**: Phase 3 architecture pass (BMAD Architect on
+  `/specs/phase-3/architecture.md`) → story breakdown → learning
+  system
 
-Check status: `just status`
+Check status: `just status` (or `git log --oneline` + `CHANGELOG.md`)
 
 ## 14. References
 
 - `/BASELINE.md` — single entry point (read first)
 - `/CLAUDE.md` — Claude-specific additions
 - `/specs/00-philosophy/` — VISION, PRINCIPLES, NON_GOALS
-- `/specs/01-architecture/ARCHITECTURE.md` — immutable system architecture
-- `/specs/01-architecture/decisions/` — ADR-001 to ADR-008
+- `/specs/01-architecture/ARCHITECTURE.md` — immutable system architecture (v1.1)
+- `/specs/01-architecture/decisions/` — ADR-001 to ADR-011
 - `/specs/06-roadmap/ROADMAP.md` — 6-phase plan
+- `/specs/REVIEW.md` — pre-Phase-3 cross-phase hardening review
 - `/docs/methodology.md` — full methodology
 - `/docs/getting-started.md` — human onboarding
 - `/docs/manifesto.md` — why this project exists

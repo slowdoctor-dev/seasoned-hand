@@ -1,8 +1,13 @@
 # Seasoned Hand — Architecture Specification
 
-> **Status**: v1.0 (Phase -1 planning)
-> **Last updated**: Phase planning kickoff
+> **Status**: v1.1 (Phase 3 starting; text-drift consolidation per ADR-011)
+> **Last updated**: 2026-05-16
 > **Owners**: Project lead
+>
+> **v1.1 amendments (ADR-011, 2026-05-16)**: §2.2 sessions states +6 `VERIFYING`;
+> §2.2.1 new — Phase 2 `tasks` + 8-variant `TaskStatus`; §2.4 + §7 tool count
+> 32 → 38 with Phase 1/2 additions. No architectural shift — text reconciled
+> with shipped reality (Phase 1 DEBT #1, #2 + Phase 2 REVIEW DEBT #51).
 
 This is the **immutable architectural specification**. Changes require:
 1. PR with rationale
@@ -162,7 +167,7 @@ CREATE TABLE sessions (
   id TEXT PRIMARY KEY,       -- UUID
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  state TEXT NOT NULL,       -- IDLE, RUNNING, FINISHED, ERROR, SUSPENDED
+  state TEXT NOT NULL,       -- IDLE, RUNNING, FINISHED, ERROR, SUSPENDED, VERIFYING
   project_id TEXT,           -- optional grouping
   user_id TEXT,              -- multi-tenant (single user for v0)
   title TEXT,
@@ -171,6 +176,38 @@ CREATE TABLE sessions (
   metadata TEXT              -- JSON
 );
 ```
+
+`VERIFYING` was added by Phase 1 story 1.9
+(`migrations/V004__verifications.sql:25-47` widens the CHECK constraint
+via the canonical SQLite new-table → copy → rename pattern).
+
+### 2.2.1 Tasks (Phase 2)
+
+Phase 2 introduces `tasks` as the durable user-facing unit on top of
+`sessions`. One task may have multiple sessions over time (e.g. a
+durable pause/resume cycle rebuilds the sandbox into a fresh session).
+A `sessions` row carries an optional `task_id` foreign key from
+`migrations/V006__phase2_projects_tasks.sql`.
+
+```sql
+-- abridged; see migrations/V006 for full schema
+CREATE TABLE tasks (
+  id TEXT PRIMARY KEY,           -- UUID
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  status TEXT NOT NULL,          -- Drafted, Briefed, Confirmed, Running,
+                                 -- Paused, Completed, Failed, Cancelled
+  title TEXT NOT NULL,
+  ...
+);
+```
+
+`TaskStatus` is an 8-variant state machine
+(`Drafted → Briefed → Confirmed → Running ⇄ Paused → Completed | Failed
+| Cancelled`, with cancel reachable from `Drafted/Briefed/Confirmed`
+per Phase 2 DEBT #19). The legal-transitions matrix lives at
+`crates/seasoned-hand-core/src/project/task.rs::legal_transitions`; the
+full Phase 2 task lifecycle is documented in
+`/specs/phase-2/architecture.md` §2.2.
 
 ### 2.3 Plans (ADR-010)
 
@@ -194,7 +231,11 @@ every iteration's sticky context. See ADR-010.
 
 ### 2.4 Tool Catalog (static)
 
-In-code constant. Not in DB. 32 tools = 29 (Manus leaked) + 3 (sop_read, playbook_search, glossary_lookup).
+In-code constant. Not in DB. 38 tools = 29 (Manus leaked) + 3 learning
+(`sop_read`, `playbook_search`, `glossary_lookup`) + 4 Phase 1
+additions (`feature_mark_done`, `progress_update`, `checkpoint_label`,
+`checkpoint_rollback`) + 1 Phase 2 addition (`task_deliver`). See §7
+for the full enumeration.
 
 Plus 3 plan-related tools (technically internal, not exposed via dispatcher):
 - `plan_create(goal, phases)` — create initial plan
@@ -379,7 +420,7 @@ return to user with explanation.
 
 ---
 
-## 7. Tool catalog (32 tools)
+## 7. Tool catalog (38 tools)
 
 ### From Manus leaked spec (29)
 
@@ -391,11 +432,30 @@ return to user with explanation.
 - **Deploy (2)**: `deploy_expose_port`, `deploy_apply_deployment`
 - **System (2)**: `idle`, `make_manus_page` (we replace this — see below)
 
-### Our additions (3)
+### Learning additions (3, Phase 0)
 
 - `sop_read` — read SOP by ID/title
 - `playbook_search` — FTS5 search playbooks
 - `glossary_lookup` — look up term
+
+### Phase 1 additions (4)
+
+- `feature_mark_done` — Initializer marks a Brief feature complete (story 1.4)
+- `progress_update` — Worker writes a one-line progress note (story 1.4)
+- `checkpoint_label` — Worker tags the next checkpoint with a phase title (story 1.13)
+- `checkpoint_rollback` — Internal-only rollback to a prior checkpoint
+  (story 1.13b, masked from every LLM-facing mode per `dispatch/mask.rs`)
+
+### Phase 2 additions (1)
+
+- `task_deliver` — Worker hands a finished real-employee artifact back
+  to the operator (story 2.14). Worker-mode only via `ToolMaskPolicy`.
+
+### Plan-related (3, ADR-010)
+
+Technically internal and not exposed through `ToolDispatcher`, but
+enumerated by `scripts/spec-check.sh` against the 38-tool registry pin:
+`plan_create`, `plan_advance`, `plan_update`.
 
 ### Removed
 

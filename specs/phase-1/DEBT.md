@@ -30,30 +30,32 @@ notes) — append them below as item 14+ when the decision is made.
 
 ## Seed (from architecture.md, 2026-05-12)
 
-### 1. ARCHITECTURE.md text drift — tool count "32" vs shipped 33→36
+### ~~1. ARCHITECTURE.md text drift — tool count "32" vs shipped 33→36→38~~ ✅ resolved 2026-05-16 (ADR-011)
 - **Origin**: inherited from Phase 0 (Phase 0 DEBT #4 resolved at the
   spec-check level but not in the immutable doc text); Phase 1
-  architecture.md §0 and §4.3 widen the gap.
+  architecture.md §0 and §4.3 widen the gap; Phase 2 story 2.14 adds
+  `task_deliver` taking shipped count to 38.
 - **Severity**: **Low** (documentation only)
-- **What**: `/specs/01-architecture/ARCHITECTURE.md` §2.4 and §7 say
-  "32 tools". Phase 0 shipped 33 (counting `plan_advance` per ADR-010).
-  Phase 1 adds `feature_mark_done`, `progress_update`, `checkpoint_label`
-  → 36 LLM-visible tools, plus an internal-only `checkpoint_rollback`.
-- **Why**: Editing ARCHITECTURE.md is gated (AGENTS.md §9 NEVER). The
-  Phase 1 spec instead documents the divergence transparently and
-  schedules a doc-only fix.
-- **Pay down**: Draft a doc-only ADR-011 ("Tool catalog count is
-  derived, not pinned") or bump ARCHITECTURE.md to v1.1 with the
-  catalog described as a formula (29 Manus + 3 learning + ADR-010 plan
-  exposed + Phase-N additions). One commit, no code change.
+- **Resolved by ADR-011**: ARCHITECTURE.md v1.0 → v1.1 bumps the
+  catalog count to 38 in both §2.4 ("38 tools = 29 + 3 learning + 4
+  Phase 1 + 1 Phase 2") and §7 (heading + per-phase subsection
+  enumeration). `scripts/spec-check.sh` already pinned 38 since story
+  2.14; this closes the doc half. Also closed simultaneously: Phase 2
+  REVIEW DEBT #51.
 
-### 2. ARCHITECTURE.md text drift — "Next.js 15" vs shipped Next.js 16
+### ~~2. ARCHITECTURE.md text drift — "Next.js 15" vs shipped Next.js 16~~ ✅ resolved 2026-05-16 (ADR-011)
 - **Origin**: Phase 0 DEBT #27, inherited unchanged.
 - **Severity**: **Low** (documentation only)
 - **What**: ARCHITECTURE.md §1 / §5.3 and BASELINE.md §4 say
   "Next.js 15". Frontend actually runs Next.js 16 / React 19.2 /
   Tailwind 4.3.
-- **Pay down**: Same doc-only commit as item 1 above.
+- **Resolved by ADR-011**: BASELINE.md §4 frontend-stack table flipped
+  Next.js 15 → 16 with a cross-ref to Phase 0 DEBT #27 + Phase 0 story
+  0.18. ARCHITECTURE.md itself does NOT pin a Next.js version in body
+  text (the only mention is the un-versioned ASCII "Frontend (Next.js)"
+  box in §1.1); the §5.3 reference in the original Phase 1 DEBT entry
+  pointed at BASELINE.md, not ARCHITECTURE.md. Same ADR-011 commit
+  closes Phase 2 REVIEW DEBT #51.
 
 ### 3. Verifier rollback is opt-in (default off)
 - **Origin**: architecture.md §2.6

@@ -1065,21 +1065,22 @@ NEVER list).
   `workspace_proxy`. Regression test
   `workspace_root_refuses_non_loopback_remote` added.
 
-### 49. AGENTS.md §13/§14 + README.md phase status stale — partially closed (`4b6f932`)
+### ~~49. AGENTS.md §13/§14 + README.md phase status stale~~ — CLOSED in cross-phase hardening pass (README half `4b6f932`; AGENTS.md half ADR-011 commit)
 - **Origin**: REVIEW §3 Section H
 - **Severity**: **Medium**
 - **What**: After Phase 0/1/2 closed, README.md announced
   "Phase -1 — Planning complete. Phase 0 starting" and AGENTS.md §13
   said "Phase: -1 (planning) → Phase 0 starting"; AGENTS.md §14 listed
   "ADR-001 to ADR-008" though ADR-009 + ADR-010 exist.
-- **Status (`4b6f932`)**: README.md half closed — phase status flipped
-  to "Phase 2 complete → Phase 3 starting", Quick-start unblocked,
-  ADR list bumped to ADR-010.
-- **Open**: AGENTS.md half. AGENTS.md is on the AGENTS.md §9 NEVER
-  list; needs explicit human approval before edit. Same applies to
-  the eventual ARCHITECTURE.md fixes under #51 below.
-- **Pay down**: Single human-approved doc commit alongside #51 (and
-  the ADR-011 if Phase 3 prefers a version-bump approach).
+- **Resolution**:
+  - README.md half (`4b6f932`): phase status flipped to "Phase 2
+    complete → Phase 3 starting", Quick-start unblocked, ADR list
+    bumped to ADR-010.
+  - AGENTS.md half (ADR-011 commit): §13 phase status flipped to
+    "Phase 2 complete → Phase 3 starting", next-milestone updated to
+    the Phase 3 architecture pass; §14 ADR list bumped to ADR-011 +
+    added cross-ref to `/specs/REVIEW.md` and the v1.1 ARCHITECTURE
+    note.
 
 ### ~~50. GLOSSARY missing 5-7 load-bearing Phase 2 terms~~ — CLOSED in cross-phase hardening pass (`f99574e`)
 - **Origin**: REVIEW §3 Section G
@@ -1093,7 +1094,7 @@ NEVER list).
   Event-stream entry from "7 types total" to 8 with a note that
   `Knowledge`/`Datasource`/`Skill` are Phase 3+ Curator slots.
 
-### 51. ARCHITECTURE.md v1.0 text drift — consolidated (subsumes Phase 1 DEBT #1, #2)
+### ~~51. ARCHITECTURE.md v1.0 text drift — consolidated~~ — CLOSED in cross-phase hardening pass (ADR-011 commit)
 - **Origin**: REVIEW §3 Section A
 - **Severity**: **Medium**
 - **What**: Three cross-phase items belong in one consolidated
@@ -1107,9 +1108,15 @@ NEVER list).
     in the immutable doc — only `sessions.state` is.
   - Existing Phase 1 DEBT #1 (tool count 32→38) + #2 (Next.js 15→16)
     text drifts.
-- **Pay down**: One human-approved ADR-011 + ARCHITECTURE.md v1.1
-  bump alongside #49 AGENTS.md half. `ARCHITECTURE.md` is on the §9
-  NEVER list; needs explicit human approval before edit.
+- **Resolution (ADR-011 commit)**: ADR-011 documents the v1.0 → v1.1
+  text-drift consolidation. ARCHITECTURE.md amendments: §2.2 sessions
+  states gain `VERIFYING` with V004 cross-ref; new §2.2.1 describes the
+  Phase 2 `tasks` table + 8-variant `TaskStatus` state machine with
+  cross-refs to V006 + the legal-transitions matrix; §2.4 + §7 tool
+  count bumped to 38 with the Phase 1/2 breakdown enumerated.
+  BASELINE.md §4 frontend stack flipped Next.js 15 → 16 (closes Phase 1
+  DEBT #2). Phase 1 DEBT #1 (tool count drift) also closed via the §7
+  enumeration. No code change — purely text reconciliation.
 
 ### 52. `crates/seasoned-hand-server/src/lib.rs` 2879-line split
 - **Origin**: REVIEW §4 Section F
