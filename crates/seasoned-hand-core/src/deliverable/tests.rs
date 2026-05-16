@@ -76,8 +76,8 @@ async fn deliverable_store_crud() {
         json!({ "schema_version": 1, "decisions": [42] })
     );
 
-    // mark_delivered passes for an existing row.
-    store.mark_delivered(&id).await.expect("mark_delivered");
+    // assert_exists passes for an existing row.
+    store.assert_exists(&id).await.expect("assert_exists");
 
     // NotFound for unknown ids on every method that takes one.
     assert!(matches!(
@@ -92,7 +92,7 @@ async fn deliverable_store_crud() {
         DeliverableError::NotFound(_)
     ));
     assert!(matches!(
-        store.mark_delivered("nope").await.expect_err("mark nope"),
+        store.assert_exists("nope").await.expect_err("assert_exists nope"),
         DeliverableError::NotFound(_)
     ));
 }

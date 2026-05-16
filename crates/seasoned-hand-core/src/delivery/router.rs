@@ -7,7 +7,7 @@
 //! looks up the task's originating intake event for the default
 //! `reply_target`, resolves the matching sink in the
 //! [`ChannelRegistry`], calls
-//! [`DeliverableStore::mark_delivered`](crate::deliverable::DeliverableStore::mark_delivered)
+//! [`DeliverableStore::assert_exists`](crate::deliverable::DeliverableStore::assert_exists)
 //! as the existence guard (DEBT #11 contract), invokes
 //! [`DeliverySink::deliver`], and persists a
 //! [`DeliveryEvent`](crate::delivery::DeliveryEventRow).
@@ -147,7 +147,7 @@ impl DeliveryRouter {
 
         // Existence guard — closes the DEBT #11 contract.
         self.deliverable_store
-            .mark_delivered(&deliverable.id)
+            .assert_exists(&deliverable.id)
             .await?;
 
         // First attempt.

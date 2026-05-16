@@ -34,7 +34,12 @@ pub struct Deliverable {
     /// source of truth (`url`, `code`).
     pub source_content_path: Option<String>,
     pub source_content_sha256: Option<String>,
-    /// Workspace path of the rendered artifact (sandbox-relative).
+    /// Absolute host path of the rendered artifact, resolved at
+    /// deliverable-persist time by `task_deliver` against the sandbox
+    /// handle's `workspace_host_path` (closes Phase 2 DEBT #32).
+    /// Channel impls (e.g. `EmailChannel::deliver`) read this directly
+    /// via `tokio::fs::read(...)`. Note: the column was workspace-relative
+    /// before story 2.26 — see REVIEW §4 / proposed DEBT #41.
     pub rendered_content_path: String,
     pub rendered_content_sha256: String,
     pub content_size: i64,

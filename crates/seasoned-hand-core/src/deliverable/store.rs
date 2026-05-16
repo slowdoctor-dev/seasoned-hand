@@ -145,11 +145,15 @@ impl DeliverableStore {
 
     /// Confirm the deliverable row exists; returns `NotFound` if it
     /// doesn't. V007 has no `delivered_at` column — the audit trail
-    /// lives in the V008 `delivery_events` table — so this method is
-    /// the existence guard the DeliveryRouter (story 2.5) calls before
-    /// it appends a delivery event. Provenance-side `delivered_to[]`
+    /// lives in the V008 `delivery_events` table — so this is the
+    /// existence guard the DeliveryRouter (story 2.5) calls before it
+    /// appends a delivery event. Provenance-side `delivered_to[]`
     /// updates happen via [`Self::attach_provenance`] from story 2.15.
-    pub async fn mark_delivered(&self, id: &str) -> Result<(), DeliverableError> {
+    ///
+    /// Renamed from `mark_delivered` (REVIEW.md §4 / proposed DEBT #41)
+    /// — the original name implied a state mutation that the body
+    /// never performed.
+    pub async fn assert_exists(&self, id: &str) -> Result<(), DeliverableError> {
         let id_owned = id.to_string();
         let exists: bool = self
             .pool
