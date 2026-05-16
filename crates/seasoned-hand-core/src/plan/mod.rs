@@ -1,3 +1,17 @@
+//! Plan entity + persistence — the agent's Process Control Block (PCB).
+//!
+//! A `Plan` carries `(goal, phases, current_phase_id)` per ADR-010 and
+//! lives in the V003 `plans` table. The agent loop injects a rendered
+//! plan summary at the top of every iteration's sticky context (see
+//! [`render::sticky_render`]) so the LLM never loses sight of where it
+//! is in the task. Phase 1 story 1.1 closed Phase 0 DEBT #25 by wiring
+//! `plan_create` / `plan_advance` / `plan_update` to real mutations
+//! against this module.
+//!
+//! refs: /specs/01-architecture/decisions/ADR-010-plan-as-process-control-block.md,
+//! /specs/01-architecture/ARCHITECTURE.md §2.3 (plans schema),
+//! /specs/phase-1/stories/story-1.1.md
+
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
