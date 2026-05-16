@@ -203,8 +203,10 @@ CREATE TABLE tasks (
 
 `TaskStatus` is an 8-variant state machine
 (`Drafted → Briefed → Confirmed → Running ⇄ Paused → Completed | Failed
-| Cancelled`, with cancel reachable from `Drafted/Briefed/Confirmed`
-per Phase 2 DEBT #19). The legal-transitions matrix lives at
+| Cancelled`). `Cancelled` is reachable from every non-terminal state —
+`Drafted`, `Briefed`, `Confirmed` (per Phase 2 DEBT #19's pre-run cancel
+window), AND `Running`/`Paused` (operator cancel mid-execution). The
+legal-transitions matrix lives at
 `crates/seasoned-hand-core/src/project/task.rs::legal_transitions`; the
 full Phase 2 task lifecycle is documented in
 `/specs/phase-2/architecture.md` §2.2.
@@ -231,16 +233,20 @@ every iteration's sticky context. See ADR-010.
 
 ### 2.4 Tool Catalog (static)
 
-In-code constant. Not in DB. 38 tools = 29 (Manus leaked) + 3 learning
-(`sop_read`, `playbook_search`, `glossary_lookup`) + 4 Phase 1
-additions (`feature_mark_done`, `progress_update`, `checkpoint_label`,
-`checkpoint_rollback`) + 1 Phase 2 addition (`task_deliver`). See §7
-for the full enumeration.
+In-code constant. Not in DB. **38 tools** = 28 (29 Manus-leaked minus
+`make_manus_page`, which we replaced with `deploy_apply_deployment` —
+see §7 "Removed") + 3 learning stubs (`sop_read`, `playbook_search`,
+`glossary_lookup`) + 2 LLM-callable plan tools (`plan_advance`,
+`plan_update`) + 4 Phase 1 additions (`feature_mark_done`,
+`progress_update`, `checkpoint_label`, `checkpoint_rollback`) + 1
+Phase 2 addition (`task_deliver`). The 38-count is pinned by
+`scripts/spec-check.sh`. See §7 for the full enumeration.
 
-Plus 3 plan-related tools (technically internal, not exposed via dispatcher):
-- `plan_create(goal, phases)` — create initial plan
-- `plan_advance()` — move to next phase
-- `plan_update(phases)` — restructure remaining phases
+Plan management (ADR-010): `plan_advance` and `plan_update` are
+exposed through `ToolDispatcher` as LLM-callable tools — the agent's
+loop drives plan progression via them. `plan_create(goal, phases)` is
+the Initializer's internal entry point used to seed the plan at task
+start; it is NOT registered in the tool catalog and is not LLM-callable.
 
 ### 2.5 Learning artifacts (Phase 3+)
 
@@ -451,11 +457,12 @@ return to user with explanation.
 - `task_deliver` — Worker hands a finished real-employee artifact back
   to the operator (story 2.14). Worker-mode only via `ToolMaskPolicy`.
 
-### Plan-related (3, ADR-010)
+### Plan-related (ADR-010)
 
-Technically internal and not exposed through `ToolDispatcher`, but
-enumerated by `scripts/spec-check.sh` against the 38-tool registry pin:
-`plan_create`, `plan_advance`, `plan_update`.
+`plan_advance` and `plan_update` are LLM-callable through
+`ToolDispatcher` and count toward the 38-tool total above. `plan_create`
+is the Initializer's internal seed call and is NOT registered in the
+catalog — it's documented here only for ADR-010 completeness.
 
 ### Removed
 

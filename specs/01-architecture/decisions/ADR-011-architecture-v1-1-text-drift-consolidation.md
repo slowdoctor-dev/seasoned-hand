@@ -1,8 +1,39 @@
 # ADR-011: ARCHITECTURE.md v1.0 → v1.1 — text-drift consolidation
 
-Status: Accepted
+Status: Accepted (initial 2026-05-16; tool-count errata 2026-05-17)
 Date: 2026-05-16
 Deciders: Project lead
+
+## Errata (2026-05-17)
+
+Codex review of the initial ADR-011 commit
+(`/tmp/codex-review.md` §3.3) caught two arithmetic / attribution
+errors in the §2.4 and §7 tool-count prose. Both fixed within the v1.1
+envelope (no v1.2 bump):
+
+1. **§2.4 arithmetic was wrong.** Original prose said
+   `29 + 3 + 4 + 1 = 38`. Actual: `29 + 3 + 4 + 1 = 37`, which would
+   make 38 unreachable. The correct accounting subtracts the removed
+   `make_manus_page` from the Manus-leaked 29:
+   `28 + 3 + 2 + 4 + 1 = 38`. The "+2" is the two LLM-callable plan
+   tools (`plan_advance` + `plan_update`), which the original prose
+   misclassified as "internal, not exposed via dispatcher".
+2. **§2.4 and §7 misclassified the plan tools.**
+   `crates/seasoned-hand-core/src/tools/builtin.rs:1159-1160` registers
+   `plan_advance` and `plan_update` in the dispatcher; they ARE
+   LLM-callable. `plan_create` is the only one that's internal-only
+   (the Initializer's seed call, not in the tool registry). The original
+   prose claimed all three were internal.
+
+The §2.2.1 Tasks subsection also gained a clarification: the original
+phrasing "cancel reachable from `Drafted/Briefed/Confirmed` per Phase 2
+DEBT #19" could be read as listing ALL the Cancel-reachable states,
+but `crates/seasoned-hand-core/src/project/task.rs::legal_transitions`
+also allows cancel from `Running` and `Paused`. Now reads "from every
+non-terminal state".
+
+These are pure-text corrections to the v1.1 amendments and do not
+require a new ADR or v1.2 bump.
 
 ## Context
 
