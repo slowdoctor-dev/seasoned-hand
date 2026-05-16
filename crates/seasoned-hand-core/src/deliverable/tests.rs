@@ -92,7 +92,10 @@ async fn deliverable_store_crud() {
         DeliverableError::NotFound(_)
     ));
     assert!(matches!(
-        store.assert_exists("nope").await.expect_err("assert_exists nope"),
+        store
+            .assert_exists("nope")
+            .await
+            .expect_err("assert_exists nope"),
         DeliverableError::NotFound(_)
     ));
 }

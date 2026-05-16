@@ -47,8 +47,8 @@ fn normalize_workspace_relative_path_strips_prefix_and_blocks_traversal() {
         "..",
         "workspace/../bar",
     ] {
-        let err = normalize_workspace_relative_path(bad)
-            .expect_err(&format!("{bad} should be rejected"));
+        let err =
+            normalize_workspace_relative_path(bad).expect_err(&format!("{bad} should be rejected"));
         assert!(
             matches!(err, SandboxError::InvalidWorkspace(_)),
             "{bad} → wrong error variant: {err:?}"

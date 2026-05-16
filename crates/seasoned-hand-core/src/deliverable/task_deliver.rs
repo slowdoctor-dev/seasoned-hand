@@ -1077,9 +1077,6 @@ mod tests {
             Err("leading_dot")
         );
         let too_long = format!("{}.md", "a".repeat(120));
-        assert_eq!(
-            validate_deliverable_filename(&too_long),
-            Err("too_long")
-        );
+        assert_eq!(validate_deliverable_filename(&too_long), Err("too_long"));
     }
 }

@@ -532,7 +532,14 @@ async fn intake_router_drops_unsafe_session_id_hint() {
         .expect("intake still succeeds; only the hint is dropped");
 
     // (3) Other disallowed shapes also drop.
-    for bad in &["with space", "has/slash", "has\\back", "$(whoami)", "x;rm", ""] {
+    for bad in &[
+        "with space",
+        "has/slash",
+        "has\\back",
+        "$(whoami)",
+        "x;rm",
+        "",
+    ] {
         let mut ev = sample_event("webhook", &format!("intake-bad-{bad:?}"), 1_002);
         ev.metadata = serde_json::json!({ "session_id_hint": bad });
         router
@@ -548,10 +555,7 @@ async fn intake_router_drops_unsafe_session_id_hint() {
         Some("a1b2c3d4-1234-5678-9abc-def012345678"),
         "safe UUID hint preserved"
     );
-    assert_eq!(
-        seen[1].session_id_hint, None,
-        "path-traversal hint dropped"
-    );
+    assert_eq!(seen[1].session_id_hint, None, "path-traversal hint dropped");
     for (i, spec) in seen.iter().enumerate().skip(2) {
         assert_eq!(
             spec.session_id_hint, None,

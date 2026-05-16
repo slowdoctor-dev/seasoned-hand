@@ -320,8 +320,7 @@ fn is_safe_session_id(hint: &str) -> bool {
     if hint.is_empty() || hint.len() > 64 {
         return false;
     }
-    hint.chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    hint.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 /// Truncate brief input to a single line ≤ 200 chars for the Task's
