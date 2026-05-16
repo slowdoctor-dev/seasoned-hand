@@ -123,8 +123,6 @@ fn deferred(phase: &'static str) -> ToolOutput {
     }
 }
 
-// ===== message_notify_user =====
-
 pub struct MessageNotifyUser;
 
 #[async_trait]
@@ -166,8 +164,6 @@ impl Tool for MessageNotifyUser {
         })
     }
 }
-
-// ===== message_ask_user =====
 
 pub struct MessageAskUser;
 
@@ -212,8 +208,6 @@ impl Tool for MessageAskUser {
     }
 }
 
-// ===== idle =====
-
 pub struct Idle;
 
 #[async_trait]
@@ -243,8 +237,6 @@ impl Tool for Idle {
     }
 }
 
-// ===== sop_read (stub) =====
-
 pub struct SopRead;
 
 #[async_trait]
@@ -269,8 +261,6 @@ impl Tool for SopRead {
         Ok(deferred("3"))
     }
 }
-
-// ===== glossary_lookup (stub) =====
 
 pub struct GlossaryLookup;
 
