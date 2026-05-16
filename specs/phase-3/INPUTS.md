@@ -73,10 +73,12 @@ fewer tool calls**.
 | `crates/seasoned-hand-core/src/skill/mod.rs` | `SkillStore` exists with reserved schema | Phase 3 first writer |
 | `crates/seasoned-hand-core/src/events/mod.rs` `EventType::{Knowledge, Datasource, Skill}` | Enum variants exist + V002 CHECK accepts them; zero production emitters | Wire emit sites |
 | `crates/seasoned-hand-core/src/agent/init/mod.rs` Initializer | Authors Brief; no playbook-injection step | Inject matched playbooks at task start |
-| `crates/seasoned-hand-core/src/verifier/worker.rs` | Posts `verifier_verdict` Misc on PASS | Hook for the post-task extraction trigger |
-| `crates/seasoned-hand-core/src/router/capability.rs` | `embedding` slot resolution path exists | Playbook similarity may activate it |
-| `crates/seasoned-hand-server/src/lib.rs` HTTP surface (2879 L) | No `/v1/playbooks`, `/v1/sops`, `/v1/glossary` routes | New routes for browsing / editing learning artifacts (UX + CLI) |
-| `crates/seasoned-hand-cli/src/commands/` | No `sop`, `playbook`, `glossary` subcommands | CLI surface for SOP authoring |
+| `crates/seasoned-hand-core/src/verifier/worker.rs` | Posts `verifier_verdict` Misc on **any parsed verdict** (both `pass` and `fail`); payload shape includes `verification_id` + `verdict` + `evidence_event_ids` (see `worker.rs:499-527`) | Extraction trigger reads the Misc but must filter `verdict == "pass"` per ADR-007 criterion 1. The event payload shape is the input contract for extraction. |
+| `crates/seasoned-hand-core/src/router/capability/mod.rs` | Generic alias resolution exists at `:65-166` (Bifrost `/v1/models/:alias` lookup → static `capabilities_for` table); the `embedding` slot is registered but no Phase 3-specific embedding-search wiring exists | If Phase 3 picks embedding-based playbook similarity (see `OPEN_QUESTIONS.md` #3), wire the embedding slot through the slot router (`router::SlotRouter`) — not just the capability resolver. |
+| `crates/seasoned-hand-core/src/router/mod.rs` `SlotRouter` | 12 slots resolvable; consult site for any new playbook-matching LLM call | Extraction pipeline + matching pipeline will need to resolve the model slot for their LLM calls — see `SlotRouter::resolve(SlotName::Planner)` precedent at `deliverable/task_deliver.rs:130`. |
+| `crates/seasoned-hand-core/src/agent/prompt.rs` `build_messages` (`pub(crate)`) | Builds the per-iteration message list consumed by the agent loop | Playbook injection has two candidate insertion sites: (a) Initializer-only (one-shot at task start, in the system prompt) or (b) `build_messages` (sticky across every iteration, in the prompt header). Architect picks; this site is the alternative to (a). |
+| `crates/seasoned-hand-server/src/lib.rs` HTTP surface (~3100 lines after the Codex-review-driven loopback gate additions) | No `/v1/playbooks`, `/v1/sops`, `/v1/glossary` routes; lib.rs is also tracked as DEBT #52 for a Phase 3 warm-up split | New routes for browsing / editing learning artifacts (UX + CLI). Should land alongside the lib.rs split if Phase 3 chooses to do both. |
+| `crates/seasoned-hand-cli/src/commands/` | No `sop`, `playbook`, `glossary` subcommands | CLI surface for SOP authoring (see `OPEN_QUESTIONS.md` #7) |
 
 ---
 
@@ -116,10 +118,14 @@ authoring architecture.md.
 
 ## 9. Cross-phase REVIEW context
 
-`/specs/REVIEW.md` is the pre-Phase-3 cross-phase hardening review.
-Findings closed by the hardening pass (commits `18d472d` through
-`f316001`) are recorded in the relevant phase DEBT ledgers. Items
-still open at Phase 3 kickoff are listed in §7 above.
+`/specs/REVIEW.md` is the pre-Phase-3 cross-phase hardening review
+(Claude pass). `/tmp/codex-review.md` is the follow-up Codex review of
+that pass, which surfaced an additional 7 issues including the
+ARCH-§2.4 arithmetic errata fixed in ADR-011's 2026-05-17 errata.
+Findings closed by the hardening + Codex-follow-up commits
+(`18d472d` through HEAD) are recorded in the relevant phase DEBT
+ledgers — see `/specs/phase-3/DEBT.md` for the full Phase 3
+inheritance list (§7 above only names the two most load-bearing).
 
 The post-close hardening pattern Phase 2 set (REVIEW → hardening
 commits → DEBT append) is the model Phase 3 should follow at its own
