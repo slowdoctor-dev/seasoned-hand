@@ -33,7 +33,9 @@ test("VerifierTab renders a verdict row with badge + reason", async ({
       suggested_plan_update: null,
       model_id: "claude-sonnet-4-6",
       cost_cents: 0,
-      created_at: 1_700_000_000,
+      // Microseconds since unix epoch — matches server's
+      // `verifier/persistence.rs` `now_micros()` (proposed DEBT #33).
+      created_at: 1_700_000_000_000_000,
     },
   ]);
   await mockSessionDetail(page, "mock-session-1", null);

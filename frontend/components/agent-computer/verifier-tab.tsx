@@ -225,10 +225,14 @@ function VerdictBadge({ verdict }: { verdict: "pass" | "fail" }) {
   );
 }
 
-function formatTimestamp(unixSeconds: number): string {
+function formatTimestamp(unixMicros: number): string {
+  // `verifications.created_at` is persisted by `verifier/persistence.rs`
+  // via `now_micros()` — microseconds since unix epoch, matching the
+  // Phase 0/1/2 wire convention (proposed DEBT #33). Divide for the
+  // Date constructor.
   try {
-    return new Date(unixSeconds * 1000).toLocaleString();
+    return new Date(unixMicros / 1000).toLocaleString();
   } catch {
-    return String(unixSeconds);
+    return String(unixMicros);
   }
 }

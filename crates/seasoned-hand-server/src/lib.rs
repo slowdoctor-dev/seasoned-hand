@@ -1626,11 +1626,20 @@ async fn post_checkpoint_rollback_handler(
     }
     // Guard 2: loopback only.
     require_loopback(remote)?;
-    // Guard 3: token header match.
+    // Guard 3: token header match. Constant-time compare avoids the
+    // prefix-length timing leak that `!=` on `&str` would expose; the
+    // loopback guard above is the primary defense, this is
+    // defense-in-depth (REVIEW §5 cross-cutting / proposed DEBT #37).
     let token_hdr = headers
         .get("X-Seasoned-Hand-Admin-Token")
-        .and_then(|h| h.to_str().ok());
-    if token_hdr != Some(state.admin_token.as_str()) {
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    use subtle::ConstantTimeEq;
+    let ok: bool = token_hdr
+        .as_bytes()
+        .ct_eq(state.admin_token.as_bytes())
+        .into();
+    if !ok {
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(ApiError {
@@ -1787,11 +1796,19 @@ async fn post_admin_sandbox_cleanup_handler(
     }
     // Guard 2: loopback only.
     require_loopback(remote)?;
-    // Guard 3: token header match.
+    // Guard 3: token header match. Constant-time compare (see
+    // sandbox/rollback admin handler above; REVIEW §5 / proposed
+    // DEBT #37).
     let token_hdr = headers
         .get("X-Seasoned-Hand-Admin-Token")
-        .and_then(|h| h.to_str().ok());
-    if token_hdr != Some(state.admin_token.as_str()) {
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    use subtle::ConstantTimeEq;
+    let ok: bool = token_hdr
+        .as_bytes()
+        .ct_eq(state.admin_token.as_bytes())
+        .into();
+    if !ok {
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(ApiError {
@@ -1886,9 +1903,15 @@ async fn get_verification_handler(
 
 async fn get_task_provenance_handler(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Path(task_id): Path<String>,
     Query(q): Query<seasoned_hand_core::provenance::GetTaskProvenanceQuery>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+    // Loopback gate matches every sibling /v1/tasks/:id/* handler; provenance
+    // manifests can include PII (sender addresses, brief content, intake
+    // metadata) so they must not leak at HOST=0.0.0.0 binds. See REVIEW
+    // §5 cross-cutting issue #1 / proposed DEBT #34.
+    require_loopback(remote)?;
     use seasoned_hand_core::provenance::{GetTaskProvenanceDeps, get_task_provenance};
     let deps = GetTaskProvenanceDeps {
         deliverables: state.deliverables.as_ref(),

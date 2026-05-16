@@ -86,8 +86,12 @@ function DecisionRowView({
   const reasonOneLine =
     row.reason.length > 120 ? `${row.reason.slice(0, 120)}…` : row.reason;
   const created = useMemo(() => {
+    // `row.ts` is `ServerEvent.ts` from the WS envelope, which mirrors
+    // `events.timestamp` — microseconds since unix epoch (Phase 0/1/2
+    // convention; see proposed DEBT #33). Divide to get milliseconds
+    // for the Date constructor.
     try {
-      return new Date(row.ts * 1000).toLocaleString();
+      return new Date(row.ts / 1000).toLocaleString();
     } catch {
       return String(row.ts);
     }
