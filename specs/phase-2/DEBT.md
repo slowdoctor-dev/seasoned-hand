@@ -52,6 +52,32 @@ yet. The default in `crates/seasoned-hand-server/src/lib.rs`
 (`checkpoint_rollback_on_verifier_fail = false`) is **unchanged**;
 Phase 3 retro should re-evaluate once enough live runs exist.
 
+### Post-close hardening pass (2026-05-16)
+
+`/specs/phase-2/REVIEW.md` (commit `dabd4cf`) surfaced **15 additional
+items** (entries #33–#47 below). The hardening pass that followed
+(`fc75ae4` + `0714dbf` + `cbb7b77`) closed **8** of them:
+
+- **#33** FE timestamp unit drift → `fc75ae4`
+- **#34** Provenance route loopback → `fc75ae4`
+- **#35** Webhook `session_id_hint` path-traversal → `0714dbf` (**H**)
+- **#36** `target_filename` shell-inject / bind-mount → `0714dbf` (**H**)
+- **#37** Admin-token constant-time → `fc75ae4`
+- **#38** `normalize_workspace_relative_path` `..` block → `0714dbf`
+- **#41** `mark_delivered` rename + doc fix → `cbb7b77`
+- **#42** `.env.example` Phase 2 vars → `cbb7b77`
+
+**7 remain open** at the end of the hardening pass: **#39** (WS
+session_id vs task_id reconciliation), **#40** (5 spec'd HTTP routes
+missing), **#43** (WS `briefing_confirm` no auth — covered by Phase 0
+DEBT #7 umbrella), **#44** (story 2.5 `RouteOutcome<T>` unmet), **#45**
+(story 2.12 missing 2 live-Redis tests), **#46** (EmailChannel
+absolute-path containment check), **#47** (DNS-rebinding TOCTOU). Each
+carries an explicit pay-down line in its entry below. The two H-severity
+items closed in the hardening pass moved Phase 2 from "Medium-trust
+single-operator with two host-escape primitives" to "Medium-trust
+single-operator with no known host-escape primitives".
+
 ---
 
 ## Seed (from architecture v2.1, 2026-05-13)
@@ -785,6 +811,224 @@ Phase 3 retro should re-evaluate once enough live runs exist.
   regression test asserts `row.rendered_content_path.is_absolute()`
   in
   `crates/seasoned-hand-core/src/deliverable/task_deliver.rs::tests::task_deliver_writes_source_and_renders`.
+
+---
+
+## Post-close review (REVIEW.md, 2026-05-16)
+
+Seeded by `/specs/phase-2/REVIEW.md` (commit `dabd4cf`) — an external
+4-dimension audit of the Phase 2 close. Entries #33–#47 below were
+identified but not silently appended during the audit; this section
+records each with a current status. Entries closed by the hardening
+pass (commits `fc75ae4`, `0714dbf`, `cbb7b77`) carry strikethrough +
+the closing SHA.
+
+### ~~33. Frontend timestamp unit drift (μs ↔ s ↔ ms)~~ — CLOSED in hardening pass 2 (`fc75ae4`)
+- **Origin**: REVIEW §3 cross-finding A
+- **Severity**: **Medium** (silent user-facing display bug)
+- **What**: Backend persists all timestamps in microseconds since
+  unix epoch (events, deliverables, tasks, intake / delivery / notify
+  events, verifications, WS `ServerEvent.ts`). Two FE consumers
+  treated them as other units: `decisions-tab.tsx:90` multiplied μs
+  by 1000 (→ ns, far-future dates) and `verifier-tab.tsx:228` treated
+  μs as seconds. The latter is a Phase 1 carry-over surfaced by 2.22.
+  Separately, WS `ServerPing/Pong.ts` is unix seconds — same JSON
+  field name, different unit depending on `type` discriminator.
+- **Resolution (hardening pass 2)**: Both FE sites flipped to `/ 1000`
+  (μs → ms); `verifier-tab.spec.ts` fixture flipped from 1.7e9
+  (seconds) to 1.7e15 (microseconds). The `ServerPing/Pong.ts` unit
+  drift remains documented but not changed — promoting it to μs would
+  break wire format for zero readability gain (FE never displays
+  ping timestamps).
+
+### ~~34. `GET /v1/tasks/:id/provenance` not loopback-gated~~ — CLOSED in hardening pass 2 (`fc75ae4`)
+- **Origin**: REVIEW §1/C
+- **Severity**: **Medium**
+- **What**: Every sibling `/v1/tasks/:id/*` route applied
+  `require_loopback(remote)?`; `get_task_provenance_handler` alone
+  did not. Provenance manifests can include PII (sender addresses,
+  brief content, intake metadata).
+- **Resolution (hardening pass 2)**: Added the loopback guard with
+  the same `ConnectInfo` extractor + comment cross-referencing the
+  REVIEW finding.
+
+### ~~35. Webhook intake `session_id_hint` path-traversal~~ — CLOSED in hardening pass 3 (`0714dbf`)
+- **Origin**: REVIEW §1/G
+- **Severity**: **High** (only bounded by the webhook intake token
+  + Phase 2 single-operator)
+- **What**: `IntakeEvent.metadata.session_id_hint` flowed verbatim
+  into `sessions.id` (PK), then into `workspace_root.join(session_id)` →
+  `tokio::fs::remove_dir_all(...)` on the TTL cron, plus the docker
+  container name `seasoned-hand-sandbox-<id>`. An attacker holding
+  the webhook intake token (or any future Phase 5 untrusted caller)
+  could plant `"../../../tmp/poisoned"` and trigger host-side
+  `rm -rf` outside the workspace bind-mount.
+- **Resolution (hardening pass 3)**: `is_safe_session_id(...)` in
+  `intake/router.rs` accepts only `[A-Za-z0-9-]+` of length 1..=64
+  before the value reaches `SpawnSpec`. Drop-not-error so the intake
+  still creates the task (spawner mints a fresh UUID). New regression
+  test `intake_router_drops_unsafe_session_id_hint` exercises 1 safe
+  + 6 bad shapes.
+
+### ~~36. LLM `target_filename` shell-injection / bind-mount escape~~ — CLOSED in hardening pass 3 (`0714dbf`)
+- **Origin**: REVIEW §1/B
+- **Severity**: **High** (only bounded by the LLM trust boundary
+  + Phase 2 single-operator)
+- **What**: `task_deliver` only extension-validated the filename. The
+  raw string flowed into Pandoc / python-pptx / openpyxl shell
+  commands and into `workspace_host_path.join(...)`. Shell
+  metacharacters like `;`, `$(...)`, backticks, pipes would execute
+  inside the sandbox; `..` segments would escape the workspace
+  bind-mount on the host.
+- **Resolution (hardening pass 3)**: `validate_deliverable_filename(...)`
+  in `deliverable/task_deliver.rs` enforces `[A-Za-z0-9._-]+`, length
+  ≤ 120, no leading dot, no `..`, must contain an extension. Surfaces
+  via `invalid_filename:<reason>` tool-error sub-code. New regression
+  test covers 10+ accept/reject cases.
+
+### ~~37. Admin-token compare uses `!=` not constant-time~~ — CLOSED in hardening pass 2 (`fc75ae4`)
+- **Origin**: REVIEW §1/C
+- **Severity**: **Medium** (mitigated by loopback guard)
+- **What**: Admin rollback + sandbox cleanup handlers used
+  `token_hdr != Some(state.admin_token.as_str())` — prefix-length
+  timing leak. Webhook intake already used `subtle::ConstantTimeEq`;
+  inconsistent.
+- **Resolution (hardening pass 2)**: Both admin sites now use
+  `subtle::ConstantTimeEq::ct_eq` with empty-string fallback for
+  missing header. 11 admin-token tests still green.
+
+### ~~38. `normalize_workspace_relative_path` does not strip `..`~~ — CLOSED in hardening pass 3 (`0714dbf`)
+- **Origin**: REVIEW §1/G
+- **Severity**: **Medium**
+- **What**: The helper at `sandbox/mod.rs:585` stripped only
+  `/workspace/` and leading `/` — `..` segments passed through
+  unchanged. Callers (`read_workspace_file`, `write_workspace_file`)
+  joined the result to `workspace_host_path`, enabling traversal
+  outside the bind-mount if filename validators were ever bypassed.
+- **Resolution (hardening pass 3)**: Signature changed to
+  `Result<&str, SandboxError>` rejecting any `Component::ParentDir`
+  and any null byte. Two callers propagate. New regression test in
+  `sandbox/tests.rs`. Defense-in-depth — DEBT #36 closes the
+  primary `target_filename` path; this closes the residual sandbox
+  helper path.
+
+### 39. WS `task_pause/resume/cancel` use `session_id`, spec says `task_id`
+- **Origin**: REVIEW §3 cross-finding 4
+- **Severity**: **Medium** (functional gap, not security)
+- **What**: Architecture §4 lines 853–855 specify `{cmd:"task_pause",
+  task_id, durable?}` etc. Impl at `ws.rs:65-75` uses `session_id`
+  (Phase 1 carry-over from story 1.17). HTTP siblings at
+  `lib.rs:1294-1302` correctly use `task_id`. Functionally identical
+  for single-session tasks; diverges for multi-session pause-resume
+  cycles.
+- **Pay down**: Either reconcile the WS shape (breaking change for
+  any current clients) or update architecture §4 to document the
+  divergence. Phase 3 warm-up scope.
+
+### 40. Five spec'd HTTP routes missing or substituted
+- **Origin**: REVIEW §3 cross-finding 6
+- **Severity**: **Medium**
+- **What**: Architecture §4 promises `GET /v1/projects/:id` (missing),
+  `PATCH /v1/projects/:id` (substituted by one-way
+  `POST /v1/projects/:id/archive` — no rename / un-archive flow),
+  `GET /v1/tasks/:id/notifications` (missing),
+  `GET /v1/tasks/:id/intake` (missing),
+  `GET /v1/tasks/:id/deliveries` (missing),
+  `GET /v1/notify/config` (missing). The FE doesn't currently need
+  them, but the externally-visible API surface is silently smaller
+  than the spec.
+- **Pay down**: Phase 3 warm-up — either ship the routes (each is
+  ≤ 30 lines of handler + store reads) or update architecture §4 to
+  shrink to the actual surface.
+
+### ~~41. `mark_delivered` lies + `rendered_content_path` doc lies~~ — CLOSED in hardening pass 4 (`cbb7b77`)
+- **Origin**: REVIEW §4
+- **Severity**: **Low**
+- **What**: `DeliverableStore::mark_delivered` was renamed-needed
+  since DEBT #11 closed in story 2.5 — the body is a `SELECT 1`
+  existence probe, not a mark. Separately, `Deliverable.rendered_content_path`
+  doc claimed "sandbox-relative" while story 2.26 / DEBT #32 made the
+  field absolute.
+- **Resolution (hardening pass 4)**: Renamed to `assert_exists` (one
+  caller in `delivery/router.rs`, one test rename). Doc-comment on
+  the field now describes the absolute-path semantics + cross-refs
+  the canonicalize-on-persist site.
+
+### ~~42. `.env.example` missing every Phase 2 env var~~ — CLOSED in hardening pass 4 (`cbb7b77`)
+- **Origin**: REVIEW §2 "Env-var knob audit"
+- **Severity**: **Low**
+- **What**: 18+ vars read in production (`SEASONED_HAND_INTAKE_TOKEN`,
+  IMAP_*, SMTP_*, EMAIL_*, INTAKE_EMAIL_ALLOWED_SENDERS,
+  WEBHOOK_DELIVERY_ALLOWLIST, NTFY_*, SANDBOX_TTL_*,
+  SANDBOX_CLEANUP_INTERVAL_SEC, SANDBOX_SKIP_RENDERER_INSTALL,
+  CLI_INTAKE_MAX_WAIT_SECS, VERIFIER_MAX_CONCURRENCY,
+  NARRATOR_PROMPT_PATH, SEASONED_HAND_ADMIN_TOKEN, …) but none in
+  `.env.example`. Operators had to read architecture.md §9.
+- **Resolution (hardening pass 4)**: Added Phase 2 sections to
+  `.env.example` with all vars + sane defaults + 1-line purpose +
+  DEBT references.
+
+### 43. WS `briefing_confirm` has no auth (Phase 0 DEBT #7 widening)
+- **Origin**: REVIEW §1/H
+- **Severity**: **Medium**
+- **What**: Phase 0 DEBT #7 (no WS auth) is the umbrella. Phase 2
+  added `{cmd:"briefing_confirm", task_id, action, edits?}` which
+  routes by attacker-controlled `task_id`. At `HOST=0.0.0.0` bind,
+  anyone reaching `/ws` can confirm/edit/cancel any in-flight
+  briefing by id. The HTTP sibling at `/v1/briefings/:id/confirm` IS
+  loopback-gated — inconsistent. task_id is a UUID so practical
+  exploit needs discovery.
+- **Pay down**: Phase 5 multi-user WS auth (DEBT #7) closes the
+  umbrella. Until then, operators on non-loopback binds should
+  firewall the WS port.
+
+### 44. Story 2.5 `RouteOutcome<T>` requirement unmet on channels routes
+- **Origin**: REVIEW §3 stories 2.1-2.13 cross-finding 1
+- **Severity**: **Low**
+- **What**: Story 2.5 spec explicitly required the channels HTTP
+  routes (`GET /v1/channels`, `GET /v1/channels/:name/health`,
+  `POST /v1/channels/:name/test`) to use the Phase 1 simplicity-pass
+  `RouteOutcome<T>` wrapper. Impl uses plain
+  `Json<...>` / `(StatusCode, Json<ApiError>)` tuples.
+- **Pay down**: One-story migration to `RouteOutcome` for the 3
+  channel handlers; bundle with the missing routes from DEBT #40.
+
+### 45. Story 2.12 missing 2 `#[ignore]` live-Redis worker tests
+- **Origin**: REVIEW §3 stories 2.1-2.13 cross-finding 8
+- **Severity**: **Low**
+- **What**: Story 2.12 spec listed `notify_worker_consumes_and_dispatches`
+  and `notify_worker_xacks_on_dispatch_error` as `#[ignore]` live-Redis
+  tests. Neither exists. The XREADGROUP loop is covered indirectly
+  via in-memory `handle_request_*` tests.
+- **Pay down**: Add the two tests when a live-Redis CI surface lands
+  (Phase 3 may exercise this anyway via learning-pipeline integration
+  tests).
+
+### 46. EmailChannel reads absolute `rendered_content_path` without workspace-containment check
+- **Origin**: REVIEW §1/D
+- **Severity**: **Medium**
+- **What**: After DEBT #32 close, `task_deliver` resolves to absolute
+  via `handle.workspace_host_path.join(...)`. `EmailChannel::deliver`
+  trusts the DB row without re-asserting that it canonicalizes under
+  the workspace root. A DB tamper (or a future `task_deliver` change
+  that forgets the resolve) could read `/etc/passwd` and email it.
+  DEBT #36 + #38 close the path-injection vectors that would write
+  such a row today; this is the residual read-side check.
+- **Pay down**: Phase 5 multi-user must canonicalize + assert the
+  path lives under the per-session workspace root before
+  `tokio::fs::read`.
+
+### 47. DNS-rebinding TOCTOU between SSRF guard and reqwest send
+- **Origin**: REVIEW §1/A
+- **Severity**: **Low**
+- **What**: `ssrf::assert_public_address(...)` resolves the URL's
+  host and iterates the result. `self.http.post(url).send()` then
+  re-resolves at send time via reqwest's own DNS path. An attacker
+  controlling DNS for the host can return a public IP to the guard
+  and a private IP to reqwest. Single-operator + operator-supplied
+  URLs → effectively safe today.
+- **Pay down**: Phase 5 hardening — resolve once and pin via a
+  custom reqwest resolver that uses the verified IP.
 
 ---
 
