@@ -39,6 +39,10 @@ pub use prompt::build_messages;
 use recite::{ReciteScheduler, recite_tick};
 use stuck::{StuckAction, StuckTracker};
 
+/// One agent-loop invocation: which session, what the user asked, and
+/// the per-task budgets. Built once by the runner's spawner; the loop
+/// stores it in `run_config` so resume after pause can re-establish the
+/// same shape.
 #[derive(Debug, Clone)]
 pub struct RunRequest {
     pub session_id: String,
@@ -47,6 +51,9 @@ pub struct RunRequest {
     pub cost_cap_cents: Option<u32>,
 }
 
+/// Terminal outcome of one agent-loop run. `completed = true` means the
+/// loop reached an `idle` tool call (clean finish); `false` means
+/// step-cap / cost-cap / cancellation / stuck-termination.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunResult {
     pub session_id: String,
@@ -75,6 +82,11 @@ pub enum AgentError {
     Internal(String),
 }
 
+/// The ReAct agent loop runtime (Phase 0 story 0.14, widened across
+/// Phases 1 and 2). One per server process; per-session state lives in
+/// `run_config`, `cancel_tokens`, and the underlying DB. `run` is the
+/// fresh-start entrypoint; `resume` re-enters after a pause-window or
+/// briefing-confirm gate.
 pub struct AgentRunner {
     llm: LlmClient,
     dispatcher: Arc<ToolDispatcher>,
@@ -95,6 +107,9 @@ pub struct AgentRunner {
     cancel_tokens: Arc<DashMap<String, CancellationToken>>,
 }
 
+/// Builder bag for [`AgentRunner::new`]. Lets `AppState` (production)
+/// and test harnesses (which inject mock sandbox / LLM / event stores)
+/// assemble the runner with the same call shape.
 pub struct AgentRunnerDeps {
     pub llm: LlmClient,
     pub dispatcher: Arc<ToolDispatcher>,
