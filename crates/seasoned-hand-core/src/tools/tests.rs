@@ -45,6 +45,7 @@ async fn ctx() -> (super::ToolContext, Arc<SqliteEventStore>) {
         plan_manager,
         checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
         checkpoints,
+        matcher_mode: crate::matcher::MatcherMode::Production,
     };
     (ctx, store)
 }
@@ -379,6 +380,12 @@ async fn playbook_search_returns_project_scoped_hits() {
     let rows = out.output.as_array().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["playbook_id"], "pb-1");
+    let events = cx.events.query("s1", EventQuery::default()).await.unwrap();
+    assert!(events.iter().any(|e| {
+        e.event_type == crate::events::EventType::Skill
+            && e.data.get("kind").and_then(Value::as_str) == Some("match")
+            && e.data.get("playbook_id").and_then(Value::as_str) == Some("pb-1")
+    }));
 }
 
 #[tokio::test]

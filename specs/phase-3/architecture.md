@@ -441,8 +441,10 @@ No new platform components beyond immutable stack.
   `SQLITE_ENABLE_FTS5` is on by default.)
 - Routing remains existing Bifrost + `SlotRouter`.
 - No new service dependency required by architecture.
-- AGENTS.md §9 net-new-Rust-deps note: Phase 3 adds zero new crates to
-  `Cargo.toml`; the existing rusqlite + refinery + serde stack suffices.
+- AGENTS.md §9 net-new-Rust-deps note: Phase 3 adds `unicode-normalization 0.1`
+  in `seasoned-hand-core` for F-3.4's NFD normalizer (see
+  `/specs/01-architecture/ARCHITECTURE.md` §1 Phase 3 learning addendum);
+  existing rusqlite + refinery + serde stack otherwise remains unchanged.
 
 ## 6. Interactions with existing components
 

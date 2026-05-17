@@ -500,6 +500,7 @@ impl seasoned_hand_core::verifier::gate::RollbackHandler for ProductionRollbackH
             plan_manager: self.state.plan_manager.clone(),
             checkpoint_labels: self.state.checkpoint_labels.clone(),
             checkpoints: self.state.checkpoints.clone(),
+            matcher_mode: seasoned_hand_core::matcher::MatcherMode::Production,
         };
         let out = self
             .state

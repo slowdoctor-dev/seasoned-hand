@@ -47,6 +47,7 @@ async fn fixture() -> (ToolDispatcher, ToolContext) {
         plan_manager,
         checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
         checkpoints,
+        matcher_mode: crate::matcher::MatcherMode::Production,
     };
     let dispatcher = ToolDispatcher::new(register_builtin_tools());
     (dispatcher, ctx)
@@ -121,6 +122,7 @@ async fn fixture_with_hook() -> (ToolDispatcher, ToolContext, Arc<SqliteEventSto
         plan_manager,
         checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
         checkpoints,
+        matcher_mode: crate::matcher::MatcherMode::Production,
     };
     let dispatcher = ToolDispatcher::new(register_builtin_tools())
         .with_hook(Arc::new(hooks::EventEmittingHook::new(store.clone())));
@@ -344,6 +346,7 @@ async fn different_content_via_shell_exec_triggers() {
         plan_manager,
         checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
         checkpoints,
+        matcher_mode: crate::matcher::MatcherMode::Production,
     };
 
     let shared = Arc::new(Mutex::new("v1".to_string()));

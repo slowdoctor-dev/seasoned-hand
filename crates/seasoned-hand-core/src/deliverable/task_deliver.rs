@@ -824,6 +824,7 @@ mod tests {
             plan_manager,
             checkpoint_labels: Arc::new(crate::checkpoint::CheckpointLabelBuffer::new()),
             checkpoints: Arc::new(crate::checkpoint::CheckpointStore::new(pool)),
+            matcher_mode: crate::matcher::MatcherMode::Production,
         };
         (
             tool,

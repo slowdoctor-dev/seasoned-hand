@@ -14,6 +14,7 @@ pub mod dispatch;
 pub mod events;
 pub mod intake;
 pub mod llm;
+pub mod matcher;
 pub mod notify;
 pub mod plan;
 pub mod project;

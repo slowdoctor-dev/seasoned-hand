@@ -56,6 +56,7 @@ async fn fixture() -> Fixture {
         plan_manager: plan_manager.clone(),
         checkpoint_labels: Arc::new(CheckpointLabelBuffer::new()),
         checkpoints,
+        matcher_mode: crate::matcher::MatcherMode::Production,
     };
     Fixture {
         ctx,

@@ -72,6 +72,7 @@ async fn fixture_with_mock(mock: MockServer) -> Fixture {
         plan_manager,
         checkpoint_labels: Arc::new(CheckpointLabelBuffer::new()),
         checkpoints,
+        matcher_mode: crate::matcher::MatcherMode::Production,
     };
     let hook = PostBrowserActionHook::new(events.clone());
     Fixture {

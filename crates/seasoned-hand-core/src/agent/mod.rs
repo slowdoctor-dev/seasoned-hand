@@ -392,6 +392,7 @@ impl AgentRunner {
                 plan_manager: self.plan_manager.clone(),
                 checkpoint_labels: self.checkpoint_labels.clone(),
                 checkpoints: self.checkpoints.clone(),
+                matcher_mode: crate::matcher::MatcherMode::Production,
             };
             let final_notify = call.function.name == "message_notify_user"
                 && args.get("final").and_then(Value::as_bool).unwrap_or(false);

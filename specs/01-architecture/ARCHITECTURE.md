@@ -127,6 +127,8 @@ tracks "where we are in the task" and prevents goal drift. See ADR-010.
 > per-trigger routing).
 > Sandbox-side renderer toolchain: Pandoc + python-pptx + openpyxl
 > (installed at session-create time per phase-2/DEBT.md #2).
+> Phase 3 learning addendum: `unicode-normalization 0.1`
+> (NFD normalization for matcher, F-3.4 / story 3.5).
 
 ---
 

@@ -14,6 +14,7 @@ use thiserror::Error;
 use crate::checkpoint::{CheckpointLabelBuffer, CheckpointStore};
 use crate::dispatch::mask::AgentMode;
 use crate::events::sqlite::SqliteEventStore;
+use crate::matcher::MatcherMode;
 use crate::plan::PlanManager;
 use crate::sandbox::SandboxClient;
 use crate::search::SearchClient;
@@ -68,6 +69,7 @@ pub struct ToolContext {
     /// target row, look up sibling rows, and stamp `rolled_back_at` /
     /// `rolled_back_by` after a successful `git revert`.
     pub checkpoints: Arc<CheckpointStore>,
+    pub matcher_mode: MatcherMode,
 }
 
 #[async_trait]

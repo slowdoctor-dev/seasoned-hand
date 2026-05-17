@@ -1776,6 +1776,7 @@ async fn post_checkpoint_rollback_handler(
         plan_manager: state.plan_manager.clone(),
         checkpoint_labels: state.checkpoint_labels.clone(),
         checkpoints: state.checkpoints.clone(),
+        matcher_mode: seasoned_hand_core::matcher::MatcherMode::Production,
     };
     let out = state
         .dispatcher

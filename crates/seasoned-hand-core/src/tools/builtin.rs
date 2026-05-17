@@ -14,6 +14,7 @@ use super::{Tool, ToolContext, ToolError, ToolErrorPayload, ToolOutput};
 use crate::agent::init::feature_list::{FeatureList, FeatureStatus};
 use crate::agent::init::progress;
 use crate::events::{EventStore, EventType, NewEvent};
+use crate::matcher::{MatchRequest, MatcherMode, match_playbooks};
 use crate::plan::{Phase, PhaseStatus, PlanMutationSource};
 
 pub(super) async fn sandbox_post_raw(url: &str, body: Value) -> Result<ToolOutput, ToolError> {
@@ -368,13 +369,27 @@ impl Tool for PlaybookSearch {
         obj_schema(
             json!({
                 "query": { "type": "string" },
-                "limit": { "type": "integer", "minimum": 0 }
+                "limit": { "type": "integer", "minimum": 0 },
+                "mode": { "type": "string", "enum": ["gate", "production"] },
+                "fixture_id": { "type": "string" }
             }),
             &["query"],
         )
     }
     async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let query = require_str(&args, "query")?;
+        let fixture_id = args
+            .get("fixture_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let mode = args
+            .get("mode")
+            .and_then(Value::as_str)
+            .map(|value| match value {
+                "gate" => MatcherMode::Gate,
+                _ => MatcherMode::Production,
+            })
+            .unwrap_or(ctx.matcher_mode);
         let raw_limit = args.get("limit").and_then(Value::as_i64).unwrap_or(3);
         if raw_limit < 0 {
             return Err(ToolError::InvalidArgs("limit must be >= 0".into()));
@@ -389,70 +404,57 @@ impl Tool for PlaybookSearch {
             });
         }
 
-        let normalized = query.split_whitespace().collect::<Vec<_>>().join(" ");
-        if normalized.is_empty() {
-            return Ok(ToolOutput {
-                ok: true,
-                output: json!([]),
-                file_ref: None,
-                error: None,
-            });
-        }
-        let fts_query = normalized
-            .split(' ')
-            .filter(|t| !t.is_empty())
-            .map(|t| format!("{t}*"))
-            .collect::<Vec<_>>()
-            .join(" ");
-
         let session_id = ctx.session_id.clone();
+        let mode_for_events = mode;
+        let event_store = ctx.events.clone();
         let hits = ctx
             .events
             .with_conn(move |conn| -> rusqlite::Result<Value> {
-                let project_id: Option<String> = conn
-                    .query_row(
-                        "SELECT t.project_id
-                         FROM sessions s
-                         JOIN tasks t ON t.id = s.task_id
-                         WHERE s.id = ?",
-                        [session_id],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-
-                let Some(project_id) = project_id else {
-                    return Ok(json!([]));
-                };
-
-                let mut stmt = conn.prepare(
-                    "SELECT p.id, p.title, substr(p.content, 1, 512), -bm25(playbooks_fts) AS score
-                     FROM playbooks_fts
-                     JOIN playbooks p ON p.rowid = playbooks_fts.rowid
-                     JOIN tasks src ON src.id = p.source_task_id
-                     WHERE playbooks_fts MATCH ?
-                       AND src.project_id = ?
-                       AND p.status = 'active'
-                     ORDER BY score DESC, p.id ASC
-                     LIMIT ?",
+                let matched = match_playbooks(
+                    conn,
+                    &MatchRequest {
+                        session_id,
+                        fixture_id,
+                        brief: query,
+                        mode,
+                        limit,
+                    },
                 )?;
-
-                let rows = stmt.query_map(rusqlite::params![fts_query, project_id, limit as i64], |r| {
-                    Ok(json!({
-                        "playbook_id": r.get::<_, String>(0)?,
-                        "title": r.get::<_, String>(1)?,
-                        "content_excerpt": r.get::<_, String>(2)?,
-                        "match_score": r.get::<_, f64>(3)?,
-                    }))
-                })?;
-
-                let mut out = Vec::new();
-                for row in rows {
-                    out.push(row?);
-                }
-                Ok(Value::Array(out))
+                Ok(Value::Array(
+                    matched
+                        .into_iter()
+                        .map(|row| {
+                            json!({
+                                "playbook_id": row.playbook_id,
+                                "title": row.title,
+                                "content_excerpt": row.content_excerpt,
+                                "match_score": row.match_score,
+                                "matcher_mode": row.matcher_mode.as_str(),
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                ))
             })
             .await
             .map_err(|e| ToolError::Backend(e.to_string()))?;
+
+        if let Some(rows) = hits.as_array() {
+            for row in rows {
+                let _ = event_store
+                    .append(NewEvent {
+                        session_id: ctx.session_id.clone(),
+                        event_type: EventType::Skill,
+                        source: "playbook_matcher".into(),
+                        data: json!({
+                            "kind": "match",
+                            "playbook_id": row.get("playbook_id").cloned().unwrap_or(Value::Null),
+                            "matcher_mode": mode_for_events.as_str(),
+                            "match_score": row.get("match_score").cloned().unwrap_or(Value::Null),
+                        }),
+                    })
+                    .await;
+            }
+        }
 
         Ok(ToolOutput {
             ok: true,
