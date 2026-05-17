@@ -2,6 +2,7 @@ pub mod brief;
 pub mod channel;
 pub mod inbox;
 pub mod init;
+pub mod playbook;
 pub mod project;
 pub mod server;
 pub mod sop;

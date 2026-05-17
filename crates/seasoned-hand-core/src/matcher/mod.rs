@@ -379,4 +379,70 @@ mod matcher {
         assert_eq!(out[2].playbook_id, "pb-c");
         assert!(out[0].match_score >= 1.0);
     }
+
+    #[tokio::test]
+    async fn exclude_archived() {
+        let pool = db::open(":memory:").await.unwrap();
+        pool.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO sessions (id, created_at, updated_at, state)
+                 VALUES ('s1', 1, 1, 'RUNNING')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, status, title, created_at, updated_at)
+                 VALUES ('p1', 'active', 'P1', 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tasks (id, project_id, status, title, created_at, updated_at)
+                 VALUES ('t1', 'p1', 'Running', 'Task 1', 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute("UPDATE sessions SET task_id = 't1' WHERE id = 's1'", [])
+                .unwrap();
+
+            conn.execute(
+                "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id,
+                 created_at, updated_at, trigger_keywords, content, success_count, failure_count, avg_duration_ms,
+                 avg_tool_calls, status, version)
+                 VALUES ('pb-active', NULL, 'Deploy active', '', 1, 't1', 1, 1,
+                 '[\"deploy\"]', 'deploy checklist', 1, 0, NULL, NULL, 'active', 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id,
+                 created_at, updated_at, trigger_keywords, content, success_count, failure_count, avg_duration_ms,
+                 avg_tool_calls, status, version)
+                 VALUES ('pb-archived', NULL, 'Deploy old', '', 1, 't1', 1, 1,
+                 '[\"deploy\"]', 'deploy checklist old', 10, 0, NULL, NULL, 'archived', 1)",
+                [],
+            )
+            .unwrap();
+        })
+        .await;
+
+        let out = pool
+            .with_conn(|conn| {
+                match_playbooks(
+                    conn,
+                    &MatchRequest {
+                        session_id: "s1".into(),
+                        fixture_id: None,
+                        brief: "deploy".into(),
+                        mode: MatcherMode::Production,
+                        limit: 3,
+                    },
+                )
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].playbook_id, "pb-active");
+    }
 }

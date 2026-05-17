@@ -68,6 +68,9 @@ enum Commands {
     /// SOP lifecycle — `seasoned-hand sop <create|edit|list|show|delete>`.
     #[command(subcommand)]
     Sop(commands::sop::SopCmd),
+    /// Playbook lifecycle — `seasoned-hand playbook <list|show|delete>`.
+    #[command(subcommand)]
+    Playbook(commands::playbook::PlaybookCmd),
     /// Bootstrap `~/.seasoned-hand/` (config + deliverables dirs).
     Init,
     /// Exec the `seasoned-hand-server` binary (assumes it's on PATH —
@@ -98,6 +101,7 @@ async fn main() -> ExitCode {
         Commands::Inbox(cmd) => commands::inbox::run(cmd, &client, cli.json).await,
         Commands::Channel(cmd) => commands::channel::run(cmd, &client, cli.json).await,
         Commands::Sop(cmd) => commands::sop::run(cmd, cli.json).await,
+        Commands::Playbook(cmd) => commands::playbook::run(cmd, cli.json).await,
         Commands::Init => commands::init::run(cli.json),
         Commands::Server { args } => {
             // exec-replaces the process on Unix (function returns Err
