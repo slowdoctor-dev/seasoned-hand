@@ -2,7 +2,7 @@
 
 > **Status**: ready
 > **Estimated**: 1.5 hours
-> **Dependencies**: 3.2, 3.7
+> **Dependencies**: 3.2, 3.5
 > **Phase**: 3
 > **Type**: cli
 

@@ -48,4 +48,7 @@ cargo test -p seasoned-hand-core session_search::all_event_types_queryable
 
 - requirements: F-3.16, NFR-3.6
 - architecture: §3, §4
-- debt closure: partial paydown of Phase 2 DEBT #61 (index readiness for all variants)
+- debt context: Phase 2 DEBT #61 — story 3.7 closes the `Skill` writer portion;
+  `Knowledge` / `Datasource` writers remain Phase 4+. This story makes the search-index
+  schema ready for those future writers (no migration required at Phase 4 emit time),
+  but does NOT itself close any portion of DEBT #61.

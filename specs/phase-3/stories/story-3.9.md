@@ -24,6 +24,8 @@ Implement required SOP CLI authoring and inspection commands in Phase 3.
 
 - Frontend SOP editor.
 - New LLM-callable SOP write tool.
+- Glossary CLI authoring surface (F-3.21 explicitly defers `seasoned-hand glossary` to
+  Phase 4+; operator seeds glossary terms via SQL in Phase 3).
 
 ---
 
