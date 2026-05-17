@@ -132,10 +132,12 @@
     3. phone number shapes (E.164 + common locale formats),
     4. IPv4/IPv6 literals,
     5. bearer/API-key-like header patterns.
-  Every redaction occurrence emits `Misc{kind:"playbook_pii_redacted", layer,
-  count, categories}` for observability (symmetric with F-3.13 rejection event),
-  where `layer ∈ {"llm", "deterministic"}` (the `quality_floor` value from F-3.13
-  does not apply to redaction).
+  Every redaction occurrence emits `Misc{kind:"playbook_extraction_pii_redacted",
+  layer, count, categories}` for observability (symmetric with F-3.13 rejection
+  event), where `layer ∈ {"llm", "deterministic"}` (the `quality_floor` value from
+  F-3.13 does not apply to redaction). The `playbook_extraction_*` prefix is
+  shared by all extraction-pipeline events (F-3.7/F-3.13/F-3.18 + NFR-3.1/3.4/3.5)
+  so operators can grep them as a set.
 - **F-3.15 (activation policy)**: Auto-extracted playbooks are immediately injectable
   (no quarantine state machine in Phase 3), consistent with ADR-007 Alternative C
   rejection and Phase 3 scope boundaries.
