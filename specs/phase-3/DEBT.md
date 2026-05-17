@@ -79,3 +79,12 @@ _To be populated by the BMAD Architect pass on
 - **What**: Session-search summary path degrades to raw hits on LLM failure; richer retry/backoff policy not included.
 - **Why now**: Keeps Phase 3 deterministic and non-blocking while preserving operability.
 - **Pay down**: Phase 4 operations hardening pass.
+
+5. **#76 (L)** FTS5 production-matcher weights are seed values
+- **What**: Architecture §11 pins `5.0*kw_hits + 3.0*title_hits + 1.0*content_hits`
+  plus a 60-day linear recency decay as initial scoring weights. None are derived from
+  dogfood data.
+- **Why now**: Phase 3 has no telemetry to tune from; seed values must be pinned for
+  deterministic CI.
+- **Pay down**: Phase 4 Curator retunes from `Skill{kind:"match"}` telemetry once a
+  match corpus exists.
