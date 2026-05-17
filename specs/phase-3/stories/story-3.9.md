@@ -1,6 +1,6 @@
 # Story 3.9 — CLI SOP lifecycle surface
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 3.2
 > **Phase**: 3
