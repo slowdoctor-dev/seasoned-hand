@@ -1,6 +1,6 @@
 # Story 3.10 — CLI playbook lifecycle surface
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 1.5 hours
 > **Dependencies**: 3.2, 3.5
 > **Phase**: 3
