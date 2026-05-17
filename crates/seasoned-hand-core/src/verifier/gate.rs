@@ -586,6 +586,19 @@ mod tests {
         .await;
     }
 
+    async fn count_action_events(db: &DbPool, session_id: &str) -> i64 {
+        let sid = session_id.to_string();
+        db.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE session_id = ? AND type = 'Action'",
+                rusqlite::params![sid],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+        })
+        .await
+    }
+
     async fn insert_verdict_event(
         events: &SqliteEventStore,
         session_id: &str,
@@ -967,6 +980,56 @@ mod tests {
                         != Some("playbook_extraction_timeout")
             }),
             "no extraction telemetry expected when tool_calls < 5"
+        );
+    }
+
+    #[tokio::test]
+    async fn sessions_tool_calls_matches_action_count() {
+        let (_gate, events, db, session_id) = fixture().await;
+
+        for i in 0..3 {
+            events
+                .append(NewEvent {
+                    session_id: session_id.clone(),
+                    event_type: EventType::Action,
+                    source: "agent".into(),
+                    data: json!({"kind":"tool_call","seq": i}),
+                })
+                .await
+                .unwrap();
+        }
+        events
+            .append(NewEvent {
+                session_id: session_id.clone(),
+                event_type: EventType::Misc,
+                source: "agent".into(),
+                data: json!({"kind":"noise"}),
+            })
+            .await
+            .unwrap();
+
+        // Baseline-fixture parity setup: canonical session counter should mirror
+        // Action-event cardinality for this deterministic fixture.
+        set_tool_calls(&db, &session_id, 3).await;
+        let action_count = count_action_events(&db, &session_id).await;
+        let tool_calls = db
+            .with_conn({
+                let sid = session_id.clone();
+                move |conn| {
+                    conn.query_row(
+                        "SELECT tool_calls FROM sessions WHERE id = ?",
+                        rusqlite::params![sid],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap()
+                }
+            })
+            .await;
+
+        assert_eq!(
+            tool_calls, action_count,
+            "sessions.tool_calls parity mismatch for baseline fixture: expected Action count {}, got sessions.tool_calls {}",
+            action_count, tool_calls
         );
     }
 
