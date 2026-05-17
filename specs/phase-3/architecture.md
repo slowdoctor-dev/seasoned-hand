@@ -114,6 +114,9 @@ ALTER TABLE playbooks ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
 -- for Phase 4 Curator. CHECK constraint omitted to match ARCH §2.5's prose-only
 -- spec; production matcher WHERE clause filters `status = 'active'`.
 ALTER TABLE playbooks ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+-- version: extraction always writes 1. Curator (Phase 4) increments on operator-
+-- triggered edits (`playbook edit` CLI surface — Phase 4+, not in Phase 3).
+-- Phase 3's `playbook delete` is soft-delete and does NOT bump version.
 
 -- V009 content_path is retained as a reserved-for-Phase-4 column. Phase 3 writes
 -- empty string '' (V009's NOT NULL constraint is inherited; no schema dance to drop
@@ -251,27 +254,45 @@ Pinned NFR budgets:
 - NFR-3.5 extraction output cap: `24_576 bytes`.
 
 Quality-floor field (F-3.18): `playbooks.content` (single-field choice per F-3.18's
-"e.g. `procedure_steps` or `content`" allowance). Extraction-pipeline order is fixed:
+"e.g. `procedure_steps` or `content`" allowance). Extraction-pipeline order is fixed
+(every step that skips emits exactly one `playbook_extraction_*` Misc event before
+returning, so the audit trail is complete by event-stream replay alone):
 
-1. LLM returns structured output `{title, trigger_keywords[], overview, steps[]}`
-   (F-3.14 layer-1 LLM abstraction applies here).
-2. Deterministic PII redaction (F-3.14 layer 2) rewrites `overview` + `steps[]` in place.
-3. Deterministic adversarial scan (F-3.13) — reject + emit on hit; skip write.
-4. Quality-floor structural check on the redacted pre-render `steps[]` structure
+0. **Build input + cap (NFR-3.4)** — compose the extraction prompt from task context +
+   verifier verdict + provenance manifest excerpt. Apply 8_192-token input cap; emit
+   `playbook_extraction_input_truncated{original_tokens, capped_tokens}` if the cap
+   fires. Continue with the truncated input (this step does NOT skip).
+1. **LLM call (F-3.13 layer 1 + F-3.14 layer 1)** — the extraction system prompt
+   bakes in refusal guidance (F-3.13: "do not draft playbooks that contain shell
+   substitutions / external IPs / role-reversal markers / large opaque blobs") and
+   abstraction guidance (F-3.14: "generalize concrete identifiers — no specific
+   URLs, paths, emails, IPs"). Output is structured JSON
+   `{title, trigger_keywords[], overview, steps[]}`. If the LLM refuses
+   (empty/null structure, refusal marker string, or `parse_output` fail) emit
+   `playbook_extraction_rejected{layer:"llm",reason}` and skip.
+2. **Deterministic PII redaction (F-3.14 layer 2)** — rewrites `overview` + `steps[]`
+   in place; emit `playbook_extraction_pii_redacted{layer:"deterministic", count,
+   categories}` if any redactions fired. Continues (no skip).
+3. **Deterministic adversarial scan (F-3.13 layer 2)** — emit
+   `playbook_extraction_rejected{layer:"deterministic",reason}` on hit; skip.
+4. **Quality-floor structural check** on the redacted pre-render `steps[]` structure
    (NOT a post-render regex parse of `content`):
    - `steps.len() >= 3` (at least 3 non-trivial ordered steps; "non-trivial" = each step
      is at least one non-whitespace word after redaction).
    - `steps.join("\n").len() >= 200` UTF-8 characters after deterministic redaction.
    - Floor fail → emit `playbook_extraction_rejected{layer:"quality_floor",reason}`;
-     skip write.
-5. Render: `content = overview + "\n\n## Procedure\n" + numbered(steps)` so FTS5
+     skip.
+5. **Render** — `content = overview + "\n\n## Procedure\n" + numbered(steps)` so FTS5
    indexing covers BOTH narrative and step text.
-6. NFR-3.5 cap (24_576 bytes) applies to the rendered `content`. If the cap fires AND
-   post-cap content drops below the quality floor (rare; only triggers when overview +
-   steps render exceeds 24 KB), emit BOTH `playbook_extraction_output_capped` AND
+6. **NFR-3.5 cap (24_576 bytes)** — applies to the rendered `content`; emit
+   `playbook_extraction_output_capped{original_bytes, capped_bytes}` if fired. If
+   post-cap content drops below the quality floor (rare; only triggers when render
+   exceeds 24 KB), emit BOTH `playbook_extraction_output_capped` AND
    `playbook_extraction_rejected{layer:"quality_floor"}` so the audit trail captures
-   the actual failure chain (per iteration-5's `ExtractionOutcome::Skipped(OutputCapped)`
-   variant in §4).
+   the actual failure chain (per iter-5 `ExtractionOutcome::Skipped(OutputCapped)`).
+7. **Write** — `INSERT INTO playbooks(..., status='active', version=1, ...)`. The
+   §3 FTS5 maintenance triggers index the row in `playbooks_fts` automatically.
+   Return `ExtractionOutcome::Written(playbook_id)`.
 
 ## 4. API surface
 
@@ -352,7 +373,9 @@ Tool un-stubs — tool input / output shapes (LLM-callable surface):
 - `playbook_search({query: string, limit?: number = 3})` →
   `[{playbook_id, title, content_excerpt (<= 512 bytes), match_score}, ...]`.
   Project-scoped to the calling session's task per F-3.12; archived rows excluded per
-  §2.2 matcher contract. Limit clamped to `<= 3` (consistent with F-3.11 injection cap).
+  §2.2 matcher contract. `limit` is silently clamped to `min(limit, 3)` (consistent
+  with F-3.11 injection cap); `limit=0` returns an empty array; negative values are a
+  schema validation error before SQL.
 - `glossary_lookup({term: string})` →
   `{term, definition, category} OR null`. Exact term lookup; FTS5-backed fallback over
   `term` + `definition` if exact misses (so "headcount" finds "head count" entry).
@@ -411,12 +434,21 @@ emitted from the injection path, not the extraction pipeline:
 ## 5. External dependencies
 
 No new platform components beyond immutable stack.
-- DB/search remains SQLite + FTS5.
+- DB/search remains SQLite + FTS5. FTS5 is compiled into the SQLite amalgamation
+  that the existing `rusqlite = { features = ["bundled"] }` config ships in
+  `crates/seasoned-hand-{core,cli,server}/Cargo.toml`; no Cargo feature change
+  needed. (Verified against rusqlite 0.31 / libsqlite3-sys bundled SQLite where
+  `SQLITE_ENABLE_FTS5` is on by default.)
 - Routing remains existing Bifrost + `SlotRouter`.
 - No new service dependency required by architecture.
+- AGENTS.md §9 net-new-Rust-deps note: Phase 3 adds zero new crates to
+  `Cargo.toml`; the existing rusqlite + refinery + serde stack suffices.
 
 ## 6. Interactions with existing components
 
+- V010 migration runs at the next refinery boot after deploy (existing `runner.run(...)`
+  call site in `crates/seasoned-hand-core/src/db.rs`); the §10 backfill + FTS5 rebuild
+  are part of V010's `up` SQL so a single migration pass leaves the system consistent.
 - `task_complete` handling adds synchronous extraction call with 60s timeout.
 - Initializer (`agent/init`) gains one-shot playbook prompt-prefix injection.
 - Event append path now also writes the denormalized session-search row for every
