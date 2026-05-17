@@ -194,7 +194,7 @@ Detailed contracts live in `/specs/phase-3/stories/story-3.X.md`.
 | 3.10 | CLI playbook lifecycle surface | 1.5h | 3.2, 3.5 | done |
 | 3.11 | CLI session search with summarized operator view | 2h | 3.8 | done |
 | 3.12 | Regression: sessions tool-call parity guard | 1.5h | 3.1 | done |
-| 3.13 | Regression: production matcher smoke | 1.5h | 3.5 | ready |
+| 3.13 | Regression: production matcher smoke | 1.5h | 3.5 | done |
 | 3.14 | Regression: FTS5 maintenance trigger correctness | 1h | 3.2, 3.8 | ready |
 | 3.15 | Benchmark fixture + gate-mode harness | 2h | 3.2, 3.5, 3.6 | ready |
 | 3.16 | Phase 3 acceptance gate and close-out | 2h | 3.12, 3.13, 3.14, 3.15 | ready |
