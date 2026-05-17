@@ -1,6 +1,6 @@
 # Story 3.4 — Extraction safety filters, redaction, quality floor, and cap events
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 3.3
 > **Phase**: 3
