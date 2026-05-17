@@ -124,6 +124,10 @@ CREATE VIRTUAL TABLE playbooks_fts USING fts5(
   tokenize='unicode61 remove_diacritics 2'
 );
 
+-- sops: no tenant_id column in Phase 3 (single-operator scope per Phase 3/5 boundary
+-- in requirements.md §1). Phase 5 multi-user will add a nullable tenant_id with the
+-- same NULL-then-NOT-NULL pattern V009 used for playbooks; deferred to ADR-013 at
+-- Phase 5 kickoff.
 CREATE TABLE sops (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
@@ -134,6 +138,8 @@ CREATE TABLE sops (
   updated_at INTEGER NOT NULL
 );
 
+-- glossary: no tenant_id in Phase 3 (same Phase 3/5 boundary reasoning as sops).
+-- UNIQUE(term) is global (no per-tenant scoping); Phase 5 may relax to UNIQUE(tenant_id, term).
 CREATE TABLE glossary (
   id TEXT PRIMARY KEY,
   term TEXT NOT NULL UNIQUE,
@@ -199,21 +205,82 @@ numbered(steps)` so FTS5 indexing covers BOTH the narrative and the step text.
 ## 4. API surface
 
 Internal/core APIs:
-- `extract_playbook_sync(task_id, session_id) -> Result<Option<PlaybookDraft>>`
-- `match_playbooks(project_id, brief, mode) -> Vec<MatchedPlaybook>`
-- `inject_playbooks(system_prefix, matches) -> InjectedBlock`
-- `record_playbook_outcome(task_id, verifier_verdict)`
-- `index_event_for_search(event)` and `search_session_events(query, filters, limit)`
+- `extract_playbook_sync(task_id, session_id) -> Result<ExtractionOutcome>` —
+  `ExtractionOutcome ∈ {Written(playbook_id), Skipped(reason)}`. `Written` means the
+  draft passed all gates AND the row was committed; `Skipped` means an extraction-pipeline
+  `Misc` event was emitted and no row was written (used for timeout / error / rejected /
+  output_capped+quality-floor-fail / etc.). The handler must never block task completion.
+- `match_playbooks(project_id, brief, mode: MatcherMode) -> Vec<MatchedPlaybook>` —
+  returns at most the top-3 set after threshold + tie-break (NFR-3.2). Always returns
+  rows in deterministic order so the caller can rely on `[0]` being the top match.
+- `inject_playbooks(system_prefix: &str, matches: &[MatchedPlaybook]) -> InjectedBlock` —
+  pure function over the Initializer's existing system-prompt string; returns the
+  augmented prefix plus the `injected_ids` / `total_bytes` / `truncated` metadata that
+  feeds the `Skill{kind:"injection"}` event.
+- `record_playbook_outcome(task_id, verifier_verdict) -> ()` — reads the task's
+  injection set (per F-3.8 scope, §4 outcome event); filters internally to `pass`/`fail`
+  verdicts (no-op for `error`/`skipped`); updates `success_count`/`failure_count` on
+  each injected playbook AND emits one `Skill{kind:"outcome"}` per injected playbook.
+- `index_event_for_search(event)` — invoked inline from the event-append path inside
+  the SAME SQLite transaction as the event insert (`BEGIN` … `INSERT INTO events` …
+  `INSERT INTO session_search_index` … `COMMIT`). This keeps replay/recovery consistent
+  per the append-only PRINCIPLES #3 contract: no partial state where an event exists
+  without its search row, and no orphan search row pointing at a missing event.
+- `search_session_events(query, filters, limit) -> Vec<EventHit>` — FTS5 over
+  `session_search_fts` with optional `event_type` / `source` / time-range filters.
 
-Tool un-stubs:
-- `sop_read`: returns concrete SOP rows (title/content/version/enforced).
-- `playbook_search`: executes production matcher and returns ranked rows.
-- `glossary_lookup`: exact/FTS-backed lookup over glossary terms.
+Type sketches (PM persona derives field-level stories from these):
+
+```rust
+enum MatcherMode { Gate, Production }
+
+struct MatchedPlaybook {
+  playbook_id: String,
+  project_id: String,           // F-3.12 enforcement (= task.project_id)
+  matcher_mode: MatcherMode,    // copied into Skill{kind:"match"}
+  match_score: f64,             // post-recency, post-weight; threshold `>= 1.0`
+  // ranking-pipeline tie-break inputs (NFR-3.2):
+  success_count: i64,
+  failure_count: i64,
+}
+
+struct InjectedBlock {
+  rendered_prefix: String,      // the augmented system prompt
+  injected_ids: Vec<String>,    // 0..=3 playbook ids actually written into prefix
+  total_bytes: usize,           // after NFR-3.3 cap application
+  truncated: bool,              // true iff NFR-3.3 cap fired
+}
+
+enum ExtractionOutcome {
+  Written(String /* playbook_id */),
+  Skipped(SkipReason),
+}
+enum SkipReason {
+  Timeout, Error, RejectedLlm, RejectedDeterministic, QualityFloor,
+  OutputCapped /* and quality floor failed post-cap */,
+}
+```
+
+Tool un-stubs — tool input / output shapes (LLM-callable surface):
+- `sop_read({id: string} OR {title: string})` →
+  `{id, title, content, version, enforced} OR null`. Exact-match only in Phase 3
+  (FTS5 over SOPs is Phase 4+).
+- `playbook_search({query: string, limit?: number = 3})` →
+  `[{playbook_id, title, content_excerpt (<= 512 bytes), match_score}, ...]`.
+  Project-scoped to the calling session's task per F-3.12; archived rows excluded per
+  §2.2 matcher contract. Limit clamped to `<= 3` (consistent with F-3.11 injection cap).
+- `glossary_lookup({term: string})` →
+  `{term, definition, category} OR null`. Exact term lookup; FTS5-backed fallback over
+  `term` + `definition` if exact misses (so "headcount" finds "head count" entry).
 
 CLI required surfaces:
-- `seasoned-hand sop create|edit|list|show|delete`
-- `seasoned-hand playbook list|show|delete`
-- `seasoned-hand session search <query>` (raw hits + summarized view)
+- `seasoned-hand sop create|edit|list|show|delete` —
+  hard-delete (DELETE row); SOPs are human-authored, audit lives in event-stream
+  Misc events emitted by the CLI.
+- `seasoned-hand playbook list|show|delete` —
+  soft-delete (`UPDATE playbooks SET status='archived'`); preserves the row so the
+  audit / counter history survives.
+- `seasoned-hand session search <query>` (raw hits + summarized view).
 
 Event payload shapes:
 
@@ -379,6 +446,10 @@ SAME PR slice. Intentional doc/schema drift windows are explicitly disallowed in
   - adversarial scan / redaction matchers (F-3.13 / F-3.14)
   - quality-floor validator on extractor's pre-render `steps[]` structure (F-3.18 —
     counts steps, joined-step-length after redaction)
+  - FTS5 score threshold gate: row with computed `score < 1.0` is excluded from
+    the result set even if it tokenized
+  - recency_boost monotonicity: a playbook 10 days old outranks the same playbook
+    re-created 40 days ago (catches days_since_now vs days_since_epoch regressions)
 - Integration
   - sync extraction success/failure/timeout paths
   - production matcher FTS5 smoke (`phase3_production_matcher_smoke`)
@@ -393,7 +464,12 @@ SAME PR slice. Intentional doc/schema drift windows are explicitly disallowed in
     rows (F-3.8 scope)
 - Acceptance (Phase 3 gate — `cargo test phase3_warm_benchmark`)
   - `phase3_warm_benchmark` enforces `sessions.tool_calls <= 0.70 x cold_baseline`
-    (F-3.3 / requirements §4).
+    (F-3.3 / requirements §4). `cold_baseline` is a checked-in integer constant in
+    the test source captured from the `phase2_overnight_default_path` fixture at the
+    Phase 3 kickoff lineage (around `cc7d4f0`); the constant is the authoritative
+    pre-learning baseline so the test is reproducible without re-running the cold
+    fixture in CI. Re-baselining requires a deliberate PR that flips the constant +
+    cites the new lineage SHA.
 - Regression guards (separate from acceptance gate per F-3.6)
   - `sessions_tool_calls_matches_action_count` — parity test validating
     `sessions.tool_calls` wiring integrity against the cold baseline. NOT part of
