@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::agent::AgentRunner;
 use crate::db::DbPool;
 use crate::events::{EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
+use tokio::time::Instant;
 
 /// Story 1.13b: handler called when a `fail+rollback_required` verdict
 /// fires and the opt-in `rollback_on_verifier_fail` flag is true. The
@@ -33,6 +34,27 @@ pub struct VerifierGate {
     /// per phase-1/DEBT.md #3 — even when a handler is attached, the
     /// gate only invokes it when this is true.
     rollback_enabled: bool,
+    extraction: Option<Arc<dyn ExtractionHandler>>,
+}
+
+#[async_trait::async_trait]
+pub trait ExtractionHandler: Send + Sync {
+    async fn extract_sync(&self, session_id: &str) -> Result<(), ExtractionError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct ExtractionError {
+    pub stage: &'static str,
+    pub reason: String,
+}
+
+impl ExtractionError {
+    pub fn new(stage: &'static str, reason: impl Into<String>) -> Self {
+        Self {
+            stage,
+            reason: reason.into(),
+        }
+    }
 }
 
 impl VerifierGate {
@@ -43,6 +65,7 @@ impl VerifierGate {
             runner,
             rollback: None,
             rollback_enabled: false,
+            extraction: None,
         }
     }
 
@@ -54,6 +77,11 @@ impl VerifierGate {
     pub fn with_rollback(mut self, handler: Arc<dyn RollbackHandler>, enabled: bool) -> Self {
         self.rollback = Some(handler);
         self.rollback_enabled = enabled;
+        self
+    }
+
+    pub fn with_extraction(mut self, handler: Arc<dyn ExtractionHandler>) -> Self {
+        self.extraction = Some(handler);
         self
     }
 
@@ -129,6 +157,7 @@ impl VerifierGate {
         let outcome: &str = match trigger {
             "TaskComplete" => match verdict {
                 "pass" => {
+                    self.run_sync_extraction(session_id).await;
                     if let Err(e) = self.set_state(session_id, "FINISHED").await {
                         tracing::warn!(%session_id, error = ?e, "verifier gate failed to set FINISHED state");
                     }
@@ -286,11 +315,91 @@ impl VerifierGate {
         }
         Ok(())
     }
+
+    async fn run_sync_extraction(&self, session_id: &str) {
+        let tool_calls = match self.session_tool_calls(session_id).await {
+            Ok(v) => v,
+            Err(e) => {
+                self.emit_extraction_error(session_id, "prepare_input", e.to_string())
+                    .await;
+                return;
+            }
+        };
+        if tool_calls < 5 {
+            return;
+        }
+
+        let start = Instant::now();
+        let extraction = async {
+            let Some(handler) = &self.extraction else {
+                return Err(ExtractionError::new("llm_call", "extraction_handler_not_configured"));
+            };
+            handler.extract_sync(session_id).await
+        };
+        match tokio::time::timeout(Duration::from_secs(60), extraction).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                self.emit_extraction_error(session_id, err.stage, err.reason).await;
+            }
+            Err(_) => {
+                if let Err(error) = self
+                    .events
+                    .append(NewEvent {
+                        session_id: session_id.to_string(),
+                        event_type: EventType::Misc,
+                        source: "verifier_gate".into(),
+                        data: serde_json::json!({
+                            "kind": "playbook_extraction_timeout",
+                            "session_id": session_id,
+                            "elapsed_ms": start.elapsed().as_millis() as u64,
+                        }),
+                    })
+                    .await
+                {
+                    tracing::warn!(%session_id, error = ?error, "failed to append playbook_extraction_timeout");
+                }
+            }
+        }
+    }
+
+    async fn session_tool_calls(&self, session_id: &str) -> Result<i64, rusqlite::Error> {
+        let sid = session_id.to_string();
+        self.db
+            .with_conn(move |conn| {
+                conn.query_row(
+                    "SELECT tool_calls FROM sessions WHERE id = ?",
+                    rusqlite::params![sid],
+                    |row| row.get::<_, i64>(0),
+                )
+            })
+            .await
+    }
+
+    async fn emit_extraction_error(&self, session_id: &str, stage: &str, reason: String) {
+        if let Err(error) = self
+            .events
+            .append(NewEvent {
+                session_id: session_id.to_string(),
+                event_type: EventType::Misc,
+                source: "verifier_gate".into(),
+                data: serde_json::json!({
+                    "kind": "playbook_extraction_error",
+                    "session_id": session_id,
+                    "stage": stage,
+                    "reason": reason,
+                }),
+            })
+            .await
+        {
+            tracing::warn!(%session_id, error = ?error, "failed to append playbook_extraction_error");
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use serde_json::json;
 
@@ -308,6 +417,34 @@ mod tests {
     use crate::sandbox::SandboxClient;
     use crate::search::{SearchClient, SearchProvider};
     use crate::tools::register_builtin_tools;
+
+    #[derive(Default, Clone)]
+    struct OkExtraction;
+    #[async_trait::async_trait]
+    impl ExtractionHandler for OkExtraction {
+        async fn extract_sync(&self, _session_id: &str) -> Result<(), ExtractionError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default, Clone)]
+    struct ErrExtraction;
+    #[async_trait::async_trait]
+    impl ExtractionHandler for ErrExtraction {
+        async fn extract_sync(&self, _session_id: &str) -> Result<(), ExtractionError> {
+            Err(ExtractionError::new("llm_call", "simulated_llm_failure"))
+        }
+    }
+
+    #[derive(Default, Clone)]
+    struct SleepExtraction;
+    #[async_trait::async_trait]
+    impl ExtractionHandler for SleepExtraction {
+        async fn extract_sync(&self, _session_id: &str) -> Result<(), ExtractionError> {
+            tokio::time::sleep(Duration::from_secs(61)).await;
+            Ok(())
+        }
+    }
 
     async fn fixture() -> (VerifierGate, Arc<SqliteEventStore>, DbPool, String) {
         let db = db::open(":memory:").await.unwrap();
@@ -355,6 +492,18 @@ mod tests {
 
         let gate = VerifierGate::new(db.clone(), events.clone(), runner);
         (gate, events, db, session_id)
+    }
+
+    async fn set_tool_calls(db: &DbPool, session_id: &str, count: i64) {
+        let sid = session_id.to_string();
+        db.with_conn(move |conn| {
+            conn.execute(
+                "UPDATE sessions SET tool_calls = ? WHERE id = ?",
+                rusqlite::params![count, sid],
+            )
+            .unwrap();
+        })
+        .await;
     }
 
     async fn insert_verdict_event(
@@ -715,6 +864,81 @@ mod tests {
         assert!(
             calls.is_empty(),
             "handler must NOT fire when verdict.rollback_required=false"
+        );
+    }
+
+    #[tokio::test]
+    async fn extraction_sync_path_runs_only_for_pass_and_tool_calls_threshold() {
+        let (mut gate, events, db, session_id) = fixture().await;
+        gate = gate.with_extraction(Arc::new(OkExtraction));
+        set_tool_calls(&db, &session_id, 4).await;
+        insert_verdict_event(&events, &session_id, "TaskComplete", "pass", None).await;
+        let _ = gate.poll_once(0).await.unwrap();
+
+        let rows = events
+            .query(&session_id, EventQuery::default())
+            .await
+            .unwrap();
+        assert!(
+            rows.iter().all(|e| {
+                e.data.get("kind").and_then(Value::as_str)
+                    != Some("playbook_extraction_error")
+                    && e.data.get("kind").and_then(Value::as_str)
+                        != Some("playbook_extraction_timeout")
+            }),
+            "no extraction telemetry expected when tool_calls < 5"
+        );
+    }
+
+    #[tokio::test]
+    async fn extraction_timeout_and_error_events_are_emitted() {
+        let (mut gate, events, db, session_id) = fixture().await;
+        set_tool_calls(&db, &session_id, 6).await;
+        gate = gate.with_extraction(Arc::new(ErrExtraction));
+        insert_verdict_event(&events, &session_id, "TaskComplete", "pass", None).await;
+        let _ = gate.poll_once(0).await.unwrap();
+
+        let err_event = events
+            .query(
+                &session_id,
+                EventQuery {
+                    event_type: Some(EventType::Misc),
+                    ..EventQuery::default()
+                },
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|e| e.data.get("kind").and_then(Value::as_str) == Some("playbook_extraction_error"))
+            .expect("expected extraction error event");
+        assert_eq!(err_event.data["stage"], "llm_call");
+        assert_eq!(err_event.data["reason"], "simulated_llm_failure");
+
+        let (mut gate2, events2, db2, session_id2) = fixture().await;
+        set_tool_calls(&db2, &session_id2, 6).await;
+        gate2 = gate2.with_extraction(Arc::new(SleepExtraction));
+        insert_verdict_event(&events2, &session_id2, "TaskComplete", "pass", None).await;
+        let _ = gate2.poll_once(0).await.unwrap();
+        let timeout_event = events2
+            .query(
+                &session_id2,
+                EventQuery {
+                    event_type: Some(EventType::Misc),
+                    ..EventQuery::default()
+                },
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|e| e.data.get("kind").and_then(Value::as_str) == Some("playbook_extraction_timeout"))
+            .expect("expected extraction timeout event");
+        assert!(
+            timeout_event
+                .data
+                .get("elapsed_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                >= 60_000
         );
     }
 }
