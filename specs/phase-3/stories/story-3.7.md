@@ -1,6 +1,6 @@
 # Story 3.7 — Skill telemetry outcomes and playbook counters
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 3.6
 > **Phase**: 3
