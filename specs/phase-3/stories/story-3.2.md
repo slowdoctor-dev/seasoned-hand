@@ -1,6 +1,6 @@
 # Story 3.2 — Atomic slice: V010 + ADR-012 + ARCH v1.2 + FTS5 triggers + tool un-stubs
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 3.1
 > **Phase**: 3
