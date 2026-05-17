@@ -1,6 +1,6 @@
 # Story 3.6 — Initializer top-3 deterministic playbook injection
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 3.5
 > **Phase**: 3
