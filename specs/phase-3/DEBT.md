@@ -57,3 +57,25 @@ _To be populated by the BMAD Architect pass on
 | **H** | Blocks the next phase's goals if not addressed |
 | **M** | Will bite at scale or in a year, manageable today |
 | **L** | Documentation / minor friction / one-line fix later |
+
+## Seed (from BMAD Architect pass, 2026-05-17)
+
+1. **#72 (M)** Embedding rerank deferred
+- **What**: Production matcher remains FTS5-only in Phase 3; embedding-based rerank is not shipped.
+- **Why now**: F-3.5 pins FTS5 production matcher; embedding slot wiring is Phase 4+ scope.
+- **Pay down**: Phase 4 Curator, after telemetry baseline from `playbook_match` events.
+
+2. **#73 (M)** Knowledge/Datasource writers deferred
+- **What**: `EventType::Knowledge` and `EventType::Datasource` remain reserved-but-unwired.
+- **Why now**: F-3.16 requires index coverage, not active writers; L2 cross-source enforcement is deferred.
+- **Pay down**: Phase 4 with L2 rollout and concrete emit semantics.
+
+3. **#74 (M)** Tenant semantics deferred
+- **What**: Phase 3 matching is project-scoped only; tenant/global promotion policy is not implemented.
+- **Why now**: Requirements F-3.12/§5 defer full tenant isolation semantics to Phase 5.
+- **Pay down**: Phase 5 multi-user policy + migration plan.
+
+4. **#75 (L)** Search summarizer degradation telemetry hardening
+- **What**: Session-search summary path degrades to raw hits on LLM failure; richer retry/backoff policy not included.
+- **Why now**: Keeps Phase 3 deterministic and non-blocking while preserving operability.
+- **Pay down**: Phase 4 operations hardening pass.
