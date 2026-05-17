@@ -1,6 +1,6 @@
 # Story 3.8 — Session search index ingestion and internal query API
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 3.2
 > **Phase**: 3

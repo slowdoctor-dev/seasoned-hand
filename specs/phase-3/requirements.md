@@ -189,7 +189,7 @@ Detailed contracts live in `/specs/phase-3/stories/story-3.X.md`.
 | 3.5 | Matcher core (gate identity + production FTS5 + deterministic ranking) | 3h | 3.2 | done |
 | 3.6 | Initializer top-3 deterministic playbook injection | 2h | 3.5 | done |
 | 3.7 | Skill telemetry outcomes and playbook counters | 2h | 3.6 | done |
-| 3.8 | Session search index ingestion and internal query API | 2h | 3.2 | ready |
+| 3.8 | Session search index ingestion and internal query API | 2h | 3.2 | done |
 | 3.9 | CLI SOP lifecycle surface | 2h | 3.2 | ready |
 | 3.10 | CLI playbook lifecycle surface | 1.5h | 3.2, 3.5 | ready |
 | 3.11 | CLI session search with summarized operator view | 2h | 3.8 | ready |
