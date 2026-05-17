@@ -59,12 +59,21 @@ Operators
   space → strip leading/trailing whitespace. Production matcher issues FTS5 prefix
   tokens (`token*`) over the union of `playbooks.trigger_keywords ∪ title ∪ content`
   per F-3.5 (scoring details in §11).
+- Gate-mode identity (F-3.4): match key is the tuple `(fixture_id, normalized_brief)`.
+  Both halves must match exactly — fixture_id alone is not sufficient (rules out
+  cross-brief reuse within the same fixture); normalized_brief alone is not sufficient
+  (rules out cross-fixture coincidence). Production mode does not use fixture_id.
+- Both matchers WHERE-filter `status = 'active'` so soft-deleted ('archived') playbooks
+  never match (consistent across LLM-callable `playbook_search` tool and Initializer
+  injection path).
 - Integration: Initializer injection path, un-stubbed `playbook_search` tool, skill telemetry emit.
 
 3. `PlaybookInjector` (core)
 - Purpose: deterministic top-3 ranking, prompt-prefix insertion, NFR-3.3 cap handling.
 - Technology: pure Rust ranking/truncation utility.
 - Integration: `agent/init` system prompt assembly only (not per-iteration sticky insertion).
+- Zero-match behavior (F-3.11): silent skip — no injection block, no `Misc` event, no
+  `Skill{kind:"injection"}` event. 1-2 matches inject those rows only (no padding).
 
 4. `SessionSearchIndex` (core/server)
 - Purpose: denormalized FTS5 index over all 8 event types (F-3.16/3.17).
@@ -130,6 +139,7 @@ CREATE TABLE glossary (
   term TEXT NOT NULL UNIQUE,
   definition TEXT NOT NULL,
   category TEXT NOT NULL,
+  -- category ∈ {'person', 'system', 'terminology', 'context'} per ARCH §2.5
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -217,6 +227,11 @@ extraction-pipeline `Misc` events per F-3.14):
   emitted only when verifier verdict is `pass` or `fail` (F-3.8). `error`/`skipped`
   verdicts emit NO outcome event and update neither counter; the same handler that
   emits the outcome event increments `success_count` (pass) or `failure_count` (fail).
+  Scope: outcome events fire for the playbooks that were INJECTED into this task
+  (i.e. the top-3 set, minus any truncated by NFR-3.3). A playbook that was matched
+  but truncated out of the injection window emits no outcome event — the task didn't
+  consume it. This is why §4 `record_playbook_outcome` reads the injection set, not
+  the match set.
 
 Extraction-pipeline `Misc` events — share `playbook_extraction_*` prefix per F-3.14,
 so operators can grep them as a set:
@@ -248,7 +263,11 @@ No new platform components beyond immutable stack.
 
 - `task_complete` handling adds synchronous extraction call with 60s timeout.
 - Initializer (`agent/init`) gains one-shot playbook prompt-prefix injection.
-- Event append path now also writes denormalized search row.
+- Event append path now also writes the denormalized session-search row for every
+  EventType (per F-3.16's 8-variant coverage); Phase 3's new event volume comes from
+  `Skill{kind:"match"|"injection"|"outcome"}` and the `playbook_extraction_*` `Misc`
+  family — both must reach `session_search_index` so operators can grep them via the
+  CLI surface in §4.
 - Verifier verdict path updates playbook counters and emits `Skill{kind:"outcome"}` ONLY
   for `pass` / `fail` verdicts (F-3.8). `error` / `skipped` / other verdicts update no
   counter and emit no outcome event.
@@ -292,8 +311,12 @@ is probabilistic and the deterministic layer is the audit floor.
 Deterministic adversarial scan baseline (F-3.13 — MUST detect, at minimum):
 1. shell substitution / metacharacters: backticks, `$(...)`, pipe-to-shell `| sh` / `| bash`
 2. raw IPv4 / IPv6 literal hosts in URLs
-3. prompt-injection trigger phrases (Architect-curated list): "ignore previous instructions",
-   "you are now", role-reversal patterns (e.g. "you are not the assistant")
+3. prompt-injection trigger phrases (Architect-curated list — the F-3.13 baseline; phase
+   stories may extend it):
+   - "ignore previous instructions" / "disregard the above" / "forget everything"
+   - "you are now" / "act as" / "from now on you are"
+   - role-reversal patterns ("you are not the assistant, you are...", "I am the assistant")
+   - system-prefix injection (`system:`, `<|im_start|>system`, `[INST]`)
 4. base64-shaped blobs of length >=40 (`[A-Za-z0-9+/=]{40,}`)
 
 Deterministic PII redaction baseline (F-3.14 — MUST strip, at minimum):
@@ -361,6 +384,13 @@ SAME PR slice. Intentional doc/schema drift windows are explicitly disallowed in
   - production matcher FTS5 smoke (`phase3_production_matcher_smoke`)
   - tool un-stubs return real rows
   - session index ingestion + queryability across all 8 event types
+  - matcher excludes `status='archived'` playbooks from both gate and production modes
+    (regression for F-3.20 soft-delete contract)
+  - matcher excludes cross-project playbooks (F-3.12) — seed playbooks under
+    project A, assert that matching for a task under project B returns zero
+  - zero-match injection skip emits no `Skill{kind:"injection"}` (F-3.11)
+  - outcome event fires for INJECTED playbooks only, not for matched-but-truncated
+    rows (F-3.8 scope)
 - Acceptance (Phase 3 gate — `cargo test phase3_warm_benchmark`)
   - `phase3_warm_benchmark` enforces `sessions.tool_calls <= 0.70 x cold_baseline`
     (F-3.3 / requirements §4).
@@ -443,9 +473,9 @@ Design alternatives considered and chosen:
 | F-3.4 normalization      | §2.2 PlaybookMatcher                             |
 | F-3.5 two matchers       | §2.2 PlaybookMatcher, §11 FTS5 scoring           |
 | F-3.6 canonical KPI      | §11 Regression guards                            |
-| F-3.7 sync execution     | §2.1, §6, §8                                     |
-| F-3.8 Skill telemetry    | §4 event payloads, §6 outcome filter             |
-| F-3.9 no curator         | §12 deferred                                     |
+| F-3.7 sync execution     | §2.1, §4 extraction_error event, §6, §8          |
+| F-3.8 Skill telemetry    | §4 event payloads (incl. injected-scope), §6 outcome filter |
+| F-3.9 no curator         | §9 "no auto-archive", §12 deferred list          |
 | F-3.10 SOP surface       | §2.5 CLI, §3 sops table, §4 sop_read un-stub     |
 | F-3.11 top-3 injection   | §2.3 PlaybookInjector, §11 ranking pipeline      |
 | F-3.12 project scope     | §9 security controls                             |
