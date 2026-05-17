@@ -1,6 +1,6 @@
 # Story 3.12 — Regression: sessions tool-call parity guard
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 1.5 hours
 > **Dependencies**: 3.1
 > **Phase**: 3
