@@ -43,7 +43,9 @@
 - **F-3.1 (conservative trigger, content-agnostic)**: Extraction eligibility follows
   ADR-007 criteria and must remain content-agnostic. In Phase 3, extraction MUST fire
   for any task with verifier `pass` + `tool_calls >= 5`, regardless of
-  `deliverable_format`, `project_id`, or title.
+  `deliverable_format`, `project_id`, or title. ADR-007 criterion 3 (≥2 similar past
+  tasks) and criterion 4 (optional user-satisfaction signal) are explicitly deferred
+  to Phase 4 Curator and MUST NOT be implemented as Phase 3 trigger gates.
 - **F-3.2 (Phase 3 acceptance benchmark fixture)**: Phase acceptance benchmark uses the
   deterministic `phase2_overnight_default_path`-style employee workflow shape.
 - **F-3.3 (acceptance gate assertion)**: `cargo test phase3_warm_benchmark` must
@@ -94,6 +96,8 @@
     3. phone number shapes (E.164 + common locale formats),
     4. IPv4/IPv6 literals,
     5. bearer/API-key-like header patterns.
+  Every redaction occurrence emits `Misc{kind:"playbook_pii_redacted", layer,
+  count, categories}` for observability (symmetric with F-3.13 rejection event).
 - **F-3.15 (activation policy)**: Auto-extracted playbooks are immediately injectable
   (no quarantine state machine in Phase 3), consistent with ADR-007 Alternative C
   rejection and Phase 3 scope boundaries.
@@ -103,8 +107,11 @@
 - **F-3.17 (session search summarization)**: Session search results include an LLM
   summarization path for operator consumption (query-centric summary over matched rows).
 - **F-3.18 (minimum extraction quality bar)**: A playbook draft must satisfy required
-  structural fields and a minimum non-trivial procedure body before write. Architect
-  defines exact step-count/content thresholds.
+  structural fields and a minimum non-trivial procedure body before write. Baseline
+  floors that MUST hold unless Architect raises them after dogfood data: at least 3
+  non-empty `procedure_steps` entries and at least 200 total characters of content
+  across `procedure_steps`. Drafts below either floor MUST be rejected with
+  `Misc{kind:"playbook_extraction_rejected", layer:"quality_floor", reason}`.
 - **F-3.19 (atomic migration + spec reconciliation)**: V010 migration and required
   architecture-spec reconciliation land in the same PR slice per AGENTS.md §8. If
   immutable architecture text requires change, include successor ADR in the same slice.
@@ -134,6 +141,8 @@
   admin policy surfaces). (Phase 5 multi-user scope.)
 - Playbook export/sharing workflows. (Phase 4+ once sharing semantics are defined.)
 - Quarantine/pending activation workflows for playbooks. (Phase 5 scope.)
+- ADR-007 criterion 3 (≥2 similar past tasks) and criterion 4 (optional
+  user-satisfaction signal). (Phase 4 Curator scope.)
 - Intentional phased doc/schema drift windows are explicitly disallowed.
 
 ## 6. Risks and mitigations

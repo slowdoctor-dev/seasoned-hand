@@ -72,6 +72,8 @@ Everything else depends on what `playbooks` actually looks like.
 
 ---
 
+**Resolution**: → partially constrained by requirements.md §7 dependencies + F-3.8 (success_count/failure_count required) + F-3.10 (sops + glossary tables required) + F-3.16 (playbook fields supporting full-event-type FTS5 search). Architect picks final V010 shape from option A (rich), B (minimal), or C (hybrid) under these hard constraints; §8 open question carries the residual schema-shape detail.
+
 ## 2. Playbook content storage: inline TEXT vs `content_path` (file ref)
 
 **Context**: ARCH §2.5 uses `content TEXT NOT NULL`; V009 uses
@@ -98,6 +100,8 @@ Everything else depends on what `playbooks` actually looks like.
   another knob
 
 ---
+
+**Resolution**: → constrained by requirements.md NFR-3.3 (injection byte budget) + NFR-3.5 (extraction output byte cap). Architect picks inline / file-ref / hybrid under both budgets; the chosen shape must keep FTS5 indexing usable (F-3.16) without violating either cap.
 
 ## 3. Playbook trigger matching: what algorithm?
 
@@ -127,6 +131,8 @@ the matching algorithm isn't specified.
   the rerank half
 
 ---
+
+**Resolution**: → resolved in requirements.md F-3.5. Option B (FTS5 prefix-match over `trigger_keywords` ∪ `title` ∪ `content`) is the Phase 3 production matcher; embedding similarity (A) and hybrid rerank (C) deferred to Phase 4+ once the embedding slot is wired.
 
 ## 4. Extraction trigger model: sync at task-complete vs async worker
 
@@ -189,6 +195,8 @@ extraction inline before returning
 
 ---
 
+**Resolution**: → partially resolved in requirements.md F-3.1 + §5. Phase 3 enforces ADR-007 criteria 1 (verifier PASS) and 2 (`tool_calls ≥ 5`); criteria 3 (≥2 similar past tasks) and 4 (optional user-satisfaction signal) are explicitly deferred to Phase 4 Curator. Architect must not invent a similarity matcher in Phase 3.
+
 ## 6. L2 cross-source verification — Phase 3 or Phase 4?
 
 **Context**: ARCHITECTURE.md §6 spec's 4-layer verification. L1 (post-tool
@@ -220,6 +228,8 @@ gate. Phase 4 Curator gates `Knowledge` retroactively.
   DEBT #61 stays open)
 
 ---
+
+**Resolution**: → deferred to Phase 4 (paired with Q12 below). Phase 3 does NOT implement L2 cross-source enforcement; `Knowledge` event variant stays reserved-but-unwired alongside `Datasource`. The FTS5 search index schema (F-3.16) keeps both variants typeable so the Phase 4 writer can land without a schema migration.
 
 ## 7. SOP authoring + storage surface
 
@@ -414,6 +424,8 @@ define the emit conditions.
 
 ---
 
+**Resolution**: → partially resolved in requirements.md F-3.8 + F-3.16. `Skill` event variant ships fully wired in Phase 3 (match/injection/outcome per F-3.8). `Knowledge` and `Datasource` variants stay reserved-but-unwired, but the FTS5 session search index (F-3.16) covers all 8 EventType variants so the Phase 4 writers add no schema migration. Option C minimum (Skill emit only) is the Phase 3 surface; Phase 2 DEBT #61 closes for Skill, stays open for the other two.
+
 ## 13. Tenant isolation in playbooks (Phase 3 not Phase 5)
 
 **Context**: V009 already includes nullable `tenant_id` on `skills`
@@ -517,6 +529,8 @@ counters from event-stream replay
   may need materialized views for performance
 
 ---
+
+**Resolution**: → resolved in requirements.md F-3.8. Hybrid telemetry: Phase 3 emits `Skill` Misc events AND maintains in-row `playbooks.success_count` / `failure_count` counters. Phase 4 Curator reads counters for rate-based decisions; the event stream stays the auditable source-of-truth for match/injection/outcome history.
 
 ## 16. Adversarial input / prompt-injection resistance for extraction
 
