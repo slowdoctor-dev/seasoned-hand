@@ -86,8 +86,9 @@
   `stage ∈ {"prepare_input", "llm_call", "parse_output", "write_db"}`, and skip
   playbook write without blocking task completion.
 - **F-3.8 (telemetry + counters)**: Phase 3 emits `Skill` EventType events with three
-  sub-kinds — match (at production-matcher hit), injection (at top-3 injection),
-  outcome (at task completion verifier verdict) — and maintains per-row
+  sub-kinds — match (at any matcher hit, gate-mode or production-mode per F-3.5),
+  injection (at top-3 injection), outcome (at task completion verifier verdict) —
+  and maintains per-row
   `playbooks.success_count` / `failure_count` updated at task completion: verifier
   verdict `pass` increments `success_count`, verdict `fail` increments
   `failure_count`, and other verdicts (`error`, `skipped`, etc.) update neither
@@ -217,8 +218,9 @@
     decoupled from gate matcher (F-3.5); diversity validation explicitly carried to
     Phase 4.
 - **Risk: poisoned extraction from adversarial observations**
-  - Mitigation: layered defenses in Phase 3 (verifier-PASS gate + LLM filtering +
-    deterministic scan; F-3.13) plus project-scoped matching (F-3.12).
+  - Mitigation: layered defenses in Phase 3 — verifier-PASS gate (F-3.1 / ADR-007
+    criterion 1) + LLM filtering and deterministic scan (F-3.13) + project-scoped
+    matching (F-3.12).
 - **Risk: PII leakage into reusable artifacts**
   - Mitigation: layered abstraction+redaction (F-3.14), project-scoped reuse (F-3.12),
     operator delete hatch (F-3.20).
