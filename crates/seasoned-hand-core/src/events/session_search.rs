@@ -1,6 +1,10 @@
 use rusqlite::params;
+use sha2::{Digest, Sha256};
 
 use super::{Event, EventType};
+use crate::events::{EventStore, NewEvent};
+use crate::llm::{ChatCompletionRequest, LlmClient, Message, Role};
+use crate::router::{SlotName, SlotRouter};
 
 #[derive(Debug, Clone, Default)]
 pub struct SessionSearchQuery {
@@ -18,7 +22,7 @@ impl SessionSearchQuery {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct EventHit {
     pub event_id: i64,
     pub session_id: String,
@@ -26,6 +30,12 @@ pub struct EventHit {
     pub event_type: String,
     pub source: String,
     pub snippet: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchSummary {
+    pub summary: String,
+    pub degraded: bool,
 }
 
 pub fn index_event_for_search(conn: &rusqlite::Connection, event: &Event) -> rusqlite::Result<()> {
@@ -100,6 +110,108 @@ pub fn search_session_events(
         hits.push(row?);
     }
     Ok(hits)
+}
+
+pub async fn summarize_hits_with_fallback<S: EventStore>(
+    event_store: &S,
+    router: &SlotRouter,
+    session_id: &str,
+    query: &str,
+    hits: &[EventHit],
+) -> SearchSummary {
+    match summarize_hits(router, query, hits).await {
+        Ok(summary) => SearchSummary {
+            summary,
+            degraded: false,
+        },
+        Err(reason) => {
+            let _ = event_store
+                .append(NewEvent {
+                    session_id: session_id.to_string(),
+                    event_type: EventType::Misc,
+                    source: "session_search".to_string(),
+                    data: serde_json::json!({
+                        "kind": "session_search_summary_degraded",
+                        "session_id": session_id,
+                        "query_hash": query_hash(query),
+                        "reason": reason,
+                    }),
+                })
+                .await;
+            SearchSummary {
+                summary: fallback_summary(query, hits),
+                degraded: true,
+            }
+        }
+    }
+}
+
+async fn summarize_hits(
+    router: &SlotRouter,
+    query: &str,
+    hits: &[EventHit],
+) -> Result<String, String> {
+    let slot = router.resolve(SlotName::SessionSearch);
+    let llm = LlmClient::new(slot.base_url.clone(), slot.api_key.clone());
+    let context = hits
+        .iter()
+        .take(12)
+        .map(|h| format!("- [{}] {} {}", h.event_type, h.source, h.snippet))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let req = ChatCompletionRequest {
+        model: slot.model.clone(),
+        messages: vec![
+            Message {
+                role: Role::System,
+                content: Some("Summarize session search hits in 4 bullet points max.".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: Role::User,
+                content: Some(format!("query: {query}\n\nhits:\n{context}")),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ],
+        tools: None,
+        tool_choice: None,
+        temperature: Some(0.0),
+        max_tokens: Some(220),
+        top_p: None,
+    };
+    let resp = llm
+        .chat_completion(req)
+        .await
+        .map_err(|e| format!("llm_error:{e}"))?;
+    let content = resp
+        .choices
+        .first()
+        .and_then(|c| c.message.content.clone())
+        .unwrap_or_default();
+    let trimmed = content.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("empty_summary".to_string());
+    }
+    Ok(trimmed)
+}
+
+fn fallback_summary(query: &str, hits: &[EventHit]) -> String {
+    let total = hits.len();
+    let head = hits
+        .iter()
+        .take(5)
+        .map(|h| format!("- {}:{} {}", h.event_type, h.source, h.snippet))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("Summary unavailable for query '{query}'. {total} raw hits returned.\n{head}")
+}
+
+fn query_hash(query: &str) -> String {
+    format!("{:x}", Sha256::digest(query.as_bytes()))
 }
 
 fn searchable_text_for_event(event: &Event) -> String {
@@ -209,4 +321,3 @@ fn join_parts(parts: &[String]) -> String {
 fn truncate_chars(input: String, cap: usize) -> String {
     input.chars().take(cap).collect()
 }
-

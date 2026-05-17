@@ -71,6 +71,9 @@ enum Commands {
     /// Playbook lifecycle — `seasoned-hand playbook <list|show|delete>`.
     #[command(subcommand)]
     Playbook(commands::playbook::PlaybookCmd),
+    /// Session search — `seasoned-hand session search <query>`.
+    #[command(subcommand)]
+    Session(commands::session_search::SessionCmd),
     /// Bootstrap `~/.seasoned-hand/` (config + deliverables dirs).
     Init,
     /// Exec the `seasoned-hand-server` binary (assumes it's on PATH —
@@ -102,6 +105,7 @@ async fn main() -> ExitCode {
         Commands::Channel(cmd) => commands::channel::run(cmd, &client, cli.json).await,
         Commands::Sop(cmd) => commands::sop::run(cmd, cli.json).await,
         Commands::Playbook(cmd) => commands::playbook::run(cmd, cli.json).await,
+        Commands::Session(cmd) => commands::session_search::run(cmd, cli.json).await,
         Commands::Init => commands::init::run(cli.json),
         Commands::Server { args } => {
             // exec-replaces the process on Unix (function returns Err

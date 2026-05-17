@@ -5,5 +5,6 @@ pub mod init;
 pub mod playbook;
 pub mod project;
 pub mod server;
+pub mod session_search;
 pub mod sop;
 pub mod task;

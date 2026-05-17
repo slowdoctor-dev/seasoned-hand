@@ -224,7 +224,10 @@ async fn events_for_different_sessions_are_isolated() {
 mod session_search {
     use serde_json::json;
 
-    use crate::events::session_search::{SessionSearchQuery, search_session_events};
+    use crate::events::session_search::{
+        EventHit, SessionSearchQuery, search_session_events, summarize_hits_with_fallback,
+    };
+    use crate::router::SlotRouter;
 
     use super::*;
 
@@ -319,5 +322,30 @@ mod session_search {
                 "Skill"
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn summary_fallback() {
+        let (_pool, store) = fixture().await;
+        let hits = vec![EventHit {
+            event_id: 1,
+            session_id: "s1".into(),
+            timestamp: 1,
+            event_type: "Action".into(),
+            source: "tool:web".into(),
+            snippet: "needle_alpha snippet".into(),
+        }];
+        let router = SlotRouter::default_for_bifrost();
+        let out = summarize_hits_with_fallback(&store, &router, "s1", "needle_alpha", &hits).await;
+        assert!(out.degraded);
+        assert!(out.summary.contains("raw hits returned"));
+
+        let events = store.query("s1", EventQuery::default()).await.unwrap();
+        let degraded = events.into_iter().any(|e| {
+            e.event_type == EventType::Misc
+                && e.data.get("kind").and_then(|v| v.as_str())
+                    == Some("session_search_summary_degraded")
+        });
+        assert!(degraded);
     }
 }
