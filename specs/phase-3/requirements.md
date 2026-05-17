@@ -74,25 +74,32 @@
   `task_complete` handling for Phase 3. Async workerization (Verifier-style
   XREADGROUP/FIFO/semaphore pattern) is Phase 4 Curator scope. Any non-timeout
   extraction failure (LLM call error, slot unavailable, malformed structured output)
-  MUST emit `Misc{kind:"playbook_extraction_error", session_id, stage, reason}` and
-  skip playbook write without blocking task completion.
+  MUST emit `Misc{kind:"playbook_extraction_error", session_id, stage, reason}` where
+  `stage ∈ {"prepare_input", "llm_call", "parse_output", "write_db"}`, and skip
+  playbook write without blocking task completion.
 - **F-3.8 (telemetry + counters)**: Phase 3 emits `Skill` EventType events with three
   sub-kinds — match (at production-matcher hit), injection (at top-3 injection),
   outcome (at task completion verifier verdict) — and maintains per-row
-  `playbooks.success_count` / `failure_count`, incremented at task completion based
-  on verifier outcome. Architect pins the exact `Skill` payload shape (e.g.
-  `playbook_id`, `match_score`, `outcome`). Safety / observability emits in
-  F-3.13/F-3.14/F-3.18 and NFR-3.1/3.3/3.4/3.5/F-3.7 use the `Misc` EventType, not
-  `Skill`.
+  `playbooks.success_count` / `failure_count` updated at task completion: verifier
+  verdict `pass` increments `success_count`, verdict `fail` increments
+  `failure_count`, and other verdicts (`error`, `skipped`, etc.) update neither
+  counter and emit no outcome `Skill` event. Architect pins the exact `Skill` payload
+  shape (e.g. `playbook_id`, `match_score`, `outcome`). Safety / observability emits
+  in F-3.13/F-3.14/F-3.18 and NFR-3.1/3.3/3.4/3.5/F-3.7 use the `Misc` EventType,
+  not `Skill`.
 - **F-3.9 (no curator decisions in Phase 3)**: Phase 3 does not auto-archive,
   consolidate, or score-threshold playbooks. Those decisions remain Phase 4 Curator
   scope.
 - **F-3.10 (SOP minimum surface, required)**: Phase 3 ships V010 `sops` table,
-  real `sop_read` implementation (un-stubbing the Phase 0 placeholder), and required
-  CLI authoring surface: `seasoned-hand sop create/edit/list/show/delete` (`show`
-  mirrors F-3.20 playbook `show`).
-- **F-3.11 (top-3 injection)**: Phase 3 injects top-3 matched playbooks at task start,
-  ranked by match score, into Initializer system context.
+  real `sop_read` implementation (un-stubbing the Phase 0 placeholder, which remains
+  the only LLM-callable SOP surface), and required CLI authoring surface:
+  `seasoned-hand sop create/edit/list/show/delete` (CLI-only operator authoring;
+  `show` mirrors F-3.20 playbook `show`). The agent does not gain a `sop_write`
+  tool in Phase 3.
+- **F-3.11 (top-3 injection)**: Phase 3 injects up to 3 matched playbooks at task
+  start, ranked by match score, into Initializer system context. Zero matches is a
+  valid result and skips injection silently (no `Misc` emit required); 1-2 matches
+  inject those rows only.
 - **F-3.12 (project-scoped matching in Phase 3)**: Matching is project-scoped
   (`source_task.project_id == new_task.project_id`, where `source_task` is the task
   from which the candidate playbook was extracted). `tenant_id` is not consulted for
@@ -207,6 +214,12 @@
     output) plus the F-3.18 minimum-quality guard.
 - **Risk: counter drift undermines acceptance metric**
   - Mitigation: explicit canonical metric source (F-3.6) + parity regression test.
+- **Risk: systemic extraction failure (LLM gateway down, slot unavailable across
+  the dogfood window) leaves the playbook table empty and silently fails the F-3.3
+  acceptance gate for non-Phase-3 reasons**
+  - Mitigation: F-3.7 `playbook_extraction_error` event is auditable from the event
+    stream; CI MUST treat repeated extraction errors across the benchmark fixture
+    as a gate-blocking infrastructure failure distinct from a learning regression.
 
 ## 7. Dependencies (external + internal)
 
@@ -230,8 +243,8 @@
 
 - Exact regex strings and threshold tuning for deterministic safety scans/redaction
   (false-positive vs false-negative balance).
-- Production matcher scoring details: FTS5 weighting, top-N cutoff, score threshold,
-  tie-breaking.
+- Production matcher scoring details: FTS5 weighting, score threshold, and
+  tie-breaking when more than 3 rows match (F-3.11 caps injection at 3).
 - Exact token/byte budgets for NFR-3.3/3.4/3.5 and coupling to model context windows.
 - Whether F-3.18 baseline floors (3 steps / 200 chars) need raising after dogfood
   data, and how to define "non-trivial" for the step-count check.
