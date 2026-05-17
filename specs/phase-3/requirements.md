@@ -26,7 +26,10 @@
   `Misc{kind:"playbook_extraction_timeout", session_id, elapsed_ms}` and skip
   playbook write; task completion is never blocked indefinitely.
 - **NFR-3.2 (injection determinism)**: Playbook injection at task start adds no extra
-  LLM round-trip; injection is deterministic prompt-prefix insertion.
+  LLM round-trip; injection is deterministic prompt-prefix insertion. Determinism
+  extends to the chosen top-3 ordering: ties on match score MUST be broken by a
+  stable secondary key (Architect pins; suggested baseline: descending
+  `success_count - failure_count`, then ascending `playbook_id`).
 - **NFR-3.3 (injection size budget)**: Injected playbook payload has a maximum byte
   budget over the aggregate top-3 payload. Oversize content is truncated with a
   trailing marker, and the truncation MUST emit
@@ -124,7 +127,9 @@
     4. IPv4/IPv6 literals,
     5. bearer/API-key-like header patterns.
   Every redaction occurrence emits `Misc{kind:"playbook_pii_redacted", layer,
-  count, categories}` for observability (symmetric with F-3.13 rejection event).
+  count, categories}` for observability (symmetric with F-3.13 rejection event),
+  where `layer ∈ {"llm", "deterministic"}` (the `quality_floor` value from F-3.13
+  does not apply to redaction).
 - **F-3.15 (activation policy)**: Auto-extracted playbooks are immediately injectable
   (no quarantine state machine in Phase 3), consistent with ADR-007 Alternative C
   rejection and Phase 3 scope boundaries.
@@ -229,8 +234,9 @@
   - ROADMAP Phase 3/4/5 boundaries
 - **Internal schema/runtime dependencies**
   - V010 migration must include artifacts required by F-3.8 / F-3.10 / F-3.21
-    (`success_count`, `failure_count`, `sops`, `glossary`, plus playbook fields needed
-    by F-3.5/F-3.11/F-3.16)
+    (`success_count`, `failure_count`, `sops`, `glossary`) plus the playbook fields
+    needed by F-3.5/F-3.11 (`trigger_keywords`, etc.) and a session search index
+    (e.g. `events_fts`) covering all 8 event types per F-3.16
   - Initializer prompt path for top-3 injection
   - Event stream emit surfaces for `Skill` learning events (F-3.8) AND `Misc`
     operational/safety events (NFR-3.1/3.3/3.4/3.5, F-3.7/3.13/3.14/3.18) plus
