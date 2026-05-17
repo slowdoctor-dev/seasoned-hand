@@ -51,7 +51,13 @@ Operators
 
 2. `PlaybookMatcher` (core)
 - Purpose: runtime-selectable gate matcher + production matcher (F-3.5).
-- Technology: deterministic text normalizer + SQLite FTS5 query builder.
+- Technology: deterministic text normalizer + SQLite FTS5 query builder. The shared
+  normalizer (used by BOTH gate and production matchers so a brief that hits in gate
+  mode also hits in production mode) applies in this order per F-3.4: NFD Unicode
+  normalization → ASCII lowercase → collapse runs of Unicode whitespace to a single
+  space → strip leading/trailing whitespace. Production matcher issues FTS5 prefix
+  tokens (`token*`) over the union of `playbooks.trigger_keywords ∪ title ∪ content`
+  per F-3.5 (scoring details in §11).
 - Integration: Initializer injection path, un-stubbed `playbook_search` tool, skill telemetry emit.
 
 3. `PlaybookInjector` (core)
@@ -71,13 +77,15 @@ Operators
 
 ## 3. Data model changes
 
-V010 is **hybrid schema reconciliation** (Q1 option C under F-constraints): keep V009 compatibility, add required rich fields.
+V010 is **hybrid schema reconciliation** (Q1 option C under F-constraints): keep V009
+compatibility, add the F-3.5 / F-3.8 / F-3.10 / F-3.16 / F-3.21-required rich fields,
+and use a single `content` column for the full playbook body (per F-3.18's allowance
+to use `content` directly as the quality-floor target field).
 
 ```sql
 -- existing playbooks table is extended
 ALTER TABLE playbooks ADD COLUMN trigger_keywords TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE playbooks ADD COLUMN content TEXT NOT NULL DEFAULT '';
-ALTER TABLE playbooks ADD COLUMN procedure_body TEXT NOT NULL DEFAULT '';
 ALTER TABLE playbooks ADD COLUMN success_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE playbooks ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE playbooks ADD COLUMN avg_duration_ms INTEGER;
@@ -85,9 +93,12 @@ ALTER TABLE playbooks ADD COLUMN avg_tool_calls INTEGER;
 ALTER TABLE playbooks ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
 ALTER TABLE playbooks ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
 
--- V009 content_path retained for hybrid storage
--- content_path NULL => inline-only row
--- content_path non-NULL => spilled full body file path (content/procedure_body keep searchable excerpt)
+-- V009 content_path is retained as a reserved-for-Phase-4 column. Phase 3 writes
+-- empty string '' (V009's NOT NULL constraint is inherited; no schema dance to drop
+-- it). content_path stays unused in Phase 3 because NFR-3.5's 24_576-byte extraction
+-- output cap is small enough to inline cleanly without spill. Phase 4 may activate
+-- spill semantics when curation produces larger composed playbooks; that activation
+-- pairs with the ADR-012 follow-up (see §10.3).
 
 CREATE VIRTUAL TABLE playbooks_fts USING fts5(
   title, trigger_keywords, content,
@@ -115,6 +126,9 @@ CREATE TABLE glossary (
   updated_at INTEGER NOT NULL
 );
 
+-- session_search_index is populated synchronously on event append; one row per event
+-- across all 8 EventType variants per F-3.16 (Phase 3 actively writes 6 of 8;
+-- Knowledge / Datasource writers ship in Phase 4+ without a schema migration).
 CREATE TABLE session_search_index (
   event_id INTEGER PRIMARY KEY,
   session_id TEXT NOT NULL,
@@ -132,14 +146,37 @@ CREATE VIRTUAL TABLE session_search_fts USING fts5(
 );
 ```
 
+Per-EventType `searchable_text` denormalization shape (F-3.16) — the extractor function
+collapses each event's `data` JSON into a single tokenizable text blob in this shape so
+FTS5 can index uniformly across all 8 variants:
+
+| EventType   | searchable_text contents                                              | Phase 3 writer? |
+|-------------|------------------------------------------------------------------------|-----------------|
+| Message     | role + " " + text body                                                 | yes (existing)  |
+| Action      | tool_name + " " + flattened tool_input parameter values                | yes (existing)  |
+| Observation | tool_name + " " + truncated tool_result (cap at 4 KB)                  | yes (existing)  |
+| Plan        | goal + " " + phases[].title joined by spaces                           | yes (existing)  |
+| Skill       | kind + " " + playbook_id + " " + matcher_mode (when present)           | yes (new)       |
+| Misc        | kind + " " + serialized reason / category fields per kind              | yes (existing)  |
+| Knowledge   | (reserved; Phase 4+ writer fills with cross-source-verified fact text) | no (Phase 4+)   |
+| Datasource  | (reserved; Phase 4+ writer fills with URL + extracted-text excerpt)    | no (Phase 4+)   |
+
 Pinned NFR budgets:
 - NFR-3.3 injection cap: `12_288 bytes` aggregate across injected top-3 payload.
 - NFR-3.4 extraction input cap: `8_192 tokens` (prompt + context).
 - NFR-3.5 extraction output cap: `24_576 bytes`.
 
-Quality-floor field (F-3.18): `procedure_body`.
-- Must contain >=3 non-trivial ordered steps.
-- Must contain >=200 UTF-8 characters after deterministic redaction/capping.
+Quality-floor field (F-3.18): `playbooks.content` (single-field choice per F-3.18's
+"e.g. `procedure_steps` or `content`" allowance). The extractor's structured LLM output
+returns a discrete `steps: string[]` field BEFORE rendering to `content`; the quality
+floor runs on that pre-render structure (NOT a post-render regex parse of `content`):
+- `steps.len() >= 3` (at least 3 non-trivial ordered steps; "non-trivial" = each step
+  is at least one non-whitespace word after redaction).
+- `steps.join("\n").len() >= 200` UTF-8 characters after deterministic redaction
+  (F-3.14) and NFR-3.5 capping.
+
+On rendering, `content` is the markdown-serialized `overview + "\n\n## Procedure\n" +
+numbered(steps)` so FTS5 indexing covers BOTH the narrative and the step text.
 
 ## 4. API surface
 
@@ -278,19 +315,20 @@ SAME PR slice. Intentional doc/schema drift windows are explicitly disallowed in
 2. Un-stub `sop_read`, `playbook_search`, `glossary_lookup` in same slice. Tool catalog
    count stays at 38 unique (39 `map.insert` entries per `spec-check.sh`) — un-stubbing
    replaces stub bodies, no new tools are registered.
-3. Reconcile architecture spec in same slice. **The hybrid storage choice (retaining
-   `content_path` from V009 alongside the new inline `content` column) IS a divergence
-   from ARCH §2.5, which spec's `content TEXT NOT NULL` only — no `content_path`.** Per
-   F-3.19, this divergence requires a successor ADR (ADR-012, sibling pattern to
-   ADR-011's v1.0→v1.1 reconciliation) in the SAME PR slice, bumping ARCH §2.5 to v1.2
-   to acknowledge the inline + optional-spill hybrid. The same ADR formalizes the V010
-   ALTER-TABLE shape (DEFAULT-backfilled NOT NULL columns) as the canonical schema.
+3. Reconcile architecture spec in same slice. **V010 retains `content_path` from V009;
+   ARCH §2.5 has no `content_path` column — Phase 3 inherits this divergence.** Per
+   F-3.19, this requires a successor ADR (ADR-012, sibling pattern to ADR-011's
+   v1.0→v1.1 reconciliation) in the SAME PR slice, bumping ARCH §2.5 to v1.2 to
+   document `content_path` as a reserved-for-Phase-4-spill column (Phase 3 writes the
+   empty-string sentinel `''`; no spill semantics active until Phase 4 needs them). The
+   same ADR formalizes the V010 ALTER-TABLE shape (DEFAULT-backfilled NOT NULL columns
+   added against V009's row) as the canonical schema.
 4. Backfill existing V009 rows:
-   - `trigger_keywords='[]'`, `content=''`, `procedure_body=''`, `status='active'`,
-     `version=1`.
-   - Keep `content_path` as-is; extractor writes inline by default and MAY spill the
-     full body to `content_path` when extraction output exceeds the 16_384-byte spill
-     threshold (bounded by NFR-3.5's 24_576-byte hard cap on extraction output).
+   - `trigger_keywords='[]'`, `content=''`, `status='active'`, `version=1`.
+   - Keep `content_path` as-is at the V009 value (NOT NULL inherited); Phase 3 writes
+     `''` for new rows and never reads spill semantics. NFR-3.5's 24_576-byte hard cap
+     on extraction output is small enough that inline `content` is always sufficient in
+     Phase 3.
 5. New tables (`sops`, `glossary`, `session_search_index`, `session_search_fts`) start
    empty at V010; no backfill required.
 6. Update `scripts/spec-check.sh` (closes Phase 2 DEBT #62 carry-forward) to enforce:
@@ -301,10 +339,12 @@ SAME PR slice. Intentional doc/schema drift windows are explicitly disallowed in
 ## 11. Testing strategy
 
 - Unit
-  - deterministic normalizer (NFD + lowercase + whitespace collapse + trim)
-  - tie-break ordering function
-  - adversarial scan/redaction matchers
-  - quality-floor validator on `procedure_body`
+  - deterministic normalizer (NFD + lowercase + whitespace collapse + trim) — same
+    instance used by gate matcher AND production matcher per F-3.4.
+  - tie-break ordering function (NFR-3.2)
+  - adversarial scan / redaction matchers (F-3.13 / F-3.14)
+  - quality-floor validator on extractor's pre-render `steps[]` structure (F-3.18 —
+    counts steps, joined-step-length after redaction)
 - Integration
   - sync extraction success/failure/timeout paths
   - production matcher FTS5 smoke (`phase3_production_matcher_smoke`)
@@ -360,9 +400,52 @@ Design alternatives considered and chosen:
 - Option B minimal (V009-like): lighter now, conflicts with F-3.8/F-3.10/F-3.21.
 - Option C hybrid (chosen): add required rich fields now, retain `content_path` compatibility.
 2. Content storage
-- Inline only: simplest read/search, row bloat risk.
-- Path only: compact rows, indexing complexity.
-- Hybrid (chosen): inline searchable body + optional spill path for large full bodies.
+- Inline only (chosen for Phase 3): simplest read/search; NFR-3.5's 24 KB output cap
+  bounds row size at safe levels. `content_path` from V009 is retained as a reserved
+  Phase-4-spill column (written as `''` in Phase 3); ADR-012 in the same V010 PR
+  slice (§10.3) documents this.
+- Path-only: compact rows but FTS5 needs a denormalized search column anyway.
+- Active inline+spill hybrid: defers to Phase 4 when curation produces larger composed
+  playbooks beyond the NFR-3.5 cap; activates the reserved `content_path`.
 3. Injection site
 - Initializer one-shot (chosen): zero extra per-iteration cost, matches F-3.11/NFR-3.2.
 - Sticky every iteration: better persistence but ongoing token tax.
+4. F-3.18 quality-floor field
+- Single `content` field (chosen): F-3.18 explicitly allows this ("e.g. `procedure_steps`
+  or `content`"); structural check runs on the extractor's pre-render `steps[]` JSON,
+  not a post-render regex parse — cleaner contract.
+- Separate `procedure_body` column: rejected. Would either duplicate procedure text
+  (also stored in `content`) or split it from FTS5 indexing (F-3.5 indexes only
+  `content`), making the production matcher miss step text.
+
+## 13. Requirements coverage map
+
+| Requirement              | Architecture section(s)                          |
+|--------------------------|--------------------------------------------------|
+| F-3.1 / ADR-007 1+2 only | §2.1 LearningExtractor, §10.1                    |
+| F-3.2 benchmark fixture  | §11 Acceptance                                   |
+| F-3.3 0.70× gate         | §11 Acceptance                                   |
+| F-3.4 normalization      | §2.2 PlaybookMatcher                             |
+| F-3.5 two matchers       | §2.2 PlaybookMatcher, §11 FTS5 scoring           |
+| F-3.6 canonical KPI      | §11 Regression guards                            |
+| F-3.7 sync execution     | §2.1, §6, §8                                     |
+| F-3.8 Skill telemetry    | §4 event payloads, §6 outcome filter             |
+| F-3.9 no curator         | §12 deferred                                     |
+| F-3.10 SOP surface       | §2.5 CLI, §3 sops table, §4 sop_read un-stub     |
+| F-3.11 top-3 injection   | §2.3 PlaybookInjector, §11 ranking pipeline      |
+| F-3.12 project scope     | §9 security controls                             |
+| F-3.13 adversarial scan  | §9 deterministic baseline                        |
+| F-3.14 PII redaction     | §9 PII baseline                                  |
+| F-3.15 immediate activation | §9 (no quarantine)                            |
+| F-3.16 search index 8x   | §3 session_search_index + per-type shape table   |
+| F-3.17 summarization     | §2.4 SessionSearchIndex, §7 summarizer slot      |
+| F-3.18 quality floor     | §3 quality-floor field, §11 unit tests           |
+| F-3.19 atomic slice      | §10 Migration plan                               |
+| F-3.20 playbook CLI      | §2.5, §4 CLI surfaces                            |
+| F-3.21 glossary surface  | §3 glossary table, §4 glossary_lookup un-stub    |
+| NFR-3.1 60s timeout      | §7, §8                                           |
+| NFR-3.2 deterministic    | §11 tie-break ordering                           |
+| NFR-3.3 injection cap    | §3 pinned budget, §4 injection_truncated event   |
+| NFR-3.4 input cap        | §3 pinned budget, §4 input_truncated event       |
+| NFR-3.5 output cap       | §3 pinned budget, §4 output_capped event         |
+| NFR-3.6 search operability | §2.4, §4 CLI/API surface                       |
