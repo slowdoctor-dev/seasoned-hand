@@ -266,7 +266,7 @@ DB tool, or external script) until Phase 4+.
 
 ---
 
-**Resolution**: → resolved in requirements.md F-3.10. Option B: SOP CLI authoring (`sop create/edit/list/delete`) is required in Phase 3; frontend editor deferred to Phase 5.
+**Resolution**: → resolved in requirements.md F-3.10. Option B: SOP CLI authoring (`sop create/edit/list/show/delete`) is required in Phase 3; frontend editor deferred to Phase 5.
 
 ## 8. Playbook injection: how many, where, at what token cost?
 

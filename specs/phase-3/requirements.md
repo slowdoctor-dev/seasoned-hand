@@ -76,9 +76,14 @@
   extraction failure (LLM call error, slot unavailable, malformed structured output)
   MUST emit `Misc{kind:"playbook_extraction_error", session_id, stage, reason}` and
   skip playbook write without blocking task completion.
-- **F-3.8 (telemetry + counters)**: Phase 3 emits `Skill`/learning misc events for
-  match/injection/outcome and maintains per-row `playbooks.success_count` /
-  `failure_count`, incremented at task completion based on verifier outcome.
+- **F-3.8 (telemetry + counters)**: Phase 3 emits `Skill` EventType events with three
+  sub-kinds — match (at production-matcher hit), injection (at top-3 injection),
+  outcome (at task completion verifier verdict) — and maintains per-row
+  `playbooks.success_count` / `failure_count`, incremented at task completion based
+  on verifier outcome. Architect pins the exact `Skill` payload shape (e.g.
+  `playbook_id`, `match_score`, `outcome`). Safety / observability emits in
+  F-3.13/F-3.14/F-3.18 and NFR-3.1/3.3/3.4/3.5/F-3.7 use the `Misc` EventType, not
+  `Skill`.
 - **F-3.9 (no curator decisions in Phase 3)**: Phase 3 does not auto-archive,
   consolidate, or score-threshold playbooks. Those decisions remain Phase 4 Curator
   scope.
@@ -89,7 +94,8 @@
 - **F-3.11 (top-3 injection)**: Phase 3 injects top-3 matched playbooks at task start,
   ranked by match score, into Initializer system context.
 - **F-3.12 (project-scoped matching in Phase 3)**: Matching is project-scoped
-  (`source_task.project_id == new_task.project_id`). `tenant_id` is not consulted for
+  (`source_task.project_id == new_task.project_id`, where `source_task` is the task
+  from which the candidate playbook was extracted). `tenant_id` is not consulted for
   Phase 3 matching logic.
 - **F-3.13 (layered adversarial filtering)**: Extraction applies two defense layers:
   - LLM prompt-level refusal guidance.
@@ -122,8 +128,12 @@
   (`Message, Action, Observation, Plan, Skill, Misc`) are actively written in
   Phase 3; `Knowledge` and `Datasource` writers ship in Phase 4+ per §5 without
   requiring a search-index migration.
-- **F-3.17 (session search summarization)**: Session search results include an LLM
-  summarization path for operator consumption (query-centric summary over matched rows).
+- **F-3.17 (session search summarization + CLI)**: Session search results include an
+  LLM summarization path for operator consumption (query-centric summary over matched
+  rows). Phase 3 ships an operator CLI surface (`seasoned-hand session search
+  <query>`) that returns both raw matches and the summarized view, satisfying
+  NFR-3.6's CLI/API queryability requirement; programmatic Rust callers consume the
+  same internal API.
 - **F-3.18 (minimum extraction quality bar)**: A playbook draft must satisfy required
   structural fields and a minimum non-trivial procedure body before write. Baseline
   floors that MUST hold unless Architect raises them after dogfood data: at least 3
@@ -135,6 +145,8 @@
 - **F-3.19 (atomic migration + spec reconciliation)**: V010 migration and required
   architecture-spec reconciliation land in the same PR slice per AGENTS.md §8. If
   immutable architecture text requires change, include successor ADR in the same slice.
+  Intentional phased doc/schema drift windows (e.g. "land code now, fix spec later")
+  are explicitly disallowed in Phase 3.
 - **F-3.20 (playbook lifecycle CLI, required)**: Phase 3 ships required CLI lifecycle:
   `seasoned-hand playbook list/show/delete`.
 - **F-3.21 (glossary minimum surface, required)**: Phase 3 lands the V010 `glossary`
@@ -175,7 +187,6 @@
   Phase 2 DEBT #61 stays partially open against these two variants.
 - Glossary CLI authoring surface (operator seeds terms via SQL in Phase 3); CLI
   surface deferred to Phase 4+ once usage patterns settle.
-- Intentional phased doc/schema drift windows are explicitly disallowed.
 
 ## 6. Risks and mitigations
 
@@ -192,7 +203,8 @@
 - **Risk: sync extraction latency impacts completion UX**
   - Mitigation: hard 60s timeout + non-blocking completion semantics (NFR-3.1).
 - **Risk: playbook bloat drives prompt cost and instability**
-  - Mitigation: dual caps (NFR-3.3/3.4/3.5) and minimum-quality guard (F-3.18).
+  - Mitigation: the NFR-3.3/3.4/3.5 caps (injection, extraction input, extraction
+    output) plus the F-3.18 minimum-quality guard.
 - **Risk: counter drift undermines acceptance metric**
   - Mitigation: explicit canonical metric source (F-3.6) + parity regression test.
 
@@ -207,7 +219,9 @@
     (`success_count`, `failure_count`, `sops`, `glossary`, plus playbook fields needed
     by F-3.5/F-3.11/F-3.16)
   - Initializer prompt path for top-3 injection
-  - Event stream emit surfaces for `Skill`/learning events and search indexing
+  - Event stream emit surfaces for `Skill` learning events (F-3.8) AND `Misc`
+    operational/safety events (NFR-3.1/3.3/3.4/3.5, F-3.7/3.13/3.14/3.18) plus
+    search-index ingestion (F-3.16/3.17)
 - **Operational dependencies**
   - Deterministic benchmark harness (`phase3_warm_benchmark`)
   - CLI surfaces for SOP/playbook lifecycle
@@ -219,7 +233,8 @@
 - Production matcher scoring details: FTS5 weighting, top-N cutoff, score threshold,
   tie-breaking.
 - Exact token/byte budgets for NFR-3.3/3.4/3.5 and coupling to model context windows.
-- Exact structural/quality threshold for F-3.18 (minimum steps, minimum content length).
+- Whether F-3.18 baseline floors (3 steps / 200 chars) need raising after dogfood
+  data, and how to define "non-trivial" for the step-count check.
 - Session-search summarization model-slot specifics and result-ranking strategy.
 - Schema-shape finalization details for V010 fields beyond hard constraints in this doc
   (while still satisfying F-3.8/F-3.10/F-3.16/F-3.20).
