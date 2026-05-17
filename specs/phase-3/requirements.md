@@ -61,7 +61,12 @@
   assert `sessions.tool_calls <= 0.70 x cold_baseline`, where cold baseline is the
   benchmark's tool-call count at Phase 3 kickoff lineage (around `cc7d4f0`).
 - **F-3.4 (second-run identity for gate mode)**: Gate-mode “second run” is defined as
-  same fixture ID + same normalized brief text.
+  same fixture ID + same normalized brief text, where "normalized" is the
+  deterministic text-normalization step the gate matcher applies before comparison
+  (Architect pins the exact rules; baseline: NFD Unicode + lowercase + collapse
+  whitespace runs + strip leading/trailing whitespace). The same normalization
+  function feeds both the gate matcher and any equality assertions in
+  `phase3_warm_benchmark`.
 - **F-3.5 (two matchers)**: Phase 3 ships two matchers:
   - Gate-mode strict identity over normalized brief (for deterministic benchmark).
   - Production-mode FTS5 prefix match over
@@ -176,6 +181,11 @@
 - Gate metric source is `sessions.tool_calls`.
 - Counter trust precondition is enforced by separate regression
   `sessions_tool_calls_matches_action_count`.
+- Production-mode FTS5 matcher correctness is enforced by a separate regression
+  (`phase3_production_matcher_smoke` or equivalent name) that seeds known
+  playbook rows and asserts the FTS5 matcher returns the expected top-3 set on
+  representative queries. Without this, `phase3_warm_benchmark` only exercises
+  the gate matcher and the production matcher could ship broken.
 - Benchmark gate remains deterministic and CI-runnable without manual evaluation.
 
 ## 5. Out of scope (explicitly deferred)
