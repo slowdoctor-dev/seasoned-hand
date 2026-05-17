@@ -157,6 +157,8 @@ extraction inline before returning
 
 ---
 
+**Resolution**: → resolved in requirements.md F-3.7 + NFR-3.1. Phase 3 requires synchronous extraction in task-complete path; async workerization deferred to Phase 4 Curator.
+
 ## 5. "Similar past tasks ≥ 2" — what counts as similar?
 
 **Context**: ADR-007 criterion 3 says "≥2 similar past tasks exist
@@ -254,6 +256,8 @@ DB tool, or external script) until Phase 4+.
 
 ---
 
+**Resolution**: → resolved in requirements.md F-3.10. Option B: SOP CLI authoring (`sop create/edit/list/delete`) is required in Phase 3; frontend editor deferred to Phase 5.
+
 ## 8. Playbook injection: how many, where, at what token cost?
 
 **Context**: ROADMAP says "playbook injection at task start (Initializer
@@ -285,6 +289,8 @@ just at task start
 
 ---
 
+**Resolution**: → resolved in requirements.md F-3.11 + NFR-3.2/NFR-3.3. Option B: top-3 injection at task start; no LLM summary round-trip in Phase 3.
+
 ## 9. Session search — FTS5 over what?
 
 **Context**: ROADMAP says "Session search via FTS5 + LLM summarization".
@@ -311,6 +317,8 @@ into FTS5
   Phase 3 wants to surface
 
 ---
+
+**Resolution**: → resolved in requirements.md F-3.16 + F-3.17. Denormalized FTS5 session index ships in Phase 3 and covers all 8 event types; per-type weighting deferred to Phase 4.
 
 ## 10. Acceptance criterion measurement: what task type, how measured?
 
@@ -340,6 +348,8 @@ on real tasks; informal pass/fail
 
 ---
 
+**Resolution**: → resolved in requirements.md §4 + F-3.2/F-3.3/F-3.4/F-3.6. Gate uses deterministic `phase3_warm_benchmark` with strict fixture+normalized-brief second-run identity and `sessions.tool_calls` KPI.
+
 ## 11. Curator scope boundary: where Phase 3 stops, where Phase 4 starts
 
 **Context**: ROADMAP separates Phase 3 (learning starts) from Phase 4
@@ -368,6 +378,8 @@ delete decision). All extraction + matching + recording stays here.
   this option also lands in Phase 3
 
 ---
+
+**Resolution**: → resolved in requirements.md F-3.8 + F-3.9. Phase 3 records events + success/failure counters; Curator decisions (archive/consolidate/rate policy) remain Phase 4.
 
 ## 12. Knowledge / Datasource / Skill event types — what triggers each?
 
@@ -436,6 +448,8 @@ unless task tenant is set
 
 ---
 
+**Resolution**: → resolved in requirements.md F-3.12. Option C: Phase 3 matching is project-scoped; tenant semantics deferred to Phase 5 multi-user.
+
 ## 14. V010 migration + ARCH versioning operational story
 
 **Context**: Whatever option from #1 wins, Phase 3 ships a migration.
@@ -468,6 +482,8 @@ errata commit).
   cut
 
 ---
+
+**Resolution**: → resolved in requirements.md F-3.19. Option A: V010 migration and any required architecture-spec reconciliation must land in one atomic PR slice (AGENTS.md §8).
 
 ## 15. Telemetry from day one (for the Phase 4 Curator)
 
@@ -544,6 +560,8 @@ operator trusts their own agent); revisit at Phase 5 multi-user
 
 ---
 
+**Resolution**: → resolved in requirements.md F-3.13 + §6 risks. Phase 3 ships layered defenses: LLM prompt filtering plus deterministic rejection scan baseline; larger quarantine workflows remain out of scope.
+
 ## 17. Human review / quarantine boundary
 
 **Context**: Related to #16 but broader. ADR-007 rejected broad
@@ -576,6 +594,8 @@ them
   knob
 
 ---
+
+**Resolution**: → resolved in requirements.md F-3.15. Option A: immediate activation (no quarantine) with manual delete escape hatch.
 
 ## 18. Redaction / privacy in extracted playbooks
 
@@ -610,6 +630,8 @@ skip raw Observation payloads which carry the bulk of external data
   (e.g., the agent's reasoning about a tool output)
 
 ---
+
+**Resolution**: → resolved in requirements.md F-3.14 + §6 risks. Phase 3 ships layered PII controls: LLM abstraction plus deterministic regex redaction baseline.
 
 ## 19. Deletion / rollback escape hatch
 
@@ -661,3 +683,6 @@ Phase 4 Curator archives them
    + `architecture.md`. Break into 15-25 stories under
    `/specs/phase-3/stories/`. This file is informational only at
    the PM phase.
+
+**Resolution**: → resolved in requirements.md F-3.20. Option B: required CLI surface is `playbook list/show/delete`; export deferred to Phase 4+.
+
