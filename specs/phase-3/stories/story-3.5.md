@@ -1,6 +1,6 @@
 # Story 3.5 — Matcher core (gate identity + production FTS5 + deterministic ranking)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 3.2
 > **Phase**: 3
