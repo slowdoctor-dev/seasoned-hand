@@ -252,8 +252,10 @@
     operational/safety events (NFR-3.1/3.3/3.4/3.5, F-3.7/3.13/3.14/3.18) plus
     search-index ingestion (F-3.16/3.17)
 - **Operational dependencies**
-  - Deterministic benchmark harness (`phase3_warm_benchmark`)
-  - CLI surfaces for SOP/playbook lifecycle
+  - Deterministic benchmark harness (`phase3_warm_benchmark`) plus the production
+    matcher regression added by §4
+  - CLI surfaces: SOP lifecycle (F-3.10), playbook lifecycle (F-3.20), and session
+    search (F-3.17)
 
 ## 8. Open questions
 
@@ -265,5 +267,6 @@
 - Whether F-3.18 baseline floors (3 steps / 200 chars) need raising after dogfood
   data, and how to define "non-trivial" for the step-count check.
 - Session-search summarization model-slot specifics and result-ranking strategy.
-- Schema-shape finalization details for V010 fields beyond hard constraints in this doc
-  (while still satisfying F-3.8/F-3.10/F-3.16/F-3.20).
+- Schema-shape finalization details for V010 fields beyond the hard constraints in
+  this doc (while still satisfying F-3.5/F-3.8/F-3.10/F-3.16/F-3.21 — playbook
+  fields, counters, sops, events_fts, glossary).
