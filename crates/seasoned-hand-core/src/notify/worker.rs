@@ -415,7 +415,9 @@ impl NotifyWorker {
         }
 
         for h in in_flight {
-            let _ = h.await;
+            if let Err(error) = h.await {
+                tracing::warn!(%error, "notify worker: in-flight task join failed");
+            }
         }
     }
 }
