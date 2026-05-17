@@ -129,8 +129,10 @@ impl VerifierGate {
         let outcome: &str = match trigger {
             "TaskComplete" => match verdict {
                 "pass" => {
-                    let _ = self.set_state(session_id, "FINISHED").await;
-                    let _ = self
+                    if let Err(e) = self.set_state(session_id, "FINISHED").await {
+                        tracing::warn!(%session_id, error = ?e, "verifier gate failed to set FINISHED state");
+                    }
+                    if let Err(e) = self
                         .events
                         .append(NewEvent {
                             session_id: session_id.to_string(),
@@ -138,7 +140,10 @@ impl VerifierGate {
                             source: "verifier_gate".into(),
                             data: serde_json::json!({"kind":"task_complete"}),
                         })
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(%session_id, error = ?e, "verifier gate failed to append task_complete event");
+                    }
                     "finished"
                 }
                 "fail" => {
@@ -163,12 +168,18 @@ impl VerifierGate {
                             .get("suggested_plan_update")
                             .is_some_and(Value::is_null)
                     {
-                        let _ = self.set_state(session_id, "RUNNING").await;
-                        let _ = self.runner.resume_session(session_id).await;
+                        if let Err(e) = self.set_state(session_id, "RUNNING").await {
+                            tracing::warn!(%session_id, error = ?e, "verifier gate failed to set RUNNING state");
+                        }
+                        if let Err(e) = self.runner.resume_session(session_id).await {
+                            tracing::warn!(%session_id, error = ?e, "verifier gate failed to resume session after verifier fail");
+                        }
                         "resumed"
                     } else {
-                        let _ = self.set_state(session_id, "SUSPENDED").await;
-                        let _ = self
+                        if let Err(e) = self.set_state(session_id, "SUSPENDED").await {
+                            tracing::warn!(%session_id, error = ?e, "verifier gate failed to set SUSPENDED state");
+                        }
+                        if let Err(e) = self
                             .events
                             .append(NewEvent {
                                 session_id: session_id.to_string(),
@@ -179,7 +190,10 @@ impl VerifierGate {
                                     "reason": data.get("reason").cloned().unwrap_or(Value::Null)
                                 }),
                             })
-                            .await;
+                            .await
+                        {
+                            tracing::warn!(%session_id, error = ?e, "verifier gate failed to append task_suspended_by_verifier event");
+                        }
                         "suspended"
                     }
                 }
@@ -205,18 +219,28 @@ impl VerifierGate {
                             breaker.reset_error_rate().await;
                         }
                         "Cost" | "MaxSteps" => {
-                            let _ = self.set_state(session_id, "SUSPENDED").await;
+                            if let Err(e) = self.set_state(session_id, "SUSPENDED").await {
+                                tracing::warn!(%session_id, error = ?e, "verifier gate failed to set SUSPENDED state (breaker pass)");
+                            }
                         }
                         _ => {}
                     }
                 } else if verdict == "fail" {
                     if has_suggestion {
-                        let _ = self.set_state(session_id, "RUNNING").await;
-                        let _ = self.runner.resume_session(session_id).await;
+                        if let Err(e) = self.set_state(session_id, "RUNNING").await {
+                            tracing::warn!(%session_id, error = ?e, "verifier gate failed to set RUNNING state");
+                        }
+                        if let Err(e) = self.runner.resume_session(session_id).await {
+                            tracing::warn!(%session_id, error = ?e, "verifier gate failed to resume session after verifier fail");
+                        }
                     } else if kind == "Stuck" || kind == "ErrorRate" {
-                        let _ = self.set_state(session_id, "ERROR").await;
-                    } else if kind == "Cost" || kind == "MaxSteps" {
-                        let _ = self.set_state(session_id, "SUSPENDED").await;
+                        if let Err(e) = self.set_state(session_id, "ERROR").await {
+                            tracing::warn!(%session_id, error = ?e, "verifier gate failed to set ERROR state (breaker fail)");
+                        }
+                    } else if (kind == "Cost" || kind == "MaxSteps")
+                        && let Err(e) = self.set_state(session_id, "SUSPENDED").await
+                    {
+                        tracing::warn!(%session_id, error = ?e, "verifier gate failed to set SUSPENDED state (breaker fail)");
                     }
                 }
                 breaker.rearm().await;
@@ -227,7 +251,7 @@ impl VerifierGate {
 
         // Universal ack so the cursor seed at restart skips this row.
         // refs: story 1.10 self-review — security report informational note
-        let _ = self
+        if let Err(e) = self
             .events
             .append(NewEvent {
                 session_id: session_id.to_string(),
@@ -239,7 +263,10 @@ impl VerifierGate {
                     "outcome": outcome,
                 }),
             })
-            .await;
+            .await
+        {
+            tracing::warn!(%session_id, error = ?e, "verifier gate failed to append verifier_gate_ack event");
+        }
     }
 
     async fn set_state(&self, session_id: &str, state: &str) -> Result<(), rusqlite::Error> {
