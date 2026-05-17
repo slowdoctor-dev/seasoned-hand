@@ -1,6 +1,6 @@
 # Story 3.3 — Sync extraction orchestration in task-complete path
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 3.2
 > **Phase**: 3

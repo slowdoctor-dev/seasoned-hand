@@ -184,7 +184,7 @@ Detailed contracts live in `/specs/phase-3/stories/story-3.X.md`.
 |---|---|---|---|---|
 | 3.1 | Phase 3 scaffolds (requirements + architecture + DEBT + story map) | 0.5h | — | done |
 | 3.2 | Atomic slice: V010 + ADR-012 + ARCH v1.2 + FTS5 triggers + tool un-stubs | 3h | 3.1 | done |
-| 3.3 | Sync extraction orchestration in task-complete path | 2h | 3.2 | ready |
+| 3.3 | Sync extraction orchestration in task-complete path | 2h | 3.2 | done |
 | 3.4 | Extraction safety filters, redaction, quality floor, and cap events | 3h | 3.3 | ready |
 | 3.5 | Matcher core (gate identity + production FTS5 + deterministic ranking) | 3h | 3.2 | ready |
 | 3.6 | Initializer top-3 deterministic playbook injection | 2h | 3.5 | ready |
