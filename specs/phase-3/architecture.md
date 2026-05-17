@@ -29,13 +29,14 @@ Top-3 deterministic rank + byte cap
 Initializer prompt-prefix injection (no extra LLM round-trip)
    |
    v
-Skill events (match/injection), later outcome counters on completion
+Skill events (match / injection / outcome) + success_count / failure_count counters on completion
 
 Operators
-  - CLI: sop create/edit/list/show/delete
-  - CLI: playbook list/show/delete
-  - CLI: session search <query> (raw + summary)
+  - CLI: sop create / edit / list / show / delete
+  - CLI: playbook list / show / delete (soft-delete via status='archived')
+  - CLI: session search <query> (raw hits + LLM-summarized view)
   - Tool un-stubs: sop_read / playbook_search / glossary_lookup
+  - Glossary CLI: deferred to Phase 4+ per F-3.21 (operator seeds via SQL in Phase 3)
 ```
 
 ## 2. New components introduced
@@ -71,9 +72,12 @@ Operators
 - Integration: CLI/API session search + summary route.
 
 5. CLI command groups
-- `seasoned-hand sop ...`
-- `seasoned-hand playbook ...`
-- `seasoned-hand session search <query>`
+- `seasoned-hand sop ...` (F-3.10 required surface)
+- `seasoned-hand playbook ...` (F-3.20 required surface; `delete` is soft-delete —
+  sets `status='archived'`, preserves the row for audit)
+- `seasoned-hand session search <query>` (F-3.17 required surface)
+- `seasoned-hand glossary ...` is intentionally NOT shipped in Phase 3 per F-3.21
+  (operator seeds glossary terms via SQL; CLI authoring deferred to Phase 4+).
 
 ## 3. Data model changes
 
@@ -91,6 +95,10 @@ ALTER TABLE playbooks ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE playbooks ADD COLUMN avg_duration_ms INTEGER;
 ALTER TABLE playbooks ADD COLUMN avg_tool_calls INTEGER;
 ALTER TABLE playbooks ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+-- status ∈ {'active', 'archived', 'pinned'} per ARCH §2.5. Phase 3 writes 'active'
+-- on extraction and 'archived' via CLI soft-delete (F-3.20). 'pinned' is reserved
+-- for Phase 4 Curator. CHECK constraint omitted to match ARCH §2.5's prose-only
+-- spec; production matcher WHERE clause filters `status = 'active'`.
 ALTER TABLE playbooks ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
 
 -- V009 content_path is retained as a reserved-for-Phase-4 column. Phase 3 writes
@@ -271,7 +279,10 @@ No new platform components beyond immutable stack.
 - PII detected:
   - Redact + emit `playbook_extraction_pii_redacted{layer,count,categories}`.
 - Search summarizer LLM fails:
-  - Return raw FTS hits; emit warning `Misc`.
+  - Return raw FTS hits; emit `Misc{kind:"session_search_summary_degraded",
+    session_id, query_hash, reason}` so operators can grep degradation incidents.
+    (NOT under the `playbook_extraction_*` prefix — it's a search-path event, not an
+    extraction-pipeline event.)
 
 ## 9. Security considerations
 
@@ -363,11 +374,15 @@ SAME PR slice. Intentional doc/schema drift windows are explicitly disallowed in
     (requirements §4). Without this, `phase3_warm_benchmark` only exercises the gate
     matcher and the production matcher could ship broken.
 
-Deterministic ranking/tie-break (NFR-3.2):
-1. Primary: `match_score DESC`
-2. Secondary: `(success_count - failure_count) DESC`
-3. Tertiary: `success_count DESC`
-4. Quaternary: `playbook_id ASC` (stable deterministic final key)
+Deterministic ranking / tie-break (NFR-3.2 — same ordering used by gate and production
+matchers so behavior is consistent across modes):
+1. Primary: `match_score DESC` (NFR-3.2 primary key)
+2. Secondary: `(success_count - failure_count) DESC` (NFR-3.2 baseline secondary)
+3. Tertiary: `success_count DESC` — breaks ties where `(success - failure)` matches
+   between e.g. `(10-5)=(20-15)`; prefers the playbook with more proven uses regardless
+   of failure count.
+4. Quaternary: `playbook_id ASC` (stable deterministic final key — NFR-3.2 mandates a
+   final stable key; UUID string compare is total-ordered).
 
 FTS5 scoring details (production matcher, F-3.5):
 - Query: prefix tokens (`token*`) over union of `trigger_keywords ∪ title ∪ content`.
