@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use rusqlite::OptionalExtension;
 use serde_json::Value;
 
 use crate::agent::AgentRunner;
@@ -157,6 +158,9 @@ impl VerifierGate {
         let outcome: &str = match trigger {
             "TaskComplete" => match verdict {
                 "pass" => {
+                    if let Err(e) = self.record_playbook_outcome(session_id, "pass").await {
+                        tracing::warn!(%session_id, error = ?e, "verifier gate failed to record playbook pass outcome");
+                    }
                     self.run_sync_extraction(session_id).await;
                     if let Err(e) = self.set_state(session_id, "FINISHED").await {
                         tracing::warn!(%session_id, error = ?e, "verifier gate failed to set FINISHED state");
@@ -176,6 +180,9 @@ impl VerifierGate {
                     "finished"
                 }
                 "fail" => {
+                    if let Err(e) = self.record_playbook_outcome(session_id, "fail").await {
+                        tracing::warn!(%session_id, error = ?e, "verifier gate failed to record playbook fail outcome");
+                    }
                     let want_rollback = data
                         .get("rollback_required")
                         .and_then(Value::as_bool)
@@ -393,6 +400,79 @@ impl VerifierGate {
         {
             tracing::warn!(%session_id, error = ?error, "failed to append playbook_extraction_error");
         }
+    }
+
+    async fn record_playbook_outcome(
+        &self,
+        session_id: &str,
+        verdict: &str,
+    ) -> Result<(), rusqlite::Error> {
+        if verdict != "pass" && verdict != "fail" {
+            return Ok(());
+        }
+        let sid = session_id.to_string();
+        let verdict_string = verdict.to_string();
+        self.db
+            .with_conn(move |conn| {
+                let data_text: Option<String> = conn
+                    .query_row(
+                        "SELECT data
+                         FROM events
+                         WHERE session_id = ?
+                           AND type = 'Skill'
+                           AND json_extract(data, '$.kind') = 'injection'
+                         ORDER BY id DESC
+                         LIMIT 1",
+                        rusqlite::params![sid],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let Some(data_text) = data_text else {
+                    return Ok(());
+                };
+                let payload: Value = serde_json::from_str(&data_text).unwrap_or(Value::Null);
+                let injected_ids = payload
+                    .get("injected_ids")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                for injected in injected_ids {
+                    let Some(playbook_id) = injected.as_str() else {
+                        continue;
+                    };
+                    let changed = if verdict_string.as_str() == "pass" {
+                        conn.execute(
+                            "UPDATE playbooks
+                             SET success_count = success_count + 1
+                             WHERE id = ?",
+                            rusqlite::params![playbook_id],
+                        )?
+                    } else {
+                        conn.execute(
+                            "UPDATE playbooks
+                             SET failure_count = failure_count + 1
+                             WHERE id = ?",
+                            rusqlite::params![playbook_id],
+                        )?
+                    };
+                    if changed == 0 {
+                        continue;
+                    }
+                    let outcome_data = serde_json::json!({
+                        "kind": "outcome",
+                        "playbook_id": playbook_id,
+                        "outcome": verdict_string.as_str(),
+                    })
+                    .to_string();
+                    conn.execute(
+                        "INSERT INTO events (session_id, timestamp, type, source, data)
+                         VALUES (?, unixepoch('subsec') * 1000000, 'Skill', 'verifier_gate', ?)",
+                        rusqlite::params![sid, outcome_data],
+                    )?;
+                }
+                Ok(())
+            })
+            .await
     }
 }
 
@@ -940,5 +1020,181 @@ mod tests {
                 .unwrap_or(0)
                 >= 60_000
         );
+    }
+
+    async fn insert_injection_event(events: &SqliteEventStore, session_id: &str, ids: &[&str]) {
+        events
+            .append(NewEvent {
+                session_id: session_id.to_string(),
+                event_type: EventType::Skill,
+                source: "playbook_injector".into(),
+                data: json!({
+                    "kind":"injection",
+                    "injected_ids": ids,
+                    "total_bytes": 10,
+                    "truncated": false
+                }),
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn seed_playbook(db: &DbPool, playbook_id: &str, source_task_id: &str) {
+        let id = playbook_id.to_string();
+        let task = source_task_id.to_string();
+        db.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO playbooks (
+                    id, tenant_id, title, content_path, schema_version, source_task_id,
+                    created_at, updated_at, trigger_keywords, content, success_count,
+                    failure_count, avg_duration_ms, avg_tool_calls, status, version
+                 ) VALUES (
+                    ?, NULL, 'PB', '', 1, ?, 1, 1, '[]', 'body', 0, 0, NULL, NULL, 'active', 1
+                 )",
+                rusqlite::params![id, task],
+            )
+            .unwrap();
+        })
+        .await;
+    }
+
+    async fn add_project_and_task(db: &DbPool, project_id: &str, task_id: &str) {
+        let pid = project_id.to_string();
+        let tid = task_id.to_string();
+        db.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO projects (id, status, title, created_at, updated_at)
+                 VALUES (?, 'active', 'P', 1, 1)",
+                rusqlite::params![pid],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tasks (id, project_id, status, title, created_at, updated_at)
+                 VALUES (?, ?, 'Running', 'T', 1, 1)",
+                rusqlite::params![tid, pid],
+            )
+            .unwrap();
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn outcome_counter_updates() {
+        let (gate, events, db, session_id) = fixture().await;
+        add_project_and_task(&db, "p1", "t1").await;
+        seed_playbook(&db, "pb-1", "t1").await;
+        insert_injection_event(&events, &session_id, &["pb-1"]).await;
+
+        insert_verdict_event(&events, &session_id, "TaskComplete", "pass", None).await;
+        let _ = gate.poll_once(0).await.unwrap();
+
+        let counts = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT success_count, failure_count FROM playbooks WHERE id = 'pb-1'",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .unwrap()
+            })
+            .await;
+        assert_eq!(counts, (1, 0));
+
+        let rows = events
+            .query(&session_id, EventQuery::default())
+            .await
+            .unwrap();
+        assert!(rows.iter().any(|e| {
+            e.event_type == EventType::Skill
+                && e.data.get("kind").and_then(Value::as_str) == Some("outcome")
+                && e.data.get("outcome").and_then(Value::as_str) == Some("pass")
+                && e.data.get("playbook_id").and_then(Value::as_str) == Some("pb-1")
+        }));
+    }
+
+    #[tokio::test]
+    async fn non_terminal_verdict_noop() {
+        let (gate, events, db, session_id) = fixture().await;
+        add_project_and_task(&db, "p2", "t2").await;
+        seed_playbook(&db, "pb-2", "t2").await;
+        insert_injection_event(&events, &session_id, &["pb-2"]).await;
+
+        insert_verdict_event(&events, &session_id, "TaskComplete", "error", None).await;
+        let _ = gate.poll_once(0).await.unwrap();
+
+        let counts = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT success_count, failure_count FROM playbooks WHERE id = 'pb-2'",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .unwrap()
+            })
+            .await;
+        assert_eq!(counts, (0, 0));
+        let rows = events
+            .query(
+                &session_id,
+                EventQuery {
+                    event_type: Some(EventType::Skill),
+                    ..EventQuery::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(rows.iter().all(|e| {
+            e.data.get("kind").and_then(Value::as_str) != Some("outcome")
+        }));
+    }
+
+    mod skill {
+        use super::*;
+
+        #[tokio::test]
+        async fn outcome_counter_updates() {
+            let (gate, events, db, session_id) = fixture().await;
+            add_project_and_task(&db, "p3", "t3").await;
+            seed_playbook(&db, "pb-3", "t3").await;
+            insert_injection_event(&events, &session_id, &["pb-3"]).await;
+
+            insert_verdict_event(&events, &session_id, "TaskComplete", "pass", None).await;
+            let _ = gate.poll_once(0).await.unwrap();
+
+            let counts = db
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT success_count, failure_count FROM playbooks WHERE id = 'pb-3'",
+                        [],
+                        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                    )
+                    .unwrap()
+                })
+                .await;
+            assert_eq!(counts, (1, 0));
+        }
+
+        #[tokio::test]
+        async fn non_terminal_verdict_noop() {
+            let (gate, events, db, session_id) = fixture().await;
+            add_project_and_task(&db, "p4", "t4").await;
+            seed_playbook(&db, "pb-4", "t4").await;
+            insert_injection_event(&events, &session_id, &["pb-4"]).await;
+
+            insert_verdict_event(&events, &session_id, "TaskComplete", "error", None).await;
+            let _ = gate.poll_once(0).await.unwrap();
+
+            let counts = db
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT success_count, failure_count FROM playbooks WHERE id = 'pb-4'",
+                        [],
+                        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                    )
+                    .unwrap()
+                })
+                .await;
+            assert_eq!(counts, (0, 0));
+        }
     }
 }
