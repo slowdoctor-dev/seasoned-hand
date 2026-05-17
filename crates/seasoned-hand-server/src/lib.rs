@@ -849,7 +849,7 @@ async fn list_events(
             (
                 StatusCode::BAD_REQUEST,
                 Json(ApiError {
-                    error: format!("unknown event type: {s}"),
+                    error: "unknown_event_type".into(),
                 }),
             )
         })?),
@@ -1100,22 +1100,22 @@ async fn workspace_proxy_inner(
         handle.workspace_host_path.join(&sub_path)
     };
 
-    let metadata = tokio::fs::metadata(&target).await.map_err(|e| {
+    let metadata = tokio::fs::metadata(&target).await.map_err(|_e| {
         (
             StatusCode::NOT_FOUND,
             Json(ApiError {
-                error: format!("not_found: {e}"),
+                error: "workspace_not_found".into(),
             }),
         )
     })?;
 
     if metadata.is_dir() {
         let mut entries = Vec::new();
-        let mut read_dir = tokio::fs::read_dir(&target).await.map_err(|e| {
+        let mut read_dir = tokio::fs::read_dir(&target).await.map_err(|_e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ApiError {
-                    error: format!("readdir: {e}"),
+                    error: "workspace_readdir_failed".into(),
                 }),
             )
         })?;
@@ -1145,22 +1145,24 @@ async fn workspace_proxy_inner(
     }
 
     if metadata.len() > WORKSPACE_FILE_CAP_BYTES {
+        tracing::warn!(
+            bytes = metadata.len(),
+            cap = WORKSPACE_FILE_CAP_BYTES,
+            "workspace file exceeds response cap"
+        );
         return Err((
             StatusCode::PAYLOAD_TOO_LARGE,
             Json(ApiError {
-                error: format!(
-                    "file_too_large: {} bytes (cap {WORKSPACE_FILE_CAP_BYTES})",
-                    metadata.len()
-                ),
+                error: "workspace_file_too_large".into(),
             }),
         ));
     }
 
-    let bytes = tokio::fs::read(&target).await.map_err(|e| {
+    let bytes = tokio::fs::read(&target).await.map_err(|_e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
-                error: format!("read: {e}"),
+                error: "workspace_read_failed".into(),
             }),
         )
     })?;
@@ -1418,11 +1420,11 @@ async fn post_channel_test_handler(
         "intake" => state.channels.get_intake(&name).is_some(),
         "delivery" => state.channels.get_delivery(&name).is_some(),
         "notify" => state.channels.get_notify(&name).is_some(),
-        other => {
+        _other => {
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(ApiError {
-                    error: format!("unknown role: {other}"),
+                    error: "unknown_role".into(),
                 }),
             ));
         }
@@ -1973,11 +1975,11 @@ async fn list_projects_handler(
     let status = match q.status.as_deref() {
         Some("active") => Some(seasoned_hand_core::project::ProjectStatus::Active),
         Some("archived") => Some(seasoned_hand_core::project::ProjectStatus::Archived),
-        Some(other) => {
+        Some(_other) => {
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(ApiError {
-                    error: format!("unknown status: {other}"),
+                    error: "unknown_status".into(),
                 }),
             ));
         }
@@ -2095,7 +2097,7 @@ async fn list_project_tasks_handler(
                 return Err((
                     StatusCode::BAD_REQUEST,
                     Json(ApiError {
-                        error: format!("unknown status: {s}"),
+                        error: "unknown_status".into(),
                     }),
                 ));
             }
@@ -2545,10 +2547,11 @@ async fn post_intake_cli_handler(
             // Sender dropped — the file fallback will catch the
             // deliverable. Surface 504 so the CLI knows to look at
             // the inbox / fallback dir.
+            tracing::warn!(%task_id, %intake_id, "cli intake deliver sender dropped before response");
             Err((
                 StatusCode::GATEWAY_TIMEOUT,
                 Json(ApiError {
-                    error: format!("deliver_dropped:{task_id}:{intake_id}"),
+                    error: "deliver_dropped:pending_delivery".into(),
                 }),
             ))
         }
@@ -2557,10 +2560,11 @@ async fn post_intake_cli_handler(
             // deliverable finally lands, CliChannel::deliver hits the
             // oneshot, gets a dropped-receiver, and falls back to the
             // file path. The operator can still recover the artifact.
+            tracing::warn!(%task_id, %intake_id, "cli intake timed out waiting for delivery");
             Err((
                 StatusCode::GATEWAY_TIMEOUT,
                 Json(ApiError {
-                    error: format!("deliver_timeout:{task_id}:{intake_id}"),
+                    error: "deliver_timeout:pending_delivery".into(),
                 }),
             ))
         }
