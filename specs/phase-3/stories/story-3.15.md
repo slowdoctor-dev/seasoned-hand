@@ -2,7 +2,7 @@
 
 > **Status**: ready
 > **Estimated**: 2 hours
-> **Dependencies**: 3.5, 3.7
+> **Dependencies**: 3.2, 3.5, 3.6
 > **Phase**: 3
 > **Type**: test+infra
 
