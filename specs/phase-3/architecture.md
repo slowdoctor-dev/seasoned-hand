@@ -124,6 +124,26 @@ CREATE VIRTUAL TABLE playbooks_fts USING fts5(
   tokenize='unicode61 remove_diacritics 2'
 );
 
+-- External-content FTS5 (per ARCH §2.5) does NOT auto-mirror playbooks updates;
+-- V010 ships the three standard maintenance triggers so app code can issue plain
+-- INSERT / UPDATE / DELETE against playbooks without manually touching the FTS index.
+-- content_rowid='rowid' is SQLite's implicit row identifier (NOT playbooks.id, which
+-- is a TEXT UUID); all FTS5 ↔ playbooks joins must use rowid, not id.
+CREATE TRIGGER playbooks_ai AFTER INSERT ON playbooks BEGIN
+  INSERT INTO playbooks_fts(rowid, title, trigger_keywords, content)
+  VALUES (new.rowid, new.title, new.trigger_keywords, new.content);
+END;
+CREATE TRIGGER playbooks_ad AFTER DELETE ON playbooks BEGIN
+  INSERT INTO playbooks_fts(playbooks_fts, rowid, title, trigger_keywords, content)
+  VALUES ('delete', old.rowid, old.title, old.trigger_keywords, old.content);
+END;
+CREATE TRIGGER playbooks_au AFTER UPDATE ON playbooks BEGIN
+  INSERT INTO playbooks_fts(playbooks_fts, rowid, title, trigger_keywords, content)
+  VALUES ('delete', old.rowid, old.title, old.trigger_keywords, old.content);
+  INSERT INTO playbooks_fts(rowid, title, trigger_keywords, content)
+  VALUES (new.rowid, new.title, new.trigger_keywords, new.content);
+END;
+
 -- sops: no tenant_id column in Phase 3 (single-operator scope per Phase 3/5 boundary
 -- in requirements.md §1). Phase 5 multi-user will add a nullable tenant_id with the
 -- same NULL-then-NOT-NULL pattern V009 used for playbooks; deferred to ADR-013 at
@@ -168,6 +188,27 @@ CREATE VIRTUAL TABLE session_search_fts USING fts5(
   content_rowid='event_id',
   tokenize='unicode61 remove_diacritics 2'
 );
+
+-- Same external-content FTS5 maintenance triggers for the session search index;
+-- content_rowid='event_id' here matches session_search_index.event_id (an INTEGER
+-- PRIMARY KEY = SQLite implicit rowid alias). Append-only PRINCIPLES #3 means we
+-- never UPDATE / DELETE session_search_index in normal operation, so only the AI
+-- trigger fires in steady state; ad / au triggers exist for the recovery/compaction
+-- edge case.
+CREATE TRIGGER session_search_index_ai AFTER INSERT ON session_search_index BEGIN
+  INSERT INTO session_search_fts(rowid, searchable_text)
+  VALUES (new.event_id, new.searchable_text);
+END;
+CREATE TRIGGER session_search_index_ad AFTER DELETE ON session_search_index BEGIN
+  INSERT INTO session_search_fts(session_search_fts, rowid, searchable_text)
+  VALUES ('delete', old.event_id, old.searchable_text);
+END;
+CREATE TRIGGER session_search_index_au AFTER UPDATE ON session_search_index BEGIN
+  INSERT INTO session_search_fts(session_search_fts, rowid, searchable_text)
+  VALUES ('delete', old.event_id, old.searchable_text);
+  INSERT INTO session_search_fts(rowid, searchable_text)
+  VALUES (new.event_id, new.searchable_text);
+END;
 ```
 
 Per-EventType `searchable_text` denormalization shape (F-3.16) — the extractor function
@@ -418,18 +459,23 @@ SAME PR slice. Intentional doc/schema drift windows are explicitly disallowed in
    replaces stub bodies, no new tools are registered.
 3. Reconcile architecture spec in same slice. **V010 retains `content_path` from V009;
    ARCH §2.5 has no `content_path` column — Phase 3 inherits this divergence.** Per
-   F-3.19, this requires a successor ADR (ADR-012, sibling pattern to ADR-011's
-   v1.0→v1.1 reconciliation) in the SAME PR slice, bumping ARCH §2.5 to v1.2 to
-   document `content_path` as a reserved-for-Phase-4-spill column (Phase 3 writes the
-   empty-string sentinel `''`; no spill semantics active until Phase 4 needs them). The
-   same ADR formalizes the V010 ALTER-TABLE shape (DEFAULT-backfilled NOT NULL columns
-   added against V009's row) as the canonical schema.
+   F-3.19, this requires successor ADR-012 (following ADR-011's drift-consolidation
+   precedent) in the SAME PR slice, bumping ARCH §2.5 v1.1 → v1.2 to document:
+   - `content_path` as a reserved-for-Phase-4-spill column (Phase 3 writes the
+     empty-string sentinel `''`; no spill semantics active until Phase 4 needs them);
+   - the V010 ALTER-TABLE shape (DEFAULT-backfilled NOT NULL columns added against
+     V009's row) as the canonical schema;
+   - the FTS5 maintenance triggers from §3 as part of the playbooks contract.
 4. Backfill existing V009 rows:
    - `trigger_keywords='[]'`, `content=''`, `status='active'`, `version=1`.
    - Keep `content_path` as-is at the V009 value (NOT NULL inherited); Phase 3 writes
      `''` for new rows and never reads spill semantics. NFR-3.5's 24_576-byte hard cap
      on extraction output is small enough that inline `content` is always sufficient in
      Phase 3.
+   - After backfilling `content`, rebuild `playbooks_fts` once via
+     `INSERT INTO playbooks_fts(playbooks_fts) VALUES('rebuild')` so existing rows
+     become searchable; subsequent INSERT / UPDATE / DELETE on `playbooks` is handled
+     by the §3 triggers.
 5. New tables (`sops`, `glossary`, `session_search_index`, `session_search_fts`) start
    empty at V010; no backfill required.
 6. Update `scripts/spec-check.sh` (closes Phase 2 DEBT #62 carry-forward) to enforce:
@@ -470,6 +516,11 @@ SAME PR slice. Intentional doc/schema drift windows are explicitly disallowed in
     pre-learning baseline so the test is reproducible without re-running the cold
     fixture in CI. Re-baselining requires a deliberate PR that flips the constant +
     cites the new lineage SHA.
+  - LLM extraction call in the warm-run setup is mocked via a fixture playbook
+    pre-seeded into V010 (NOT a live Bifrost call) — the gate measures the
+    INJECTION+MATCH effect on tool_calls, not extraction quality. Extraction
+    quality is covered by integration tests (`sync extraction success/failure/timeout
+    paths`) and quality-floor unit tests separately.
 - Regression guards (separate from acceptance gate per F-3.6)
   - `sessions_tool_calls_matches_action_count` — parity test validating
     `sessions.tool_calls` wiring integrity against the cold baseline. NOT part of
