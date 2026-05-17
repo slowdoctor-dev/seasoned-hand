@@ -65,6 +65,9 @@ enum Commands {
     /// Channel management — `seasoned-hand channel <list|test|logs>`.
     #[command(subcommand)]
     Channel(commands::channel::ChannelCmd),
+    /// SOP lifecycle — `seasoned-hand sop <create|edit|list|show|delete>`.
+    #[command(subcommand)]
+    Sop(commands::sop::SopCmd),
     /// Bootstrap `~/.seasoned-hand/` (config + deliverables dirs).
     Init,
     /// Exec the `seasoned-hand-server` binary (assumes it's on PATH —
@@ -94,6 +97,7 @@ async fn main() -> ExitCode {
         Commands::Brief(cmd) => commands::brief::run(cmd, &client, cli.json).await,
         Commands::Inbox(cmd) => commands::inbox::run(cmd, &client, cli.json).await,
         Commands::Channel(cmd) => commands::channel::run(cmd, &client, cli.json).await,
+        Commands::Sop(cmd) => commands::sop::run(cmd, cli.json).await,
         Commands::Init => commands::init::run(cli.json),
         Commands::Server { args } => {
             // exec-replaces the process on Unix (function returns Err

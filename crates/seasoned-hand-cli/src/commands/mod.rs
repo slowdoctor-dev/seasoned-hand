@@ -4,4 +4,5 @@ pub mod inbox;
 pub mod init;
 pub mod project;
 pub mod server;
+pub mod sop;
 pub mod task;
