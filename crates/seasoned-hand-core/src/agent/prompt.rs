@@ -43,7 +43,20 @@ pub(crate) async fn build_messages(
         });
     }
 
+    if let Some(prefix) = latest_injection_prefix(&all_events) {
+        messages.push(Message {
+            role: Role::System,
+            content: Some(prefix),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
+
     for event in all_events {
+        if is_injection_skill_event(&event) {
+            continue;
+        }
         if is_narrate_message(&event) {
             // Story 1.15: narration is UI-only signal; skipping it
             // here keeps the agent's own context free of its own
@@ -63,6 +76,27 @@ fn is_narrate_message(event: &Event) -> bool {
             .get("ui")
             .and_then(Value::as_str)
             .is_some_and(|ui| ui == NARRATE_UI_TAG)
+}
+
+fn is_injection_skill_event(event: &Event) -> bool {
+    event.event_type == EventType::Skill
+        && event
+            .data
+            .get("kind")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind == "injection")
+}
+
+fn latest_injection_prefix(events: &[Event]) -> Option<String> {
+    events.iter().rev().find_map(|event| {
+        if !is_injection_skill_event(event) {
+            return None;
+        }
+        event.data
+            .get("rendered_prefix")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
 }
 
 fn event_to_message(event: &Event) -> Message {

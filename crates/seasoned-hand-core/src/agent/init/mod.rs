@@ -17,10 +17,13 @@ use crate::sandbox::{SandboxClient, SandboxError};
 
 pub mod briefing;
 pub mod feature_list;
+pub mod injector;
 pub mod progress;
 
 use briefing::{BriefingAction, MAX_EDIT_CYCLES, RunConfig, RunOutcome, UserResponse, apply_edits};
 use feature_list::{Feature, FeatureList, FeatureStatus};
+use injector::{INJECTION_BYTE_CAP, build_injection};
+use crate::matcher::{MatchRequest, MatcherMode, match_playbooks};
 
 const FALLBACK_REASON_PLANNER_ERROR: &str = "planner_error";
 const FALLBACK_REASON_MALFORMED: &str = "malformed_plan";
@@ -46,6 +49,8 @@ pub enum InitError {
     Json(#[from] serde_json::Error),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("db error: {0}")]
+    Db(#[from] rusqlite::Error),
     #[error("task store error: {0}")]
     Task(#[from] TaskError),
     #[error("brief error: {0}")]
@@ -126,6 +131,7 @@ impl Initializer {
         self.sandbox
             .write_workspace_file(session_id, "progress.txt", progress_text.as_bytes())
             .await?;
+        self.inject_playbooks(session_id, briefing).await?;
 
         Ok(InitReport {
             plan,
@@ -283,6 +289,7 @@ impl Initializer {
         self.sandbox
             .write_workspace_file(session_id, "progress.txt", progress_text.as_bytes())
             .await?;
+        self.inject_playbooks(session_id, &brief.goal).await?;
         task_store
             .set_status(task_id, TaskStatus::Confirmed)
             .await?;
@@ -397,10 +404,65 @@ impl Initializer {
         self.sandbox
             .write_workspace_file(session_id, "progress.txt", progress_text.as_bytes())
             .await?;
+        self.inject_playbooks(session_id, briefing).await?;
         Ok(InitReport {
             plan,
             feature_count: feature_list.features.len(),
         })
+    }
+
+    async fn inject_playbooks(&self, session_id: &str, brief: &str) -> Result<(), InitError> {
+        let sid = session_id.to_string();
+        let brief_text = brief.to_string();
+        let matches = self
+            .events
+            .with_conn(move |conn| {
+                match_playbooks(
+                    conn,
+                    &MatchRequest {
+                        session_id: sid,
+                        fixture_id: None,
+                        brief: brief_text,
+                        mode: MatcherMode::Production,
+                        limit: 3,
+                    },
+                )
+            })
+            .await?;
+        let Some(injection) = build_injection(&matches, INJECTION_BYTE_CAP) else {
+            return Ok(());
+        };
+
+        if injection.truncated {
+            self.events
+                .append(NewEvent {
+                    session_id: session_id.to_string(),
+                    event_type: EventType::Misc,
+                    source: "playbook_injector".into(),
+                    data: json!({
+                        "kind": "playbook_injection_truncated",
+                        "original_bytes": injection.original_bytes,
+                        "capped_bytes": injection.total_bytes,
+                        "matched_count": injection.matched_count,
+                    }),
+                })
+                .await?;
+        }
+        self.events
+            .append(NewEvent {
+                session_id: session_id.to_string(),
+                event_type: EventType::Skill,
+                source: "playbook_injector".into(),
+                data: json!({
+                    "kind": "injection",
+                    "injected_ids": injection.injected_ids,
+                    "total_bytes": injection.total_bytes,
+                    "truncated": injection.truncated,
+                    "rendered_prefix": injection.rendered_prefix,
+                }),
+            })
+            .await?;
+        Ok(())
     }
 
     async fn call_planner_slot(

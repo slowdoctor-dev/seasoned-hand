@@ -29,6 +29,7 @@ pub struct MatchRequest {
 pub struct MatchedPlaybook {
     pub playbook_id: String,
     pub title: String,
+    pub content: String,
     pub content_excerpt: String,
     pub matcher_mode: MatcherMode,
     pub match_score: f64,
@@ -190,6 +191,7 @@ fn score_candidate(candidate: Candidate, mode: MatcherMode, tokens: &[&str], now
     MatchedPlaybook {
         playbook_id: candidate.playbook_id,
         title: candidate.title,
+        content: candidate.content.clone(),
         content_excerpt,
         matcher_mode: mode,
         match_score,
