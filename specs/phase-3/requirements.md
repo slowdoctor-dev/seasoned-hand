@@ -175,7 +175,33 @@
   (operator may seed terms via SQL or future Phase 4 surface); the un-stubbed tool
   closes the Phase 1 `glossary_lookup` "Deferred to Phase 3+" marker.
 
-## 4. Acceptance criteria (Phase-level)
+## 4. Story breakdown
+
+Each story is 1-3 hours, independently mergeable, and executable from fresh context.
+Detailed contracts live in `/specs/phase-3/stories/story-3.X.md`.
+
+| ID | Story title | Est | Deps | Status |
+|---|---|---|---|---|
+| 3.1 | Phase 3 scaffolds (requirements + architecture + DEBT + story map) | 0.5h | — | done |
+| 3.2 | Atomic slice: V010 + ADR-012 + ARCH v1.2 + FTS5 triggers + tool un-stubs | 3h | 3.1 | ready |
+| 3.3 | Sync extraction orchestration in task-complete path | 2h | 3.2 | ready |
+| 3.4 | Extraction safety filters, redaction, quality floor, and cap events | 3h | 3.3 | ready |
+| 3.5 | Matcher core (gate identity + production FTS5 + deterministic ranking) | 3h | 3.2 | ready |
+| 3.6 | Initializer top-3 deterministic playbook injection | 2h | 3.5 | ready |
+| 3.7 | Skill telemetry outcomes and playbook counters | 2h | 3.6 | ready |
+| 3.8 | Session search index ingestion and internal query API | 2h | 3.2 | ready |
+| 3.9 | CLI SOP lifecycle surface | 2h | 3.2 | ready |
+| 3.10 | CLI playbook lifecycle surface | 1.5h | 3.2, 3.7 | ready |
+| 3.11 | CLI session search with summarized operator view | 2h | 3.8 | ready |
+| 3.12 | Regression: sessions tool-call parity guard | 1.5h | 3.7 | ready |
+| 3.13 | Regression: production matcher smoke | 1.5h | 3.5 | ready |
+| 3.14 | Regression: FTS5 maintenance trigger correctness | 1h | 3.2, 3.8 | ready |
+| 3.15 | Benchmark fixture + gate-mode harness | 2h | 3.5, 3.7 | ready |
+| 3.16 | Phase 3 acceptance gate and close-out | 2h | 3.12, 3.13, 3.14, 3.15 | ready |
+
+Total: 16 stories, ~30 hours.
+
+## 5. Acceptance criteria (Phase-level)
 
 - `cargo test phase3_warm_benchmark` passes with
   `sessions.tool_calls <= 0.70 x cold_baseline` for the deterministic
@@ -191,7 +217,7 @@
   the gate matcher and the production matcher could ship broken.
 - Benchmark gate remains deterministic and CI-runnable without manual evaluation.
 
-## 5. Out of scope (explicitly deferred)
+## 6. Out of scope (explicitly deferred)
 
 - Diversity validation across additional task families beyond the benchmark fixture.
   (Phase 4 Curator scope.)
@@ -213,7 +239,7 @@
 - Glossary CLI authoring surface (operator seeds terms via SQL in Phase 3); CLI
   surface deferred to Phase 4+ once usage patterns settle.
 
-## 6. Risks and mitigations
+## 7. Risks and mitigations
 
 - **Risk: benchmark overfitting**
   - Mitigation: F-3.1 content-agnostic extraction predicate and production matcher
@@ -240,7 +266,7 @@
     stream; CI MUST treat repeated extraction errors across the benchmark fixture
     as a gate-blocking infrastructure failure distinct from a learning regression.
 
-## 7. Dependencies (external + internal)
+## 8. Dependencies (external + internal)
 
 - **Internal spec/process dependencies**
   - AGENTS.md §8 (same-PR spec/code reconciliation discipline)
@@ -261,7 +287,7 @@
   - CLI surfaces: SOP lifecycle (F-3.10), playbook lifecycle (F-3.20), and session
     search (F-3.17)
 
-## 8. Open questions
+## 9. Open questions
 
 - Exact regex strings and threshold tuning for deterministic safety scans/redaction
   (false-positive vs false-negative balance).
