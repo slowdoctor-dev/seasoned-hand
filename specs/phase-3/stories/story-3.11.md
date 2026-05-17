@@ -1,6 +1,6 @@
 # Story 3.11 — CLI session search with summarized operator view
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 3.8
 > **Phase**: 3
