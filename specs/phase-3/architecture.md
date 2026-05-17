@@ -157,6 +157,8 @@ CREATE TABLE sops (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+-- sop_read({title}) lookup path needs an index; PRIMARY KEY already covers id-lookup.
+CREATE INDEX idx_sops_title ON sops(title);
 
 -- glossary: no tenant_id in Phase 3 (same Phase 3/5 boundary reasoning as sops).
 -- UNIQUE(term) is global (no per-tenant scoping); Phase 5 may relax to UNIQUE(tenant_id, term).
@@ -173,14 +175,26 @@ CREATE TABLE glossary (
 -- session_search_index is populated synchronously on event append; one row per event
 -- across all 8 EventType variants per F-3.16 (Phase 3 actively writes 6 of 8;
 -- Knowledge / Datasource writers ship in Phase 4+ without a schema migration).
+-- event_type CHECK mirrors the events.type CHECK from ARCH §2.1 (V002) so a writer
+-- that produces an unknown EventType cannot smuggle a row into the search index
+-- ahead of the canonical events table.
 CREATE TABLE session_search_index (
   event_id INTEGER PRIMARY KEY,
   session_id TEXT NOT NULL,
   timestamp INTEGER NOT NULL,
-  event_type TEXT NOT NULL,
+  event_type TEXT NOT NULL CHECK(event_type IN (
+    'Message','Action','Observation','Plan',
+    'Knowledge','Datasource','Skill','Misc'
+  )),
   source TEXT NOT NULL,
   searchable_text TEXT NOT NULL
 );
+-- Lookup index for the common "filter by session, scan by time" CLI query.
+CREATE INDEX idx_session_search_session_time
+  ON session_search_index(session_id, timestamp);
+-- Optional filter on event_type (CLI `--type=Action`).
+CREATE INDEX idx_session_search_type
+  ON session_search_index(event_type);
 
 CREATE VIRTUAL TABLE session_search_fts USING fts5(
   searchable_text,
@@ -222,7 +236,7 @@ FTS5 can index uniformly across all 8 variants:
 | Observation | tool_name + " " + truncated tool_result (cap at 4 KB)                  | yes (existing)  |
 | Plan        | goal + " " + phases[].title joined by spaces                           | yes (existing)  |
 | Skill       | kind + " " + playbook_id + " " + matcher_mode (when present)           | yes (new)       |
-| Misc        | kind + " " + serialized reason / category fields per kind              | yes (existing)  |
+| Misc        | kind + " " + serialized reason / category fields per kind — Phase 3 new Misc kinds indexed: `playbook_extraction_*` (F-3.13/F-3.14/F-3.18/F-3.7 + NFR-3.1/3.4/3.5), `playbook_injection_truncated` (NFR-3.3), `session_search_summary_degraded` (§8) | yes (existing)  |
 | Knowledge   | (reserved; Phase 4+ writer fills with cross-source-verified fact text) | no (Phase 4+)   |
 | Datasource  | (reserved; Phase 4+ writer fills with URL + extracted-text excerpt)    | no (Phase 4+)   |
 
@@ -259,9 +273,12 @@ Internal/core APIs:
   augmented prefix plus the `injected_ids` / `total_bytes` / `truncated` metadata that
   feeds the `Skill{kind:"injection"}` event.
 - `record_playbook_outcome(task_id, verifier_verdict) -> ()` — reads the task's
-  injection set (per F-3.8 scope, §4 outcome event); filters internally to `pass`/`fail`
-  verdicts (no-op for `error`/`skipped`); updates `success_count`/`failure_count` on
-  each injected playbook AND emits one `Skill{kind:"outcome"}` per injected playbook.
+  injection set from the events table (single `Skill{kind:"injection",
+  injected_ids:[...]}` row for this task; no separate `task_playbook_injections`
+  table — events stay the single source of truth per ARCH §2.1 append-only). Filters
+  internally to `pass`/`fail` verdicts (no-op for `error`/`skipped`); updates
+  `success_count`/`failure_count` on each injected playbook AND emits one
+  `Skill{kind:"outcome"}` per injected playbook in the same transaction.
 - `index_event_for_search(event)` — invoked inline from the event-append path inside
   the SAME SQLite transaction as the event insert (`BEGIN` … `INSERT INTO events` …
   `INSERT INTO session_search_index` … `COMMIT`). This keeps replay/recovery consistent
@@ -305,7 +322,8 @@ enum SkipReason {
 Tool un-stubs — tool input / output shapes (LLM-callable surface):
 - `sop_read({id: string} OR {title: string})` →
   `{id, title, content, version, enforced} OR null`. Exact-match only in Phase 3
-  (FTS5 over SOPs is Phase 4+).
+  (FTS5 over SOPs is Phase 4+). Both keys provided: `id` wins (more specific);
+  neither provided: validation error before SQL.
 - `playbook_search({query: string, limit?: number = 3})` →
   `[{playbook_id, title, content_excerpt (<= 512 bytes), match_score}, ...]`.
   Project-scoped to the calling session's task per F-3.12; archived rows excluded per
@@ -391,6 +409,13 @@ No new platform components beyond immutable stack.
 - Session search query p95 (single session, <=50k indexed events): `<= 120 ms`.
 - Search summarization adds one auxiliary LLM call via `SlotRouter::resolve(SlotName::SessionSearch)`
   (the existing `session_search` aux slot per ARCH §3.2). Failures degrade to raw hits only.
+- FTS5 maintenance write amplification: every UPDATE on `playbooks` fires the §3
+  `playbooks_au` trigger (1 delete + 1 insert on `playbooks_fts`); every event append
+  fires the `session_search_index_ai` trigger (1 insert on `session_search_fts`). Both
+  are amortized by FTS5's compact index and well-suited to SQLite WAL; assume +0.5 ms
+  per event append (negligible vs the 120 ms search query budget above). Phase 4 may
+  batch-rebuild via `INSERT INTO ... VALUES('rebuild')` if amplification becomes a
+  measurable issue with the post-Phase-3 event volume.
 
 ## 8. Failure modes
 
@@ -508,6 +533,11 @@ SAME PR slice. Intentional doc/schema drift windows are explicitly disallowed in
   - zero-match injection skip emits no `Skill{kind:"injection"}` (F-3.11)
   - outcome event fires for INJECTED playbooks only, not for matched-but-truncated
     rows (F-3.8 scope)
+  - FTS5 maintenance trigger correctness: UPDATE on playbooks.content makes the new
+    text searchable AND removes the old text from results (catches a missing `ad`
+    trigger half of `au`); DELETE removes the row from search hits; rebuild
+    `INSERT INTO playbooks_fts(playbooks_fts) VALUES('rebuild')` produces the same
+    result set as trigger-maintained state (anti-skew regression)
 - Acceptance (Phase 3 gate — `cargo test phase3_warm_benchmark`)
   - `phase3_warm_benchmark` enforces `sessions.tool_calls <= 0.70 x cold_baseline`
     (F-3.3 / requirements §4). `cold_baseline` is a checked-in integer constant in
@@ -609,10 +639,10 @@ Design alternatives considered and chosen:
 | F-3.13 adversarial scan  | §9 deterministic baseline                        |
 | F-3.14 PII redaction     | §9 PII baseline                                  |
 | F-3.15 immediate activation | §9 (no quarantine)                            |
-| F-3.16 search index 8x   | §3 session_search_index + per-type shape table   |
+| F-3.16 search index 8x   | §3 session_search_index + per-type shape table + CHECK |
 | F-3.17 summarization     | §2.4 SessionSearchIndex, §7 summarizer slot      |
 | F-3.18 quality floor     | §3 quality-floor field, §11 unit tests           |
-| F-3.19 atomic slice      | §10 Migration plan                               |
+| F-3.19 atomic slice      | §10 Migration plan, §3 FTS5 triggers (covered by ADR-012) |
 | F-3.20 playbook CLI      | §2.5, §4 CLI surfaces                            |
 | F-3.21 glossary surface  | §3 glossary table, §4 glossary_lookup un-stub    |
 | NFR-3.1 60s timeout      | §7, §8                                           |
