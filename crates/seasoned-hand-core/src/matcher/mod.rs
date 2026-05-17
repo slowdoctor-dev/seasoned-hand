@@ -445,4 +445,132 @@ mod matcher {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].playbook_id, "pb-active");
     }
+
+    #[tokio::test]
+    async fn phase3_production_matcher_smoke() {
+        let pool = db::open(":memory:").await.unwrap();
+        pool.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO sessions (id, created_at, updated_at, state)
+                 VALUES ('s1', 1, 1, 'RUNNING')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, created_at, updated_at, state)
+                 VALUES ('s2', 1, 1, 'RUNNING')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, status, title, created_at, updated_at)
+                 VALUES ('p1', 'active', 'P1', 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, status, title, created_at, updated_at)
+                 VALUES ('p2', 'active', 'P2', 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tasks (id, project_id, status, title, created_at, updated_at)
+                 VALUES ('t1', 'p1', 'Running', 'Task 1', 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tasks (id, project_id, status, title, created_at, updated_at)
+                 VALUES ('t2', 'p2', 'Running', 'Task 2', 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute("UPDATE sessions SET task_id = 't1' WHERE id = 's1'", [])
+                .unwrap();
+            conn.execute("UPDATE sessions SET task_id = 't2' WHERE id = 's2'", [])
+                .unwrap();
+
+            // Same-project active candidates.
+            conn.execute(
+                "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id,
+                 created_at, updated_at, trigger_keywords, content, success_count, failure_count, avg_duration_ms,
+                 avg_tool_calls, status, version)
+                 VALUES ('pb-top', NULL, 'Deploy gold runbook', '', 1, 't1', 1, 1,
+                 '[\"deploy\", \"rollout\"]', 'deploy rollout checklist', 30, 5, NULL, NULL, 'active', 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id,
+                 created_at, updated_at, trigger_keywords, content, success_count, failure_count, avg_duration_ms,
+                 avg_tool_calls, status, version)
+                 VALUES ('pb-mid', NULL, 'Deploy service', '', 1, 't1', 1, 1,
+                 '[\"deploy\"]', 'deploy service instructions', 10, 2, NULL, NULL, 'active', 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id,
+                 created_at, updated_at, trigger_keywords, content, success_count, failure_count, avg_duration_ms,
+                 avg_tool_calls, status, version)
+                 VALUES ('pb-low', NULL, 'Service notes', '', 1, 't1', 1, 1,
+                 '[\"deploy\"]', 'service deployment references', 1, 0, NULL, NULL, 'active', 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id,
+                 created_at, updated_at, trigger_keywords, content, success_count, failure_count, avg_duration_ms,
+                 avg_tool_calls, status, version)
+                 VALUES ('pb-archived', NULL, 'Deploy old', '', 1, 't1', 1, 1,
+                 '[\"deploy\"]', 'legacy deploy path', 999, 1, NULL, NULL, 'archived', 1)",
+                [],
+            )
+            .unwrap();
+
+            // Cross-project candidate that should never surface for s1.
+            conn.execute(
+                "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id,
+                 created_at, updated_at, trigger_keywords, content, success_count, failure_count, avg_duration_ms,
+                 avg_tool_calls, status, version)
+                 VALUES ('pb-foreign', NULL, 'Deploy foreign', '', 1, 't2', 1, 1,
+                 '[\"deploy\"]', 'foreign project deploy', 50, 0, NULL, NULL, 'active', 1)",
+                [],
+            )
+            .unwrap();
+        })
+        .await;
+
+        let out = pool
+            .with_conn(|conn| {
+                match_playbooks(
+                    conn,
+                    &MatchRequest {
+                        session_id: "s1".into(),
+                        fixture_id: None,
+                        brief: "deploy".into(),
+                        mode: MatcherMode::Production,
+                        limit: 3,
+                    },
+                )
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(out.len(), 3, "expected top-3 production matches");
+        assert_eq!(out[0].playbook_id, "pb-top");
+        assert_eq!(out[1].playbook_id, "pb-mid");
+        assert_eq!(out[2].playbook_id, "pb-low");
+
+        let ids = out.iter().map(|m| m.playbook_id.as_str()).collect::<Vec<_>>();
+        assert!(
+            !ids.contains(&"pb-archived"),
+            "archived rows must be excluded from production matcher"
+        );
+        assert!(
+            !ids.contains(&"pb-foreign"),
+            "cross-project rows must be excluded from production matcher"
+        );
+    }
 }
