@@ -70,3 +70,47 @@ async fn foreign_keys_are_enforced() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn migration_v010_creates_learning_artifact_tables_and_triggers() {
+    let pool = open(":memory:").await.unwrap();
+    pool.with_conn(|conn| {
+        let has_table = |name: &str| -> bool {
+            conn.query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM sqlite_master
+                   WHERE type='table' AND name = ?
+                 )",
+                [name],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+                == 1
+        };
+        let has_trigger = |name: &str| -> bool {
+            conn.query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM sqlite_master
+                   WHERE type='trigger' AND name = ?
+                 )",
+                [name],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+                == 1
+        };
+
+        assert!(has_table("sops"));
+        assert!(has_table("glossary"));
+        assert!(has_table("session_search_index"));
+        assert!(has_table("playbooks_fts"));
+        assert!(has_table("session_search_fts"));
+        assert!(has_trigger("playbooks_ai"));
+        assert!(has_trigger("playbooks_ad"));
+        assert!(has_trigger("playbooks_au"));
+        assert!(has_trigger("session_search_index_ai"));
+        assert!(has_trigger("session_search_index_ad"));
+        assert!(has_trigger("session_search_index_au"));
+    })
+    .await;
+}

@@ -1,6 +1,5 @@
-//! Built-in tools for Phase 0.
-//! Five backend-free tools: message_notify_user, message_ask_user, idle,
-//! sop_read (stub), glossary_lookup (stub).
+//! Built-in tools.
+//! Phase 3 ships real SOP / glossary / playbook lookup surfaces.
 //!
 //! refs: /specs/phase-0/architecture.md §4.3
 
@@ -8,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use rusqlite::OptionalExtension;
 use serde_json::{Map, Value, json};
 
 use super::{Tool, ToolContext, ToolError, ToolErrorPayload, ToolOutput};
@@ -109,18 +109,6 @@ fn require_str(args: &Value, key: &str) -> Result<String, ToolError> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| ToolError::InvalidArgs(format!("missing '{key}' string")))
-}
-
-fn deferred(phase: &'static str) -> ToolOutput {
-    ToolOutput {
-        ok: false,
-        output: Value::Null,
-        file_ref: None,
-        error: Some(ToolErrorPayload {
-            kind: "not_implemented".into(),
-            message: format!("deferred to phase {phase}"),
-        }),
-    }
 }
 
 pub struct MessageNotifyUser;
@@ -245,20 +233,74 @@ impl Tool for SopRead {
         "sop_read"
     }
     fn description(&self) -> &'static str {
-        "Look up a Standard Operating Procedure by id or title. (Deferred to Phase 3+; returns not_implemented.)"
+        "Look up a Standard Operating Procedure by id or title."
     }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "id": { "type": "string" }
+                "id": { "type": "string" },
+                "title": { "type": "string" }
             },
-            "required": ["id"],
             "additionalProperties": false,
         })
     }
-    async fn invoke(&self, _args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
-        Ok(deferred("3"))
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let id = args.get("id").and_then(Value::as_str).map(str::to_string);
+        let title = args
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if id.is_none() && title.is_none() {
+            return Err(ToolError::InvalidArgs(
+                "one of 'id' or 'title' is required".into(),
+            ));
+        }
+
+        let row = ctx
+            .events
+            .with_conn(move |conn| {
+                if let Some(id) = id {
+                    conn.query_row(
+                        "SELECT id, title, content, version, enforced FROM sops WHERE id = ?",
+                        [id],
+                        |r| {
+                            Ok(json!({
+                                "id": r.get::<_, String>(0)?,
+                                "title": r.get::<_, String>(1)?,
+                                "content": r.get::<_, String>(2)?,
+                                "version": r.get::<_, i64>(3)?,
+                                "enforced": r.get::<_, bool>(4)?,
+                            }))
+                        },
+                    )
+                    .optional()
+                } else {
+                    conn.query_row(
+                        "SELECT id, title, content, version, enforced FROM sops WHERE title = ?",
+                        [title.unwrap_or_default()],
+                        |r| {
+                            Ok(json!({
+                                "id": r.get::<_, String>(0)?,
+                                "title": r.get::<_, String>(1)?,
+                                "content": r.get::<_, String>(2)?,
+                                "version": r.get::<_, i64>(3)?,
+                                "enforced": r.get::<_, bool>(4)?,
+                            }))
+                        },
+                    )
+                    .optional()
+                }
+            })
+            .await
+            .map_err(|e| ToolError::Backend(e.to_string()))?;
+
+        Ok(ToolOutput {
+            ok: true,
+            output: row.unwrap_or(Value::Null),
+            file_ref: None,
+            error: None,
+        })
     }
 }
 
@@ -270,7 +312,7 @@ impl Tool for GlossaryLookup {
         "glossary_lookup"
     }
     fn description(&self) -> &'static str {
-        "Look up an organizational term in the glossary. (Deferred to Phase 3+; returns not_implemented.)"
+        "Look up an organizational term in the glossary."
     }
     fn schema(&self) -> Value {
         json!({
@@ -282,8 +324,142 @@ impl Tool for GlossaryLookup {
             "additionalProperties": false,
         })
     }
-    async fn invoke(&self, _args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
-        Ok(deferred("3"))
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let term = require_str(&args, "term")?;
+        let row = ctx
+            .events
+            .with_conn(move |conn| {
+                conn.query_row(
+                    "SELECT term, definition, category FROM glossary WHERE term = ? COLLATE NOCASE",
+                    [term],
+                    |r| {
+                        Ok(json!({
+                            "term": r.get::<_, String>(0)?,
+                            "definition": r.get::<_, String>(1)?,
+                            "category": r.get::<_, String>(2)?,
+                        }))
+                    },
+                )
+                .optional()
+            })
+            .await
+            .map_err(|e| ToolError::Backend(e.to_string()))?;
+
+        Ok(ToolOutput {
+            ok: true,
+            output: row.unwrap_or(Value::Null),
+            file_ref: None,
+            error: None,
+        })
+    }
+}
+
+pub struct PlaybookSearch;
+
+#[async_trait]
+impl Tool for PlaybookSearch {
+    fn name(&self) -> &'static str {
+        "playbook_search"
+    }
+    fn description(&self) -> &'static str {
+        "Full-text search over learned playbooks."
+    }
+    fn schema(&self) -> Value {
+        obj_schema(
+            json!({
+                "query": { "type": "string" },
+                "limit": { "type": "integer", "minimum": 0 }
+            }),
+            &["query"],
+        )
+    }
+    async fn invoke(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let query = require_str(&args, "query")?;
+        let raw_limit = args.get("limit").and_then(Value::as_i64).unwrap_or(3);
+        if raw_limit < 0 {
+            return Err(ToolError::InvalidArgs("limit must be >= 0".into()));
+        }
+        let limit = std::cmp::min(raw_limit as usize, 3);
+        if limit == 0 {
+            return Ok(ToolOutput {
+                ok: true,
+                output: json!([]),
+                file_ref: None,
+                error: None,
+            });
+        }
+
+        let normalized = query.split_whitespace().collect::<Vec<_>>().join(" ");
+        if normalized.is_empty() {
+            return Ok(ToolOutput {
+                ok: true,
+                output: json!([]),
+                file_ref: None,
+                error: None,
+            });
+        }
+        let fts_query = normalized
+            .split(' ')
+            .filter(|t| !t.is_empty())
+            .map(|t| format!("{t}*"))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let session_id = ctx.session_id.clone();
+        let hits = ctx
+            .events
+            .with_conn(move |conn| -> rusqlite::Result<Value> {
+                let project_id: Option<String> = conn
+                    .query_row(
+                        "SELECT t.project_id
+                         FROM sessions s
+                         JOIN tasks t ON t.id = s.task_id
+                         WHERE s.id = ?",
+                        [session_id],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+
+                let Some(project_id) = project_id else {
+                    return Ok(json!([]));
+                };
+
+                let mut stmt = conn.prepare(
+                    "SELECT p.id, p.title, substr(p.content, 1, 512), -bm25(playbooks_fts) AS score
+                     FROM playbooks_fts
+                     JOIN playbooks p ON p.rowid = playbooks_fts.rowid
+                     JOIN tasks src ON src.id = p.source_task_id
+                     WHERE playbooks_fts MATCH ?
+                       AND src.project_id = ?
+                       AND p.status = 'active'
+                     ORDER BY score DESC, p.id ASC
+                     LIMIT ?",
+                )?;
+
+                let rows = stmt.query_map(rusqlite::params![fts_query, project_id, limit as i64], |r| {
+                    Ok(json!({
+                        "playbook_id": r.get::<_, String>(0)?,
+                        "title": r.get::<_, String>(1)?,
+                        "content_excerpt": r.get::<_, String>(2)?,
+                        "match_score": r.get::<_, f64>(3)?,
+                    }))
+                })?;
+
+                let mut out = Vec::new();
+                for row in rows {
+                    out.push(row?);
+                }
+                Ok(Value::Array(out))
+            })
+            .await
+            .map_err(|e| ToolError::Backend(e.to_string()))?;
+
+        Ok(ToolOutput {
+            ok: true,
+            output: hits,
+            file_ref: None,
+            error: None,
+        })
     }
 }
 
@@ -1144,16 +1320,8 @@ pub fn all() -> HashMap<&'static str, Arc<dyn Tool>> {
         ),
     );
 
-    // ===== Internal (playbook_search) — Phase 3+ =====
-    map.insert(
-        "playbook_search",
-        stub(
-            "playbook_search",
-            "Full-text search over learned playbooks (deferred to Phase 3+).",
-            obj_schema(json!({ "query": { "type": "string" } }), &["query"]),
-            "Phase 3+",
-        ),
-    );
+    // ===== Internal (playbook_search) =====
+    map.insert("playbook_search", Arc::new(PlaybookSearch));
 
     // ===== Plan (2) — LLM-callable per ADR-010 =====
     map.insert("plan_advance", Arc::new(PlanAdvance));

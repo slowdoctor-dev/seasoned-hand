@@ -1,13 +1,13 @@
 # Seasoned Hand — Architecture Specification
 
-> **Status**: v1.1 (Phase 3 starting; text-drift consolidation per ADR-011)
-> **Last updated**: 2026-05-16
+> **Status**: v1.2 (Phase 3 story 3.2 reconciliation per ADR-012)
+> **Last updated**: 2026-05-18
 > **Owners**: Project lead
 >
-> **v1.1 amendments (ADR-011, 2026-05-16)**: §2.2 sessions states +6 `VERIFYING`;
-> §2.2.1 new — Phase 2 `tasks` + 8-variant `TaskStatus`; §2.4 + §7 tool count
-> 32 → 38 with Phase 1/2 additions. No architectural shift — text reconciled
-> with shipped reality (Phase 1 DEBT #1, #2 + Phase 2 REVIEW DEBT #51).
+> **v1.2 amendments (ADR-012, 2026-05-18)**: §2.5 reconciled with Phase 3 V010:
+> V009-compatible playbook carry-forward columns retained, learning/search columns added,
+> `session_search_index` + `session_search_fts` added, and FTS5 maintenance triggers
+> specified (`playbooks_*`, `session_search_index_*`).
 
 This is the **immutable architectural specification**. Changes require:
 1. PR with rationale
@@ -265,7 +265,13 @@ CREATE TABLE sops (
 -- Playbooks: auto-extracted from verified work
 CREATE TABLE playbooks (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT,              -- nullable in Phase 3 (Phase 5 tightens)
   title TEXT NOT NULL,
+  content_path TEXT NOT NULL,  -- V009 compatibility, reserved in Phase 3
+  schema_version INTEGER NOT NULL,
+  source_task_id TEXT REFERENCES tasks(id),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
   trigger_keywords TEXT NOT NULL,  -- JSON array
   content TEXT NOT NULL,
   version INTEGER NOT NULL,
@@ -273,9 +279,7 @@ CREATE TABLE playbooks (
   failure_count INTEGER DEFAULT 0,
   avg_duration_ms INTEGER,
   avg_tool_calls INTEGER,
-  status TEXT NOT NULL,  -- active, archived, pinned
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  status TEXT NOT NULL  -- active, archived, pinned
 );
 
 CREATE VIRTUAL TABLE playbooks_fts USING fts5(
@@ -283,6 +287,21 @@ CREATE VIRTUAL TABLE playbooks_fts USING fts5(
   content='playbooks',
   content_rowid='rowid'
 );
+
+CREATE TRIGGER playbooks_ai AFTER INSERT ON playbooks BEGIN
+  INSERT INTO playbooks_fts(rowid, title, trigger_keywords, content)
+  VALUES (new.rowid, new.title, new.trigger_keywords, new.content);
+END;
+CREATE TRIGGER playbooks_ad AFTER DELETE ON playbooks BEGIN
+  INSERT INTO playbooks_fts(playbooks_fts, rowid, title, trigger_keywords, content)
+  VALUES ('delete', old.rowid, old.title, old.trigger_keywords, old.content);
+END;
+CREATE TRIGGER playbooks_au AFTER UPDATE ON playbooks BEGIN
+  INSERT INTO playbooks_fts(playbooks_fts, rowid, title, trigger_keywords, content)
+  VALUES ('delete', old.rowid, old.title, old.trigger_keywords, old.content);
+  INSERT INTO playbooks_fts(rowid, title, trigger_keywords, content)
+  VALUES (new.rowid, new.title, new.trigger_keywords, new.content);
+END;
 
 -- Glossary: organizational facts
 CREATE TABLE glossary (
@@ -293,6 +312,45 @@ CREATE TABLE glossary (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+-- Session search index (Phase 3 denormalized FTS surface)
+CREATE TABLE session_search_index (
+  event_id INTEGER PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  timestamp INTEGER NOT NULL,
+  event_type TEXT NOT NULL CHECK(event_type IN (
+    'Message', 'Action', 'Observation', 'Plan',
+    'Knowledge', 'Datasource', 'Skill', 'Misc'
+  )),
+  source TEXT NOT NULL,
+  searchable_text TEXT NOT NULL
+);
+
+CREATE INDEX idx_session_search_session_time
+  ON session_search_index(session_id, timestamp);
+CREATE INDEX idx_session_search_type
+  ON session_search_index(event_type);
+
+CREATE VIRTUAL TABLE session_search_fts USING fts5(
+  searchable_text,
+  content='session_search_index',
+  content_rowid='event_id'
+);
+
+CREATE TRIGGER session_search_index_ai AFTER INSERT ON session_search_index BEGIN
+  INSERT INTO session_search_fts(rowid, searchable_text)
+  VALUES (new.event_id, new.searchable_text);
+END;
+CREATE TRIGGER session_search_index_ad AFTER DELETE ON session_search_index BEGIN
+  INSERT INTO session_search_fts(session_search_fts, rowid, searchable_text)
+  VALUES ('delete', old.event_id, old.searchable_text);
+END;
+CREATE TRIGGER session_search_index_au AFTER UPDATE ON session_search_index BEGIN
+  INSERT INTO session_search_fts(session_search_fts, rowid, searchable_text)
+  VALUES ('delete', old.event_id, old.searchable_text);
+  INSERT INTO session_search_fts(rowid, searchable_text)
+  VALUES (new.event_id, new.searchable_text);
+END;
 
 -- Project History uses events table (no separate table)
 ```

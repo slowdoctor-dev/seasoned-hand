@@ -37,6 +37,14 @@ impl SqliteEventStore {
             })
             .await
     }
+
+    pub async fn with_conn<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut rusqlite::Connection) -> R + Send,
+        R: Send,
+    {
+        self.pool.with_conn(f).await
+    }
 }
 
 fn now_micros() -> Result<i64, EventError> {

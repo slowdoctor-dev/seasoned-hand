@@ -89,7 +89,7 @@ const EXPECTED_TOOLS: &[&str] = &[
     // deploy (2)
     "deploy_expose_port",
     "deploy_apply_deployment",
-    // internal (playbook_search; sop_read + glossary_lookup already above)
+    // internal
     "playbook_search",
     // plan (2)
     "plan_advance",
@@ -164,6 +164,8 @@ async fn stubs_return_not_implemented() {
         // `real` here so the stubs test doesn't try to invoke it
         // against the empty fixture (it would 404 on checkpoint_id).
         "checkpoint_rollback",
+        // Story 3.2: learning surfaces are real.
+        "playbook_search",
         // Story 2.14: registered as a not-wired placeholder in the
         // base `register_builtin_tools()` (production wiring is via
         // `all_with_task_deliver(deps)`). Surfaces
@@ -252,23 +254,170 @@ async fn idle_returns_task_complete_signal() {
 }
 
 #[tokio::test]
-async fn sop_read_is_not_implemented() {
+async fn sop_read_returns_row_by_id() {
     let (cx, _store) = ctx().await;
+    cx.events
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO sops (id, title, content, version, enforced, created_at, updated_at)
+                 VALUES ('sop-1', 'Deploy', 'Use checklist', 1, 1, 1, 1)",
+                [],
+            )
+            .unwrap();
+        })
+        .await;
     let reg = register_builtin_tools();
     let tool = reg.get("sop_read").unwrap();
-    let out = tool.invoke(json!({"id": "anything"}), &cx).await.unwrap();
-    assert!(!out.ok);
-    assert_eq!(out.error.as_ref().unwrap().kind, "not_implemented");
+    let out = tool.invoke(json!({"id": "sop-1"}), &cx).await.unwrap();
+    assert!(out.ok);
+    assert_eq!(out.output["id"], "sop-1");
+    assert_eq!(out.output["title"], "Deploy");
 }
 
 #[tokio::test]
-async fn glossary_lookup_is_not_implemented() {
+async fn glossary_lookup_returns_exact_row() {
     let (cx, _store) = ctx().await;
+    cx.events
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO glossary (id, term, definition, category, created_at, updated_at)
+                 VALUES ('g1', 'runbook', 'Operator procedure', 'terminology', 1, 1)",
+                [],
+            )
+            .unwrap();
+        })
+        .await;
     let reg = register_builtin_tools();
     let tool = reg.get("glossary_lookup").unwrap();
-    let out = tool.invoke(json!({"term": "X"}), &cx).await.unwrap();
-    assert!(!out.ok);
-    assert_eq!(out.error.as_ref().unwrap().kind, "not_implemented");
+    let out = tool.invoke(json!({"term": "Runbook"}), &cx).await.unwrap();
+    assert!(out.ok);
+    assert_eq!(out.output["term"], "runbook");
+    assert_eq!(out.output["category"], "terminology");
+}
+
+#[tokio::test]
+async fn playbook_search_returns_project_scoped_hits() {
+    let (cx, _store) = ctx().await;
+    cx.events
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, status, title, created_at, updated_at)
+                 VALUES ('p1', 'active', 'Project 1', 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, status, title, created_at, updated_at)
+                 VALUES ('p2', 'active', 'Project 2', 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tasks (id, project_id, status, title, created_at, updated_at)
+                 VALUES ('t1', 'p1', 'Running', 'Task 1', 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tasks (id, project_id, status, title, created_at, updated_at)
+                 VALUES ('t2', 'p2', 'Running', 'Task 2', 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute("UPDATE sessions SET task_id = 't1' WHERE id = 's1'", [])
+                .unwrap();
+
+            conn.execute(
+                "INSERT INTO playbooks (
+                    id, tenant_id, title, content_path, schema_version, source_task_id,
+                    created_at, updated_at, trigger_keywords, content, success_count,
+                    failure_count, avg_duration_ms, avg_tool_calls, status, version
+                 ) VALUES (
+                    'pb-1', NULL, 'Deploy checklist', '', 1, 't1',
+                    1, 1, '[\"deploy\"]', 'deploy runbook checklist', 0,
+                    0, NULL, NULL, 'active', 1
+                 )",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO playbooks (
+                    id, tenant_id, title, content_path, schema_version, source_task_id,
+                    created_at, updated_at, trigger_keywords, content, success_count,
+                    failure_count, avg_duration_ms, avg_tool_calls, status, version
+                 ) VALUES (
+                    'pb-2', NULL, 'Deploy but archived', '', 1, 't1',
+                    1, 1, '[\"deploy\"]', 'deploy archived', 0,
+                    0, NULL, NULL, 'archived', 1
+                 )",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO playbooks (
+                    id, tenant_id, title, content_path, schema_version, source_task_id,
+                    created_at, updated_at, trigger_keywords, content, success_count,
+                    failure_count, avg_duration_ms, avg_tool_calls, status, version
+                 ) VALUES (
+                    'pb-3', NULL, 'Deploy other project', '', 1, 't2',
+                    1, 1, '[\"deploy\"]', 'deploy different project', 0,
+                    0, NULL, NULL, 'active', 1
+                 )",
+                [],
+            )
+            .unwrap();
+        })
+        .await;
+
+    let reg = register_builtin_tools();
+    let tool = reg.get("playbook_search").unwrap();
+    let out = tool
+        .invoke(json!({"query": "deploy", "limit": 3}), &cx)
+        .await
+        .unwrap();
+    assert!(out.ok);
+    let rows = out.output.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["playbook_id"], "pb-1");
+}
+
+#[tokio::test]
+async fn learning_tools_surface_is_live() {
+    let (cx, _store) = ctx().await;
+    cx.events
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO sops (id, title, content, version, enforced, created_at, updated_at)
+                 VALUES ('sop-a', 'A', 'Body', 1, 1, 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO glossary (id, term, definition, category, created_at, updated_at)
+                 VALUES ('g-a', 'alpha', 'first', 'terminology', 1, 1)",
+                [],
+            )
+            .unwrap();
+        })
+        .await;
+    let reg = register_builtin_tools();
+    assert!(reg.get("sop_read").is_some());
+    assert!(reg.get("glossary_lookup").is_some());
+    assert!(reg.get("playbook_search").is_some());
+    assert!(reg
+        .get("sop_read")
+        .unwrap()
+        .invoke(json!({"id":"sop-a"}), &cx)
+        .await
+        .unwrap()
+        .ok);
+    assert!(reg
+        .get("glossary_lookup")
+        .unwrap()
+        .invoke(json!({"term":"alpha"}), &cx)
+        .await
+        .unwrap()
+        .ok);
 }
 
 #[tokio::test]
