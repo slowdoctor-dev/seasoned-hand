@@ -630,7 +630,7 @@ pub(crate) async fn handle_task_resume(state: &AppState, session_id: &str) -> Re
         .await
         .map_err(|_| "internal".to_string())?;
     set_session_state(state, session_id, "RUNNING").await?;
-    let _ = state
+    if let Err(error) = state
         .events
         .append(NewEvent {
             session_id: session_id.to_string(),
@@ -638,11 +638,16 @@ pub(crate) async fn handle_task_resume(state: &AppState, session_id: &str) -> Re
             source: "ws".into(),
             data: json!({"kind":"task_resumed"}),
         })
-        .await;
+        .await
+    {
+        tracing::warn!(%session_id, %error, "ws: failed to append task_resumed event");
+    }
     let runner = state.runner.clone();
     let sid = session_id.to_string();
     tokio::spawn(async move {
-        let _ = runner.resume_session(&sid).await;
+        if let Err(error) = runner.resume_session(&sid).await {
+            tracing::warn!(session_id = %sid, %error, "ws: resume_session failed");
+        }
     });
     Ok(())
 }
@@ -707,7 +712,9 @@ async fn run_durable_resume(state: &AppState, task_id: &str) -> Result<(), Strin
     };
     let runner = state.runner.clone();
     tokio::spawn(async move {
-        let _ = runner.resume_session(&resume_session_id).await;
+        if let Err(error) = runner.resume_session(&resume_session_id).await {
+            tracing::warn!(session_id = %resume_session_id, %error, "ws: durable resume failed");
+        }
     });
     Ok(())
 }
@@ -722,7 +729,7 @@ pub(crate) async fn handle_task_cancel(state: &AppState, session_id: &str) -> Re
     if let Some(token) = state.cancel_tokens.get(session_id) {
         token.cancel();
     }
-    let _ = state
+    if let Err(error) = state
         .events
         .append(NewEvent {
             session_id: session_id.to_string(),
@@ -730,8 +737,13 @@ pub(crate) async fn handle_task_cancel(state: &AppState, session_id: &str) -> Re
             source: "ws".into(),
             data: json!({"kind":"task_cancelled","by":"user"}),
         })
-        .await;
-    let _ = state.sandbox.destroy(session_id).await;
+        .await
+    {
+        tracing::warn!(%session_id, %error, "ws: failed to append task_cancelled event");
+    }
+    if let Err(error) = state.sandbox.destroy(session_id).await {
+        tracing::warn!(%session_id, %error, "ws: sandbox destroy failed during task_cancel");
+    }
     set_session_state(state, session_id, "FINISHED").await?;
     state.cancel_tokens.remove(session_id);
     Ok(())

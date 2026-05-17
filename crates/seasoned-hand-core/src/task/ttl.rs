@@ -266,7 +266,13 @@ impl<S: SandboxJanitor + 'static> WorkspaceTtlCron<S> {
                 // No session ever existed (drafted/briefed before the
                 // initializer ran). Still bump updated_at so we don't
                 // re-scan on the next cycle.
-                let _ = self.bump_updated_at(&cand.task_id).await;
+                if let Err(error) = self.bump_updated_at(&cand.task_id).await {
+                    tracing::warn!(
+                        task_id = %cand.task_id,
+                        %error,
+                        "workspace ttl: failed to bump updated_at for task with no session",
+                    );
+                }
                 return CleanupOutcome::Skipped;
             }
             Err(e) => {

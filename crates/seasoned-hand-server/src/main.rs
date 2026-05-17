@@ -15,6 +15,12 @@ use seasoned_hand_core::{db, pubsub};
 use seasoned_hand_server::{AppState, EmailChannelEnv, app};
 use tracing_subscriber::EnvFilter;
 
+fn log_join_error(name: &str, result: Result<(), tokio::task::JoinError>) {
+    if let Err(error) = result {
+        tracing::warn!(task = name, %error, "background task join failed");
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing();
@@ -390,12 +396,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Signal the verifier worker to drain and exit.
     verifier_shutdown.cancel();
     if let Some(handle) = verifier_handle {
-        let _ = handle.await;
+        log_join_error("verifier", handle.await);
     }
 
     // Story 1.13: drain the checkpoint manager.
     checkpoint_shutdown.cancel();
-    let _ = checkpoint_handle.await;
+    log_join_error("checkpoint", checkpoint_handle.await);
 
     // Story 2.10 / DEBT #16: drain the intake plane. Cancelling the
     // token signals every long-lived `IntakeProvider::run` AND the
@@ -404,18 +410,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // task exits.
     intake_shutdown.cancel();
     for handle in intake_provider_handles {
-        let _ = handle.await;
+        match handle.await {
+            Err(join_error) => {
+                tracing::warn!(
+                    task = "intake_provider",
+                    %join_error,
+                    "intake provider join failed",
+                );
+            }
+            Ok(Err(run_error)) => {
+                tracing::warn!(
+                    task = "intake_provider",
+                    %run_error,
+                    "intake provider exited with error",
+                );
+            }
+            Ok(Ok(())) => {}
+        }
     }
-    let _ = intake_handle.await;
+    log_join_error("intake_router", intake_handle.await);
 
     // Story 2.12: drain the notify plane.
     notify_shutdown.cancel();
-    let _ = notify_listener_handle.await;
-    let _ = notify_worker_handle.await;
+    log_join_error("notify_listener", notify_listener_handle.await);
+    log_join_error("notify_worker", notify_worker_handle.await);
 
     // Story 2.17: drain the workspace TTL cron.
     ttl_shutdown.cancel();
-    let _ = ttl_handle.await;
+    log_join_error("workspace_ttl", ttl_handle.await);
 
     Ok(())
 }

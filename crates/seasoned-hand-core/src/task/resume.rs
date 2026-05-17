@@ -313,7 +313,7 @@ async fn record_rebuild_failure<S: SandboxOps>(
     step: &str,
     error: &str,
 ) -> Result<(), ResumeError> {
-    let _ = deps
+    if let Err(event_error) = deps
         .events
         .append(NewEvent {
             session_id: new_session_id.to_string(),
@@ -325,9 +325,23 @@ async fn record_rebuild_failure<S: SandboxOps>(
                 "error": error,
             }),
         })
-        .await;
+        .await
+    {
+        tracing::warn!(
+            task_id = %task_id,
+            session_id = %new_session_id,
+            %event_error,
+            "task resume: failed to append rebuild failure event",
+        );
+    }
     let reason = format!("replay_failed:{step}");
-    let _ = deps.task_store.set_failure(task_id, &reason).await;
+    if let Err(set_failure_error) = deps.task_store.set_failure(task_id, &reason).await {
+        tracing::warn!(
+            %task_id,
+            %set_failure_error,
+            "task resume: failed to persist failure status after rebuild error",
+        );
+    }
     Ok(())
 }
 

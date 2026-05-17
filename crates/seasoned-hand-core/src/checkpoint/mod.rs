@@ -94,7 +94,13 @@ impl CheckpointManager {
                     "git_sha": git_sha,
                     "label": label,
                 });
-                let _ = self.emit_misc(&ev.session_id, data).await;
+                if let Err(error) = self.emit_misc(&ev.session_id, data).await {
+                    tracing::warn!(
+                        session_id = %ev.session_id,
+                        %error,
+                        "checkpoint manager: failed to emit checkpoint_create event",
+                    );
+                }
                 Ok(Some(checkpoint_id))
             }
             Err(err) => {
@@ -104,7 +110,13 @@ impl CheckpointManager {
                     "reason": err.to_string(),
                     "plan_phase_id": ev.plan_phase_id,
                 });
-                let _ = self.emit_misc(&ev.session_id, data).await;
+                if let Err(error) = self.emit_misc(&ev.session_id, data).await {
+                    tracing::warn!(
+                        session_id = %ev.session_id,
+                        %error,
+                        "checkpoint manager: failed to emit checkpoint_create error event",
+                    );
+                }
                 Ok(None)
             }
         }

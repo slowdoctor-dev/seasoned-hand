@@ -398,7 +398,9 @@ impl Worker {
         }
 
         for h in in_flight {
-            let _ = h.await;
+            if let Err(error) = h.await {
+                tracing::warn!(%error, "verifier worker: entry task join failed");
+            }
         }
         Ok(())
     }
@@ -570,7 +572,13 @@ async fn process_entry(
                 %error,
                 "verifier worker: dropping malformed verify_request",
             );
-            let _ = redis.xack(&cfg.stream, &cfg.group, &msg_id).await;
+            if let Err(xack_error) = redis.xack(&cfg.stream, &cfg.group, &msg_id).await {
+                tracing::warn!(
+                    %msg_id,
+                    %xack_error,
+                    "verifier worker: xack failed after malformed verify_request",
+                );
+            }
             return;
         }
     };
