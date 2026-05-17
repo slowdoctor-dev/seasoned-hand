@@ -88,3 +88,32 @@ _To be populated by the BMAD Architect pass on
   deterministic CI.
 - **Pay down**: Phase 4 Curator retunes from `Skill{kind:"match"}` telemetry once a
   match corpus exists.
+
+6. **#77 (M)** Project-scope JOIN may need denormalization
+- **What**: Matcher enforces F-3.12 via `playbooks JOIN tasks ON playbooks.source_task_id`
+  + `WHERE tasks.project_id = :new_task.project_id`. At Phase 3 scale (<=10k
+  playbooks per matcher query budget in §7) this fits the 80 ms p95 budget; at Phase 4+
+  scale the JOIN may dominate.
+- **Why now**: V010 deliberately does NOT add a denormalized `source_project_id` column
+  to keep the migration minimal and avoid a second ARCH §2.5 divergence.
+- **Pay down**: Phase 4 perf pass — if `Skill{kind:"match"}` p95 latency telemetry
+  exceeds 80 ms, add `source_project_id TEXT` column + index + backfill in V011.
+
+7. **#78 (H)** ADR-012 required when V010 ships
+- **What**: Architecture §10.3 requires successor ADR-012 in the SAME PR slice as V010
+  per F-3.19 atomic-slice rule. The ADR documents content_path-as-reserved,
+  ALTER-TABLE schema shape, and the FTS5 maintenance triggers — none currently in
+  ARCH §2.5 v1.1.
+- **Why now**: Phase 3 cannot land V010 without the spec reconciliation per F-3.19;
+  this is a HARD dependency, not a "later cleanup".
+- **Pay down**: First Phase 3 story that touches V010 must include ADR-012 +
+  ARCH §2.5 v1.1 → v1.2 bump in the same PR.
+
+8. **#79 (M)** ADR-013 forward at Phase 5 multi-user kickoff
+- **What**: V010 ships `sops` and `glossary` WITHOUT `tenant_id` columns. Phase 5
+  multi-user will need to add tenant_id (nullable then NOT NULL pattern, same as V009
+  did for `playbooks` and `skills`).
+- **Why now**: Phase 3 is single-operator; adding unused columns now would violate
+  the "no speculative code" principle.
+- **Pay down**: First Phase 5 story authors ADR-013 + schema migration adding
+  `tenant_id` to `sops` and `glossary` with backfill plan.

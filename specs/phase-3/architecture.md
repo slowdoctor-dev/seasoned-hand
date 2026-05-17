@@ -66,6 +66,11 @@ Operators
 - Both matchers WHERE-filter `status = 'active'` so soft-deleted ('archived') playbooks
   never match (consistent across LLM-callable `playbook_search` tool and Initializer
   injection path).
+- F-3.12 project-scope enforcement: matcher JOINs `playbooks` → `tasks` (via
+  `playbooks.source_task_id`) and filters `tasks.project_id = :new_task.project_id`.
+  No denormalized `source_project_id` column in V010 — the JOIN is cheap at Phase 3
+  scale (<=10k playbooks per matcher query budget in §7). Denormalization is a Phase 4
+  perf escape valve if the JOIN becomes a hot path (see DEBT seed #77).
 - Integration: Initializer injection path, un-stubbed `playbook_search` tool, skill telemetry emit.
 
 3. `PlaybookInjector` (core)
@@ -246,16 +251,27 @@ Pinned NFR budgets:
 - NFR-3.5 extraction output cap: `24_576 bytes`.
 
 Quality-floor field (F-3.18): `playbooks.content` (single-field choice per F-3.18's
-"e.g. `procedure_steps` or `content`" allowance). The extractor's structured LLM output
-returns a discrete `steps: string[]` field BEFORE rendering to `content`; the quality
-floor runs on that pre-render structure (NOT a post-render regex parse of `content`):
-- `steps.len() >= 3` (at least 3 non-trivial ordered steps; "non-trivial" = each step
-  is at least one non-whitespace word after redaction).
-- `steps.join("\n").len() >= 200` UTF-8 characters after deterministic redaction
-  (F-3.14) and NFR-3.5 capping.
+"e.g. `procedure_steps` or `content`" allowance). Extraction-pipeline order is fixed:
 
-On rendering, `content` is the markdown-serialized `overview + "\n\n## Procedure\n" +
-numbered(steps)` so FTS5 indexing covers BOTH the narrative and the step text.
+1. LLM returns structured output `{title, trigger_keywords[], overview, steps[]}`
+   (F-3.14 layer-1 LLM abstraction applies here).
+2. Deterministic PII redaction (F-3.14 layer 2) rewrites `overview` + `steps[]` in place.
+3. Deterministic adversarial scan (F-3.13) — reject + emit on hit; skip write.
+4. Quality-floor structural check on the redacted pre-render `steps[]` structure
+   (NOT a post-render regex parse of `content`):
+   - `steps.len() >= 3` (at least 3 non-trivial ordered steps; "non-trivial" = each step
+     is at least one non-whitespace word after redaction).
+   - `steps.join("\n").len() >= 200` UTF-8 characters after deterministic redaction.
+   - Floor fail → emit `playbook_extraction_rejected{layer:"quality_floor",reason}`;
+     skip write.
+5. Render: `content = overview + "\n\n## Procedure\n" + numbered(steps)` so FTS5
+   indexing covers BOTH narrative and step text.
+6. NFR-3.5 cap (24_576 bytes) applies to the rendered `content`. If the cap fires AND
+   post-cap content drops below the quality floor (rare; only triggers when overview +
+   steps render exceeds 24 KB), emit BOTH `playbook_extraction_output_capped` AND
+   `playbook_extraction_rejected{layer:"quality_floor"}` so the audit trail captures
+   the actual failure chain (per iteration-5's `ExtractionOutcome::Skipped(OutputCapped)`
+   variant in §4).
 
 ## 4. API surface
 
@@ -317,6 +333,15 @@ enum SkipReason {
   Timeout, Error, RejectedLlm, RejectedDeterministic, QualityFloor,
   OutputCapped /* and quality floor failed post-cap */,
 }
+
+struct EventHit {
+  event_id: i64,
+  session_id: String,
+  timestamp: i64,
+  event_type: String,           // 'Message' | 'Action' | ... | 'Misc'
+  source: String,
+  snippet: String,              // FTS5 snippet() helper output around the query terms
+}
 ```
 
 Tool un-stubs — tool input / output shapes (LLM-callable surface):
@@ -340,6 +365,11 @@ CLI required surfaces:
   soft-delete (`UPDATE playbooks SET status='archived'`); preserves the row so the
   audit / counter history survives.
 - `seasoned-hand session search <query>` (raw hits + summarized view).
+
+HTTP API surface: Phase 3 ships NO new HTTP routes. NFR-3.6's "CLI/API queryability"
+requirement is satisfied by the CLI surface above. HTTP routes for browser-side SOP /
+playbook / search UX are Phase 4+ scope (paired with Curator + frontend work). Phase 2
+DEBT #52 (lib.rs split) is therefore NOT a Phase 3 blocker for this functionality.
 
 Event payload shapes:
 
@@ -551,6 +581,10 @@ SAME PR slice. Intentional doc/schema drift windows are explicitly disallowed in
     INJECTION+MATCH effect on tool_calls, not extraction quality. Extraction
     quality is covered by integration tests (`sync extraction success/failure/timeout
     paths`) and quality-floor unit tests separately.
+  - Test-side time is frozen via `mock_clock::freeze(t0)` so `days_since_now` in the
+    §11 recency formula is deterministic. The pre-seeded fixture playbook's
+    `created_at = t0 - 5 days` keeps recency_boost = `max(0, 0.5 - 5/60) ≈ 0.417`,
+    well above the `score >= 1.0` threshold floor regardless of weight tuning.
 - Regression guards (separate from acceptance gate per F-3.6)
   - `sessions_tool_calls_matches_action_count` — parity test validating
     `sessions.tool_calls` wiring integrity against the cold baseline. NOT part of
