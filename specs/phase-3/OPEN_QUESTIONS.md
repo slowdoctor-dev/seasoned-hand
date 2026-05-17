@@ -72,7 +72,7 @@ Everything else depends on what `playbooks` actually looks like.
 
 ---
 
-**Resolution**: → partially constrained by requirements.md §7 dependencies + F-3.8 (success_count/failure_count required) + F-3.10 (sops + glossary tables required) + F-3.16 (playbook fields supporting full-event-type FTS5 search). Architect picks final V010 shape from option A (rich), B (minimal), or C (hybrid) under these hard constraints; §8 open question carries the residual schema-shape detail.
+**Resolution**: → partially constrained by requirements.md §7 dependencies + F-3.8 (success_count/failure_count required) + F-3.10 (sops table required) + F-3.21 (glossary table required) + F-3.5/F-3.11/F-3.16 (playbook fields for matching, top-3 injection, and session search). Architect picks final V010 shape from option A (rich), B (minimal), or C (hybrid) under these hard constraints; §8 open question carries the residual schema-shape detail.
 
 ## 2. Playbook content storage: inline TEXT vs `content_path` (file ref)
 

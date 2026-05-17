@@ -29,12 +29,18 @@
   LLM round-trip; injection is deterministic prompt-prefix insertion.
 - **NFR-3.3 (injection size budget)**: Injected playbook payload has a maximum byte
   budget over the aggregate top-3 payload. Oversize content is truncated with a
-  trailing marker.
+  trailing marker, and the truncation MUST emit
+  `Misc{kind:"playbook_injection_truncated", original_bytes, capped_bytes,
+  matched_count}` (matched_count <= 3).
 - **NFR-3.4 (extraction input cap)**: Extraction LLM input (prompt + task context)
   must be capped at a fixed token budget. Over-budget context is truncated with an
-  explicit `[..., truncated for extraction budget]` marker.
+  explicit `[..., truncated for extraction budget]` marker, and the truncation MUST
+  emit `Misc{kind:"playbook_extraction_input_truncated", original_tokens,
+  capped_tokens}`.
 - **NFR-3.5 (extraction output cap)**: Extraction output must be capped at a fixed
   byte budget. Post-cap output must still satisfy F-3.18 minimum quality constraints.
+  Cap hits MUST emit `Misc{kind:"playbook_extraction_output_capped", original_bytes,
+  capped_bytes}` so F-3.18 floor failures can be traced back to truncation.
 - **NFR-3.6 (search operability)**: Session search indexing must support all 8 event
   types and remain queryable from CLI/API without requiring full event-stream replay.
 
@@ -56,15 +62,20 @@
 - **F-3.5 (two matchers)**: Phase 3 ships two matchers:
   - Gate-mode strict identity over normalized brief (for deterministic benchmark).
   - Production-mode FTS5 prefix match over
-    `playbooks.trigger_keywords ∪ title ∪ content`.
-  Matcher choice is runtime config; both emit the same `Skill` event shape.
+    `playbooks.trigger_keywords ∪ title ∪ content`, which also un-stubs the Phase 0
+    `playbook_search` tool so LLM-callable lookup returns real results.
+  Matcher choice is runtime config; both emit the same `Skill` event shape (see
+  F-3.8).
 - **F-3.6 (tool-call canonical source)**: Acceptance gate uses `sessions.tool_calls` as
   canonical KPI counter. An adjacent regression test
   `sessions_tool_calls_matches_action_count` validates counter wiring integrity against
   the cold baseline; this parity test is not part of warm-gate success criteria.
 - **F-3.7 (sync extraction execution model)**: Extraction runs synchronously in
   `task_complete` handling for Phase 3. Async workerization (Verifier-style
-  XREADGROUP/FIFO/semaphore pattern) is Phase 4 Curator scope.
+  XREADGROUP/FIFO/semaphore pattern) is Phase 4 Curator scope. Any non-timeout
+  extraction failure (LLM call error, slot unavailable, malformed structured output)
+  MUST emit `Misc{kind:"playbook_extraction_error", session_id, stage, reason}` and
+  skip playbook write without blocking task completion.
 - **F-3.8 (telemetry + counters)**: Phase 3 emits `Skill`/learning misc events for
   match/injection/outcome and maintains per-row `playbooks.success_count` /
   `failure_count`, incremented at task completion based on verifier outcome.
@@ -72,8 +83,9 @@
   consolidate, or score-threshold playbooks. Those decisions remain Phase 4 Curator
   scope.
 - **F-3.10 (SOP minimum surface, required)**: Phase 3 ships V010 `sops` table,
-  `sop_read` implementation, and required CLI authoring surface:
-  `seasoned-hand sop create/edit/list/delete`.
+  real `sop_read` implementation (un-stubbing the Phase 0 placeholder), and required
+  CLI authoring surface: `seasoned-hand sop create/edit/list/show/delete` (`show`
+  mirrors F-3.20 playbook `show`).
 - **F-3.11 (top-3 injection)**: Phase 3 injects top-3 matched playbooks at task start,
   ranked by match score, into Initializer system context.
 - **F-3.12 (project-scoped matching in Phase 3)**: Matching is project-scoped
@@ -87,7 +99,9 @@
   2. raw IPv4/IPv6 literal hosts in URLs,
   3. prompt-injection trigger phrases (Architect-curated list including “ignore previous instructions”, “you are now”, role-reversal patterns),
   4. base64-shaped blobs of length >=40.
-  Rejection emits `Misc{kind:"playbook_extraction_rejected", layer, reason}`.
+  Rejection emits `Misc{kind:"playbook_extraction_rejected", layer, reason}` where
+  `layer ∈ {"llm", "deterministic", "quality_floor"}` is the discriminant shared with
+  F-3.18 (consumers route on `layer`, not on a per-cause `kind`).
 - **F-3.14 (layered PII/content redaction)**: Extraction applies two PII defenses:
   - LLM abstraction instruction (generalize concrete identifiers).
   - Deterministic regex redaction baseline MUST strip at minimum:
@@ -103,20 +117,31 @@
   rejection and Phase 3 scope boundaries.
 - **F-3.16 (session search index scope)**: Phase 3 ships FTS5-backed denormalized
   session search index covering all 8 event types:
-  `Message, Action, Observation, Plan, Knowledge, Datasource, Skill, Misc`.
+  `Message, Action, Observation, Plan, Knowledge, Datasource, Skill, Misc`. The
+  index schema is intentionally wider than Phase 3 emit: only 6 of 8 variants
+  (`Message, Action, Observation, Plan, Skill, Misc`) are actively written in
+  Phase 3; `Knowledge` and `Datasource` writers ship in Phase 4+ per §5 without
+  requiring a search-index migration.
 - **F-3.17 (session search summarization)**: Session search results include an LLM
   summarization path for operator consumption (query-centric summary over matched rows).
 - **F-3.18 (minimum extraction quality bar)**: A playbook draft must satisfy required
   structural fields and a minimum non-trivial procedure body before write. Baseline
   floors that MUST hold unless Architect raises them after dogfood data: at least 3
-  non-empty `procedure_steps` entries and at least 200 total characters of content
-  across `procedure_steps`. Drafts below either floor MUST be rejected with
-  `Misc{kind:"playbook_extraction_rejected", layer:"quality_floor", reason}`.
+  non-trivial procedure steps and at least 200 total characters of procedure body
+  content (across whatever V010 field name Q1 settles on, e.g. `procedure_steps`
+  or `content`). Drafts below either floor MUST be rejected with
+  `Misc{kind:"playbook_extraction_rejected", layer:"quality_floor", reason}` per the
+  F-3.13 `layer` vocabulary.
 - **F-3.19 (atomic migration + spec reconciliation)**: V010 migration and required
   architecture-spec reconciliation land in the same PR slice per AGENTS.md §8. If
   immutable architecture text requires change, include successor ADR in the same slice.
 - **F-3.20 (playbook lifecycle CLI, required)**: Phase 3 ships required CLI lifecycle:
   `seasoned-hand playbook list/show/delete`.
+- **F-3.21 (glossary minimum surface, required)**: Phase 3 lands the V010 `glossary`
+  table per ARCH §2.5 (id/term/definition/category/timestamps) and un-stubs the
+  Phase 0 `glossary_lookup` tool so it returns real rows. CLI authoring is deferred
+  (operator may seed terms via SQL or future Phase 4 surface); the un-stubbed tool
+  closes the Phase 1 `glossary_lookup` "Deferred to Phase 3+" marker.
 
 ## 4. Acceptance criteria (Phase-level)
 
@@ -143,6 +168,13 @@
 - Quarantine/pending activation workflows for playbooks. (Phase 5 scope.)
 - ADR-007 criterion 3 (≥2 similar past tasks) and criterion 4 (optional
   user-satisfaction signal). (Phase 4 Curator scope.)
+- L2 cross-source verification (ARCH §6 layer 2). Phase 3 does not implement L2
+  enforcement; the layer ships in Phase 4 alongside `Knowledge` event writers.
+- Active `Knowledge` and `Datasource` event emit. Both EventType variants stay
+  reserved-but-unwired in Phase 3; writers ship in Phase 4+ (paired with L2 above).
+  Phase 2 DEBT #61 stays partially open against these two variants.
+- Glossary CLI authoring surface (operator seeds terms via SQL in Phase 3); CLI
+  surface deferred to Phase 4+ once usage patterns settle.
 - Intentional phased doc/schema drift windows are explicitly disallowed.
 
 ## 6. Risks and mitigations
@@ -171,7 +203,7 @@
   - ADR-007 (conservative learning gate)
   - ROADMAP Phase 3/4/5 boundaries
 - **Internal schema/runtime dependencies**
-  - V010 migration must include artifacts required by F-3.8 and F-3.10
+  - V010 migration must include artifacts required by F-3.8 / F-3.10 / F-3.21
     (`success_count`, `failure_count`, `sops`, `glossary`, plus playbook fields needed
     by F-3.5/F-3.11/F-3.16)
   - Initializer prompt path for top-3 injection
