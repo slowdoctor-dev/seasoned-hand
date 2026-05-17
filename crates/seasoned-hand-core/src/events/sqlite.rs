@@ -9,6 +9,7 @@ use rusqlite::OptionalExtension;
 use super::{Event, EventError, EventQuery, EventStore, EventType, NewEvent};
 use crate::db::DbPool;
 use crate::pubsub::RedisPool;
+use crate::events::session_search;
 
 pub struct SqliteEventStore {
     pool: DbPool,
@@ -84,15 +85,16 @@ impl EventStore for SqliteEventStore {
                     rusqlite::params![&session_id, timestamp, type_str, &source, &data_text],
                     |row| row.get(0),
                 )?;
-
-                Ok(Event {
+                let event = Event {
                     id,
                     session_id,
                     timestamp,
                     event_type,
                     source,
                     data: draft.data,
-                })
+                };
+                session_search::index_event_for_search(conn, &event)?;
+                Ok(event)
             })
             .await?;
 

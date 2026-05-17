@@ -220,3 +220,104 @@ async fn events_for_different_sessions_are_isolated() {
     assert_eq!(s1.len(), 2);
     assert_eq!(s2.len(), 1);
 }
+
+mod session_search {
+    use serde_json::json;
+
+    use crate::events::session_search::{SessionSearchQuery, search_session_events};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn index_ingestion() {
+        let (pool, store) = fixture().await;
+        let appended = store
+            .append(NewEvent {
+                session_id: "s1".into(),
+                event_type: EventType::Action,
+                source: "tool:search".into(),
+                data: json!({
+                    "tool_name": "web_search",
+                    "tool_input": {"query": "knee pain protocol", "limit": 3}
+                }),
+            })
+            .await
+            .unwrap();
+
+        pool.with_conn(|conn| {
+            let row: (i64, String, String, String) = conn
+                .query_row(
+                    "SELECT event_id, session_id, event_type, searchable_text
+                     FROM session_search_index WHERE event_id = ?",
+                    [appended.id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .unwrap();
+            assert_eq!(row.0, appended.id);
+            assert_eq!(row.1, "s1");
+            assert_eq!(row.2, "Action");
+            assert!(row.3.contains("web_search"));
+            assert!(row.3.contains("knee pain protocol"));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn all_event_types_queryable() {
+        let (pool, store) = fixture().await;
+        let all = [
+            (EventType::Message, "agent", json!({"role": "assistant", "text": "needle_alpha"})),
+            (EventType::Action, "tool:x", json!({"tool_name": "needle_alpha", "tool_input": {"x": "needle_alpha"}})),
+            (EventType::Observation, "tool:x", json!({"tool_name": "needle_alpha", "tool_result": "needle_alpha"})),
+            (EventType::Plan, "planner", json!({"goal": "needle_alpha", "phases": [{"title": "needle_alpha"}]})),
+            (EventType::Knowledge, "memory", json!({"fact": "needle_alpha"})),
+            (EventType::Datasource, "web", json!({"url": "needle_alpha"})),
+            (EventType::Skill, "learning", json!({"kind": "match", "playbook_id": "needle_alpha", "matcher_mode": "production"})),
+            (EventType::Misc, "system", json!({"kind": "playbook_extraction_rejected", "reason": "needle_alpha"})),
+        ];
+
+        for (event_type, source, data) in all {
+            store
+                .append(NewEvent {
+                    session_id: "s1".into(),
+                    event_type,
+                    source: source.into(),
+                    data,
+                })
+                .await
+                .unwrap();
+        }
+
+        let hits = pool
+            .with_conn(|conn| {
+                search_session_events(
+                    conn,
+                    "needle_alpha",
+                    &SessionSearchQuery {
+                        session_id: Some("s1".into()),
+                        limit: Some(20),
+                        ..Default::default()
+                    },
+                )
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(hits.len(), 8);
+        let mut types = hits.into_iter().map(|h| h.event_type).collect::<Vec<_>>();
+        types.sort();
+        assert_eq!(
+            types,
+            vec![
+                "Action",
+                "Datasource",
+                "Knowledge",
+                "Message",
+                "Misc",
+                "Observation",
+                "Plan",
+                "Skill"
+            ]
+        );
+    }
+}
