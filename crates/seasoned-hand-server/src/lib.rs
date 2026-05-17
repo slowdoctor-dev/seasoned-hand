@@ -2,13 +2,14 @@
 //! refs: /specs/phase-0/architecture.md §4.1
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
 };
@@ -60,6 +61,7 @@ use seasoned_hand_core::verifier::{
     routes::{ListQuery as VerifyListQuery, get_verification, list_verifications},
 };
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 
 pub mod initializer_spawner;
 pub mod ws;
@@ -826,6 +828,9 @@ pub struct EventsQueryParams {
 struct ApiError {
     error: String,
 }
+
+type ApiErrorResponse = (StatusCode, Json<ApiError>);
+type ApiResult<T> = Result<T, ApiErrorResponse>;
 
 #[derive(Debug, Deserialize, Default)]
 struct ProgressQuery {
@@ -1602,7 +1607,7 @@ fn now_unix_micros() -> i64 {
 // guard's job stays the same — keep these routes off the public surface.
 // ---------------------------------------------------------------------------
 
-fn require_loopback(remote: std::net::SocketAddr) -> Result<(), (StatusCode, Json<ApiError>)> {
+fn require_loopback(remote: SocketAddr) -> ApiResult<()> {
     if remote.ip().is_loopback() {
         Ok(())
     } else {
@@ -1613,6 +1618,52 @@ fn require_loopback(remote: std::net::SocketAddr) -> Result<(), (StatusCode, Jso
             }),
         ))
     }
+}
+
+const ADMIN_TOKEN_HEADER: &str = "X-Seasoned-Hand-Admin-Token";
+
+fn require_admin_token_configured(state: &AppState) -> ApiResult<()> {
+    if state.admin_token.is_empty() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiError {
+                error: "admin_token_not_configured".into(),
+            }),
+        ));
+    }
+    Ok(())
+}
+
+fn require_admin_token_header(state: &AppState, headers: &HeaderMap) -> ApiResult<()> {
+    let token_hdr = headers
+        .get(ADMIN_TOKEN_HEADER)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let ok: bool = token_hdr
+        .as_bytes()
+        .ct_eq(state.admin_token.as_bytes())
+        .into();
+    if ok {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::UNAUTHORIZED,
+            Json(ApiError {
+                error: "unauthorized_token".into(),
+            }),
+        ))
+    }
+}
+
+fn require_admin_route(state: &AppState, remote: SocketAddr, headers: &HeaderMap) -> ApiResult<()> {
+    // Guard order is intentional:
+    // 1. Missing server config is a local operator setup error.
+    // 2. Non-loopback peers stop before token comparison, preserving
+    //    the timing/status behavior pinned by the admin route tests.
+    // 3. Token comparison is constant-time defense in depth.
+    require_admin_token_configured(state)?;
+    require_loopback(remote)?;
+    require_admin_token_header(state, headers)
 }
 
 // ---------------------------------------------------------------------------
@@ -1633,42 +1684,11 @@ struct RollbackResponse {
 async fn post_checkpoint_rollback_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
-    headers: axum::http::HeaderMap,
+    headers: HeaderMap,
     Path((session_id, checkpoint_id)): Path<(String, String)>,
     Json(body): Json<RollbackBody>,
-) -> Result<(StatusCode, Json<RollbackResponse>), (StatusCode, Json<ApiError>)> {
-    // Guard 1: admin token must be configured at boot.
-    if state.admin_token.is_empty() {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ApiError {
-                error: "admin_token_not_configured".into(),
-            }),
-        ));
-    }
-    // Guard 2: loopback only.
-    require_loopback(remote)?;
-    // Guard 3: token header match. Constant-time compare avoids the
-    // prefix-length timing leak that `!=` on `&str` would expose; the
-    // loopback guard above is the primary defense, this is
-    // defense-in-depth (REVIEW §5 cross-cutting / proposed DEBT #37).
-    let token_hdr = headers
-        .get("X-Seasoned-Hand-Admin-Token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    use subtle::ConstantTimeEq;
-    let ok: bool = token_hdr
-        .as_bytes()
-        .ct_eq(state.admin_token.as_bytes())
-        .into();
-    if !ok {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            Json(ApiError {
-                error: "unauthorized_token".into(),
-            }),
-        ));
-    }
+) -> ApiResult<(StatusCode, Json<RollbackResponse>)> {
+    require_admin_route(&state, remote, &headers)?;
     // Guard 4: reason length.
     if body.reason.len() > 200 {
         return Err((
@@ -1802,42 +1822,9 @@ async fn post_checkpoint_rollback_handler(
 async fn post_admin_sandbox_cleanup_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
-    headers: axum::http::HeaderMap,
-) -> Result<
-    (StatusCode, Json<seasoned_hand_core::task::TtlCleanupReport>),
-    (StatusCode, Json<ApiError>),
-> {
-    // Guard 1: admin token must be configured at boot.
-    if state.admin_token.is_empty() {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ApiError {
-                error: "admin_token_not_configured".into(),
-            }),
-        ));
-    }
-    // Guard 2: loopback only.
-    require_loopback(remote)?;
-    // Guard 3: token header match. Constant-time compare (see
-    // sandbox/rollback admin handler above; REVIEW §5 / proposed
-    // DEBT #37).
-    let token_hdr = headers
-        .get("X-Seasoned-Hand-Admin-Token")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    use subtle::ConstantTimeEq;
-    let ok: bool = token_hdr
-        .as_bytes()
-        .ct_eq(state.admin_token.as_bytes())
-        .into();
-    if !ok {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            Json(ApiError {
-                error: "unauthorized_token".into(),
-            }),
-        ));
-    }
+    headers: HeaderMap,
+) -> ApiResult<(StatusCode, Json<seasoned_hand_core::task::TtlCleanupReport>)> {
+    require_admin_route(&state, remote, &headers)?;
     let report = state.workspace_ttl_cron.cleanup_cycle().await;
     Ok((StatusCode::OK, Json(report)))
 }

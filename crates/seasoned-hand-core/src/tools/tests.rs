@@ -612,7 +612,8 @@ async fn checkpoint_rollback_happy_path_marks_row_and_emits_misc() {
     assert!(
         evs.iter().any(|e| {
             e.data.get("kind").and_then(serde_json::Value::as_str) == Some("checkpoint_rollback")
-                && e.data.get("git_sha").and_then(serde_json::Value::as_str) == Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                && e.data.get("git_sha").and_then(serde_json::Value::as_str)
+                    == Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         }),
         "checkpoint_rollback Misc event must be emitted with the git_sha"
     );
