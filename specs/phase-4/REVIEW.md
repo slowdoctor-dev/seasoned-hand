@@ -346,3 +346,75 @@ Architecture is substantially correct and Phase 3-consistent after iter-1.
 Recommend dispatching Codex iter-2 for cross-verification (similar to Phase 3
 iter-2 saturation pattern). If iter-2 finds no M+ issues, hand off to BMAD PM
 for story breakdown.
+
+## REVIEW iter-2 (Codex, 2026-05-18) — Architect pass
+
+Scope: Claude Architect iter-1 at `91e9e0c` + current Phase 4 architecture/docs.
+
+### A) Grade Claude iter-1 findings (F1-F10)
+
+Verdict: **10/10 agree**, **0 disagree**.
+
+- `A-IT1-F1` (M): agree with root cause. Timestamp normalization to microsecond INTEGER is correct.
+  Follow-up from this iter found 5 remaining `created_at TEXT` columns still carrying INTEGER
+  defaults; fixed inline below.
+- `A-IT1-F2` (M): agree. Forward-compat `tenant_id` columns are correctly added on all 10 new
+  tables. No additional table miss found.
+- `A-IT1-F3` (M): agree. Skill taxonomy expansion pin in §4.5 is correct and ADR-013/ARCH update
+  requirement is explicitly called out.
+- `A-IT1-F7` (M): agree. §9.1 adversarial confidence composition is directionally solid; 0.45 LLM
+  cap and 0.30 deterministic floor are reasonable baseline controls for Phase 4.
+- `A-IT1-F4/F5/F6/F8/F9/F10` (L): dispositions are reasonable as debt-seeded implementation polish.
+
+### B) Independent re-audit
+
+#### New M findings from iter-2 (fixed inline)
+
+1. `A-IT2-F1` (M) — residual timestamp type drift in V011 SQL sketch.
+- Evidence: five tables still had `created_at TEXT NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER))`.
+- Risk: mixed TEXT/INTEGER timestamp semantics breaks deterministic cross-table sort and violates
+  ARCH v1.2 timestamp convention.
+- Fix: changed these `created_at` columns to `INTEGER` in:
+  - `curator_decisions`
+  - `sop_conflicts`
+  - `knowledge_items`
+  - `datasource_items`
+  - `curator_search_index`
+
+2. `A-IT2-F2` (M) — F-4.5 embedding wiring lacked concrete endpoint/model/formula/cache pin.
+- Evidence: architecture stated "embedding slot wiring" but omitted explicit API contract and blend
+  formula.
+- Risk: PM stories could re-derive incompatible wiring, scoring, and caching behavior.
+- Fix: added explicit contract in §4.2:
+  - Bifrost embeddings endpoint (`POST /v1/embeddings`)
+  - default model profile (`text-embedding-3-small`, env-overridable)
+  - blend formula and lexical fallback formula
+  - cache strategy (in-process LRU + optional SQLite warm cache)
+
+#### Additional audit points
+
+- §11 testing strategy: adequate at architecture level; L-severity benchmark-detail debt (#101)
+  remains valid and already tracked.
+- §12 OPEN_QUESTIONS #4-#20: all are resolved with options + rationale and no unresolved scope gaps.
+- §13 coverage map: all 26 F and 8 NFR are mapped; no missing row.
+- V011 backfill ordering: safe and transactional; FTS rebuild scope is correctly limited to
+  `playbooks_fts` (curator FTS surfaces are net-new, no rebuild needed).
+- CLI surfaces (§4.6): story-slice granularity is sufficient (`status/run/review list/approve/reject/suppress`).
+- Type sketches: `WeeklyRetrospective` timestamps now aligned to schema integer semantics.
+
+### C) Cross-phase regression check
+
+- Phase 3 surface contracts remain respected:
+  - extraction ownership stays with PlannerSlotExtractionHandler;
+  - matcher/injector are revision-aware consumers;
+  - session_search reuse is additive via citation overlay.
+- No silent violation identified against ARCHITECTURE.md v1.2 constraints at this spec stage.
+- Tool-catalog count unaffected (no new LLM-callable tools introduced in this slice).
+
+### D/E) Iter-2 action and verdict
+
+- **Agree/disagree on Claude iter-1 findings**: 10 agree / 0 disagree.
+- **New iter-2 findings**: 2 (both M), both fixed inline in architecture.md.
+- **New DEBT seeded**: none (no new deferrals introduced).
+
+Saturation verdict: Architect hardening is now in good shape for PM dispatch.

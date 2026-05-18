@@ -239,7 +239,7 @@ CREATE TABLE curator_decisions (
   evidence_json TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN ('applied','queued_review','rejected','suppressed','error')),
   failure_category TEXT,
-  created_at TEXT NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER))
+  created_at INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER))
 );
 CREATE INDEX idx_curator_decisions_project_time ON curator_decisions(project_id, created_at DESC);
 CREATE INDEX idx_curator_decisions_cycle ON curator_decisions(cycle_id);
@@ -273,7 +273,7 @@ CREATE TABLE sop_conflicts (
   severity TEXT NOT NULL CHECK(severity IN ('low','medium','high')),
   status TEXT NOT NULL CHECK(status IN ('open','muted','resolved')),
   evidence_json TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER))
+  created_at INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER))
 );
 CREATE INDEX idx_sop_conflicts_project_status ON sop_conflicts(project_id, status, created_at DESC);
 
@@ -288,7 +288,7 @@ CREATE TABLE knowledge_items (
   value TEXT NOT NULL,
   confidence REAL,
   evidence_json TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER))
+  created_at INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER))
 );
 CREATE INDEX idx_knowledge_items_project_key ON knowledge_items(project_id, key);
 
@@ -303,7 +303,7 @@ CREATE TABLE datasource_items (
   trust_level TEXT NOT NULL CHECK(trust_level IN ('l0','l1','l2')),
   confidence REAL,
   evidence_json TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER))
+  created_at INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER))
 );
 CREATE INDEX idx_datasource_items_project_type ON datasource_items(project_id, source_type, created_at DESC);
 
@@ -352,7 +352,7 @@ CREATE TABLE curator_search_index (
   source_type TEXT NOT NULL,
   source_id TEXT NOT NULL,
   searchable_text TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER))
+  created_at INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER))
 );
 
 CREATE VIRTUAL TABLE curator_search_fts USING fts5(
@@ -464,6 +464,17 @@ pub trait EmbeddingReranker {
 }
 ```
 
+Embedding wiring contract (load-bearing F-4.5 pin):
+- Endpoint: Bifrost embeddings API (`POST /v1/embeddings`) via existing Rust LLM client surface.
+- Default model profile: OpenAI `text-embedding-3-small` (configurable via `SH_EMBEDDING_MODEL`).
+- Candidate input: normalized `title + trigger_keywords + content` text per revision.
+- Blend formula: `blended_score = 0.45 * fts_norm + 0.40 * embedding_cosine + 0.15 * structural_overlap`.
+- Deterministic fallback: if embedding call fails/disabled/budget-circuit-open, use
+  `0.75 * fts_norm + 0.25 * structural_overlap` and mark decision rationale with
+  `embedding_used=false`.
+- Cache location: in-process bounded LRU keyed by `{revision_id, content_hash, model}` plus
+  optional SQLite `curator_embedding_cache` table for warm-start reuse across restarts.
+
 ### 4.3 Consolidation + review contracts
 
 ```rust
@@ -526,8 +537,8 @@ pub trait ConflictDetector {
 pub struct WeeklyRetrospective {
     pub retrospective_id: String,
     pub project_id: String,
-    pub week_start: String,
-    pub week_end: String,
+    pub week_start: i64,
+    pub week_end: i64,
     pub content: String,
     pub citation_coverage: f32,
 }
