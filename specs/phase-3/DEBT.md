@@ -285,3 +285,11 @@ _To be populated by the BMAD Architect pass on
 
 - **C1 (M, FIXED)** — `extraction_handler.rs:81-87` now reads `ORDER BY id DESC LIMIT 200` + reverse-in-memory, so extraction sees the most-recent 200 events (the procedure body) instead of the first 200 (session setup).
 - **C2 (M, FIXED)** — F-3.14 deterministic redaction now applies to title + trigger_keywords + overview + steps (all 4 LLM-produced fields), not just overview + steps. Closes a real PII-leak surface where an LLM could embed an email or bearer token in title/trigger_keywords and bypass the redaction floor.
+
+20. **#91 (L)** `SH_LEARNING_ENABLED` env parsing is permissive and non-trimming
+- **What**: `main.rs` parses learning enablement as `!(v == "0" || eq_ignore_ascii_case("false"))`.
+  Values like `" false"` (leading space) and empty-string `""` are interpreted as enabled.
+- **Why now**: Current behavior is deterministic and documented by code, but operator
+  ergonomics are brittle for templated env files where whitespace is common.
+- **Pay down**: Phase 4 ops pass — trim whitespace and normalize boolean parsing with an
+  explicit allow-list (`1/true/yes/on`, `0/false/no/off`) and warn on unknown values.

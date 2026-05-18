@@ -710,3 +710,91 @@ Phase 3 is functionally complete after story 3.17 + iter-4 C1/C2 fixes.
 If the user wants iter-5 (Codex review of iter-4) for symmetry, dispatch
 Codex; otherwise call hardening complete and proceed to Phase 4 architecture
 pass.
+
+## REVIEW iter-5 (Codex, 2026-05-18)
+
+Scope: verification of Claude iter-4 (`d9529ae`) plus an independent re-audit of
+`main.rs` gating, extraction insert path, parser/render edge-cases, and cross-phase
+regressions.
+
+### A) Grading Claude iter-4 findings (C1-C6)
+
+- **Agree: 6/6**
+  - **C1** fix is correct. `ORDER BY id DESC LIMIT 200` + in-memory reverse preserves
+    chronological order for prompt assembly while selecting the most-recent window.
+    Edge cases are handled:
+    - empty session => no transcript lines
+    - `<200` events => all events included
+    - exactly `200` => stable full window
+  - **C2** fix is correct and complete for LLM-produced fields now persisted/indexed
+    (`title`, `trigger_keywords[]`, `overview`, `steps[]`).
+  - **C3-C6** dispositions are accurate as deferred refinements (not Phase 3 blockers).
+
+### B) Independent re-audit findings
+
+#### I1 (M, FIXED inline) — LLM refusal/parse-fail path emitted wrong event kind
+
+**Evidence (pre-fix)**  
+`extraction_handler.rs` returned `Err(ExtractionError{stage:"llm_call",reason:"parse_output_failed"})`
+for non-JSON content, which the gate translated to
+`Misc{kind:"playbook_extraction_error"}`.
+
+**Why this is wrong**  
+Architecture §3 step 1 requires parse/refusal failures to emit
+`playbook_extraction_rejected{layer:"llm",reason}` and skip write, not an
+operational error event.
+
+**Fix applied (iter-5)**  
+- `empty_response_content` and `parse_output_failed` now emit
+  `playbook_extraction_rejected{layer:"llm",...}` and return `Ok(())`.
+- Added regression test:
+  `llm_parse_failure_emits_llm_rejected_not_error`.
+
+#### I2 (M, FIXED inline) — Deterministic adversarial scan skipped title/keywords
+
+**Evidence (pre-fix)**  
+`adversarial_target` only scanned `overview + steps`.
+
+**Why this matters**  
+`title` and `trigger_keywords` are LLM-produced, persisted, and indexed; adversarial
+content in those fields bypassed layer-2 deterministic detection.
+
+**Fix applied (iter-5)**  
+- Adversarial target now scans all four fields:
+  `title + trigger_keywords + overview + steps`.
+- Added regression test:
+  `adversarial_in_title_is_rejected`.
+
+#### I3 (L, deferred) — `SH_LEARNING_ENABLED` parsing is permissive/non-trimming
+
+Current parser treats `""` and `" false"` as enabled. This is operationally brittle but
+not a correctness blocker in Phase 3. Deferred as DEBT #91.
+
+### C) Focus-area verdicts
+
+- `main.rs` SH_LEARNING_ENABLED gating: deterministic, default-true behavior works; L-level
+  ergonomics noted in DEBT #91.
+- `extraction_handler` INSERT columns align with V009+V010 schema ordering and defaults;
+  FTS5 trigger path is correct (`AFTER INSERT` on `playbooks`).
+- Test YAML configs without explicit `verifier` slot are valid: `SlotRouter::from_config`
+  inherits missing slots from `main`.
+- Parsing edge-cases:
+  - empty choices/content now treated as `layer:"llm"` rejection (fixed)
+  - non-JSON content now treated as `layer:"llm"` rejection (fixed)
+- Render/i18n:
+  - UTF-8 and non-ASCII step content are safe (`format!`, byte-cap function preserves
+    char boundaries)
+  - empty-step path is guarded by `validate_quality_floor`.
+
+### D) Cross-phase regression
+
+- Ran `cargo test --workspace`: pass.
+- No Phase 0/1/2 regressions found from iter-4 C1/C2 or iter-5 fixes.
+
+### Iter-5 outcome
+
+- **Findings added**: 3 total
+  - M: 2 (both fixed inline)
+  - L: 1 (deferred as DEBT #91)
+- **Saturation verdict**: hardening is complete for Phase 3. No remaining M+ issues
+  found in the iter-5 scope; proceed to Phase 4 BMAD Analyst pass.
