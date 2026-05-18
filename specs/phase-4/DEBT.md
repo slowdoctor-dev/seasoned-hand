@@ -187,3 +187,13 @@ accountability, not speculative implementation details.
 - **Owner**: Architect (next iter) or PM (V011 migration story)
 - **Target phase/story**: Phase 4 V011 migration story
 - **Status**: open
+
+## Story 4.2 close-out (2026-05-18)
+
+- `#77` CLOSED by story 4.2:
+  - V011 adds `playbooks.source_project_id` + `idx_playbooks_project_status`
+  - V011 backfill sets `source_project_id` from `tasks.project_id`
+  - evidence: `migrations/V011__phase4_curator.sql`, `db::tests::migration_v011_backfill_from_v010_rows`
+- `#102` CLOSED by story 4.2:
+  - V011 defines `FOREIGN KEY(parent_revision_id) REFERENCES playbook_revisions(id) ON DELETE SET NULL`
+  - evidence: `migrations/V011__phase4_curator.sql`, `story-4.2.md` acceptance + refs

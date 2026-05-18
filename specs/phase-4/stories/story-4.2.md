@@ -1,6 +1,6 @@
 # Story 4.2 — Atomic slice: V011 + ADR-013 + ARCH v1.3 + taxonomy expansion + backfill/FTS semantics
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 4.1
 > **Phase**: 4

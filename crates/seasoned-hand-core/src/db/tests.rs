@@ -115,6 +115,232 @@ async fn migration_v010_creates_learning_artifact_tables_and_triggers() {
     .await;
 }
 
+#[tokio::test]
+async fn migration_v011_creates_curator_tables_and_triggers() {
+    let pool = open(":memory:").await.unwrap();
+    pool.with_conn(|conn| {
+        let has_table = |name: &str| -> bool {
+            conn.query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM sqlite_master
+                   WHERE type='table' AND name = ?
+                 )",
+                [name],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+                == 1
+        };
+        let has_trigger = |name: &str| -> bool {
+            conn.query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM sqlite_master
+                   WHERE type='trigger' AND name = ?
+                 )",
+                [name],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+                == 1
+        };
+        let has_column = |table: &str, col: &str| -> bool {
+            let mut stmt = conn
+                .prepare(&format!("PRAGMA table_info('{table}')"))
+                .unwrap();
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            rows.iter().any(|c| c == col)
+        };
+
+        for table in [
+            "playbook_revisions",
+            "playbook_revision_outcomes",
+            "curator_decisions",
+            "curator_review_queue",
+            "sop_conflicts",
+            "knowledge_items",
+            "datasource_items",
+            "weekly_retrospectives",
+            "retrospective_citations",
+            "curator_search_index",
+            "curator_search_fts",
+        ] {
+            assert!(has_table(table), "missing table {table}");
+        }
+
+        assert!(has_trigger("curator_search_index_ai"));
+        assert!(has_trigger("curator_search_index_ad"));
+        assert!(has_trigger("curator_search_index_au"));
+        assert!(has_column("playbooks", "source_project_id"));
+        assert!(has_column("playbooks", "active_revision_id"));
+        assert!(has_column("playbooks", "archived_reason"));
+        assert!(has_column("playbooks", "archived_at"));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn migration_v011_idempotent_via_embedded_runner() {
+    let pool = open(":memory:").await.unwrap();
+    // V011 has already run during open(); running again through refinery must no-op.
+    pool.with_conn(|conn| run_migrations(conn).expect("idempotent V011 re-run"))
+        .await;
+    pool.with_conn(|conn| {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='table' AND name='playbook_revisions'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    })
+    .await;
+}
+
+#[test]
+fn migration_v011_backfill_from_v010_rows() {
+    use rusqlite::Connection;
+
+    static V001: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations/V001__sessions.sql"
+    ));
+    static V002: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations/V002__events.sql"
+    ));
+    static V003: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations/V003__plans.sql"
+    ));
+    static V004: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations/V004__verifications.sql"
+    ));
+    static V005: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations/V005__checkpoints.sql"
+    ));
+    static V006: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations/V006__phase2_projects_tasks.sql"
+    ));
+    static V007: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations/V007__phase2_deliverables.sql"
+    ));
+    static V008: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations/V008__phase2_intake_delivery_notifications.sql"
+    ));
+    static V009: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations/V009__phase2_skills_playbooks.sql"
+    ));
+    static V010: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations/V010__phase3_learning_artifacts.sql"
+    ));
+    static V011: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations/V011__phase4_curator.sql"
+    ));
+
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    for sql in [V001, V002, V003, V004, V005, V006, V007, V008, V009, V010] {
+        conn.execute_batch(sql).unwrap();
+    }
+
+    conn.execute(
+        "INSERT INTO projects (id, tenant_id, title, description, status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, NULL, 'active', 1, 1)",
+        rusqlite::params!["proj-1", Option::<String>::None, "P1"],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, tenant_id, title, brief, status, expected_due_at, completed_at, failure_reason, parent_task_id, schedule, skill_attached_event_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, NULL, 'Completed', NULL, NULL, NULL, NULL, NULL, NULL, 2, 2)",
+        rusqlite::params!["task-1", "proj-1", Option::<String>::None, "T1"],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id, created_at, updated_at, trigger_keywords, content, success_count, failure_count, status, version)
+         VALUES (?1, ?2, ?3, ?4, 1, ?5, 3, 4, ?6, ?7, 7, 2, 'active', 1)",
+        rusqlite::params![
+            "pb-1",
+            Option::<String>::None,
+            "Playbook One",
+            "phase3/pb-1.md",
+            "task-1",
+            "[\"alpha\"]",
+            "steps alpha",
+        ],
+    )
+    .unwrap();
+
+    conn.execute_batch(V011).unwrap();
+
+    let source_project_id: String = conn
+        .query_row(
+            "SELECT source_project_id FROM playbooks WHERE id = 'pb-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(source_project_id, "proj-1");
+
+    let active_revision_id: String = conn
+        .query_row(
+            "SELECT active_revision_id FROM playbooks WHERE id = 'pb-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(active_revision_id, "rev-pb-1-1");
+
+    let rev_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM playbook_revisions WHERE playbook_id = 'pb-1' AND revision_no = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(rev_count, 1);
+
+    let (s, f): (i64, i64) = conn
+        .query_row(
+            "SELECT success_count, failure_count
+             FROM playbook_revision_outcomes
+             WHERE revision_id = 'rev-pb-1-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((s, f), (7, 2));
+
+    // Trigger correctness smoke for the new FTS surface.
+    conn.execute(
+        "INSERT INTO curator_search_index (project_id, source_type, source_id, searchable_text, created_at)
+         VALUES ('proj-1', 'decision', 'd1', 'hello retention world', 10)",
+        [],
+    )
+    .unwrap();
+    let hits: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM curator_search_fts WHERE curator_search_fts MATCH 'retention'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(hits, 1);
+}
+
 mod fts5 {
     mod trigger_correctness {
         use super::super::open;

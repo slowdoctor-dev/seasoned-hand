@@ -1,6 +1,6 @@
 # Seasoned Hand — Architecture Specification
 
-> **Status**: v1.2 (Phase 3 story 3.2 reconciliation per ADR-012)
+> **Status**: v1.3 (Phase 4 story 4.2 reconciliation per ADR-013)
 > **Last updated**: 2026-05-18
 > **Owners**: Project lead
 >
@@ -8,6 +8,15 @@
 > V009-compatible playbook carry-forward columns retained, learning/search columns added,
 > `session_search_index` + `session_search_fts` added, and FTS5 maintenance triggers
 > specified (`playbooks_*`, `session_search_index_*`).
+>
+> **v1.3 amendments (ADR-013, 2026-05-18)**: §2.5 reconciled with Phase 4 V011:
+> playbook denormalization (`source_project_id`, `active_revision_id`, archive metadata),
+> revision graph (`playbook_revisions`, `playbook_revision_outcomes`), curator runtime
+> persistence (`curator_decisions`, `curator_review_queue`, `sop_conflicts`,
+> `knowledge_items`, `datasource_items`, `weekly_retrospectives`,
+> `retrospective_citations`), and `curator_search_index` + `curator_search_fts` with
+> maintenance triggers (`curator_search_index_*`). §2.1 Skill taxonomy expanded to
+> include `curation_decision` events.
 
 This is the **immutable architectural specification**. Changes require:
 1. PR with rationale
@@ -148,7 +157,7 @@ CREATE TABLE events (
     'Plan',         -- planner module output
     'Knowledge',    -- knowledge module retrieval
     'Datasource',   -- datasource module catalog
-    'Skill',        -- playbook match (our addition)
+    'Skill',        -- playbook match/injection/outcome + curation_decision (v1.3)
     'Misc'
   )),
   source TEXT NOT NULL,  -- user, agent, planner, knowledge, etc.
@@ -161,6 +170,9 @@ CREATE INDEX idx_events_type ON events(type);
 ```
 
 Append-only. Never UPDATE or DELETE. KV-cache friendly.
+
+`Skill` event payload sub-kinds are architecture-visible taxonomy:
+`match`, `injection`, `outcome`, `curation_decision` (added in v1.3).
 
 ### 2.2 Sessions
 
@@ -356,6 +368,37 @@ END;
 
 -- Project History uses events table (no separate table)
 ```
+
+### 2.5.1 Phase 4 (V011) extension surface
+
+V011 extends the learning schema with curator/revision persistence:
+
+- `playbooks` additions: `source_project_id`, `active_revision_id`, `archived_reason`,
+  `archived_at` (+ `idx_playbooks_project_status`).
+- revision graph:
+  - `playbook_revisions` (revision chain, `parent_revision_id` FK)
+  - `playbook_revision_outcomes` (revision-scoped counters/decay state)
+- curator runtime ledger:
+  - `curator_decisions`
+  - `curator_review_queue`
+  - `sop_conflicts`
+- knowledge/datasource persistence:
+  - `knowledge_items`
+  - `datasource_items`
+- retrospective persistence:
+  - `weekly_retrospectives`
+  - `retrospective_citations`
+- curator search surface:
+  - `curator_search_index`
+  - `curator_search_fts` (FTS5, external-content)
+  - triggers: `curator_search_index_ai`, `curator_search_index_ad`,
+    `curator_search_index_au`
+
+V011 also performs one-time backfill from V010:
+- set `playbooks.source_project_id` from `tasks.project_id` (when source task exists),
+- seed revision-1 rows and active revision pointers,
+- seed `playbook_revision_outcomes` from existing counters,
+- rebuild `playbooks_fts` once post-backfill.
 
 ---
 

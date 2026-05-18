@@ -83,7 +83,7 @@ check "tool catalog stability + Phase 3 spec hook" \
    && [ -f migrations/V010__phase3_learning_artifacts.sql ] \
    && grep -q 'CREATE TABLE sops' migrations/V010__phase3_learning_artifacts.sql \
    && grep -q 'CREATE TABLE glossary' migrations/V010__phase3_learning_artifacts.sql \
-   && grep -q 'v1\\.2' specs/01-architecture/ARCHITECTURE.md \
+   && grep -Eq 'v1\\.(2|3)' specs/01-architecture/ARCHITECTURE.md \
    && grep -q 'sop create / edit / list / show / delete' specs/phase-3/architecture.md \
    && grep -q 'playbook list / show / delete' specs/phase-3/architecture.md \
    && grep -q 'session search <query>' specs/phase-3/architecture.md"
