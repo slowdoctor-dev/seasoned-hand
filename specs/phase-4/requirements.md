@@ -35,7 +35,10 @@ Owner: BMAD Analyst pass
 
 - `NFR-4.4` **Telemetry retention budget**  
   Curator telemetry and retrospectives must keep 90-day hot retention in SQLite by default with
-  bounded storage growth <= 300MB/month/project under expected load profile.  
+  bounded storage growth <= 300MB/month/project under "expected load profile" defined as
+  100 verified task-complete artifacts/week + 4 weekly retrospective generations + 28 daily
+  curator cycles. Architect may adjust the load profile constants based on dogfood data
+  but must preserve the per-project bound.  
   Why this matters: no retention means no tuning; unbounded retention breaks local-first footprint.
 
 - `NFR-4.5` **Conflict alert SLA**  
@@ -45,13 +48,19 @@ Owner: BMAD Analyst pass
 
 - `NFR-4.6` **Embedding-slot cost ceiling**  
   Curator embedding + rerank calls must stay <= 8% of total monthly token spend by default
-  policy; hard circuit breaker at 12%.  
-  Why this matters: Phase 4 cannot make cost unpredictable or erase Bifrost efficiency gains.
+  policy; hard circuit breaker at 12%. For projects with zero or near-zero baseline spend
+  (setup/empty state), an absolute fallback budget of 50_000 embedding tokens/month applies
+  until baseline establishes (defined as ≥ 7 days of token spend > 1_000 tokens/day).  
+  Why this matters: Phase 4 cannot make cost unpredictable or erase Bifrost efficiency gains;
+  zero-baseline projects need a startup runway.
 
 - `NFR-4.7` **False-positive safety bounds**  
-  Auto-archive and auto-merge false-positive rate each <= 2% on audited sample set defined by
-  Architect/PM test harness.  
-  Why this matters: wrong automation decisions destroy trust in learned playbooks.
+  Auto-archive and auto-merge false-positive rate each <= 2% on audited sample set with
+  minimum size: N=100 archive decisions + N=100 merge decisions, sampled across at least
+  3 representative project corpus shapes (small/medium/large by artifact count). Architect
+  may broaden sampling but must preserve the minimum-size floor.  
+  Why this matters: wrong automation decisions destroy trust in learned playbooks; sample
+  too small to detect 2% rate (50+ samples needed to distinguish 2% from 5% at 95% CI).
 
 - `NFR-4.8` **Retrospective cadence reliability**  
   Weekly retrospective generation success >= 99% across active projects; failed runs retried within
@@ -74,8 +83,11 @@ Owner: BMAD Analyst pass
 
 - `F-4.3` **Success-rate tracking per playbook revision**  
   Track rolling success/failure metrics at playbook revision granularity, not only playbook id.
-  Includes decay/window semantics.  
-  Why this matters: without revision-aware metrics, Curator cannot detect regressions after edits.
+  Includes decay/window semantics. Revision identity follows F-4.7 / OPEN_QUESTIONS #10
+  resolution — the same revision key must work across F-4.3 (counters), F-4.6 (consolidation),
+  and F-4.20 (recommendation provenance).  
+  Why this matters: without revision-aware metrics, Curator cannot detect regressions after edits;
+  diverging revision keys across F-4.3/4.6/4.7/4.20 split the learned-graph state.
 
 - `F-4.4` **Duplicate candidate discovery pipeline**  
   Build candidate sets for potential duplicates using Phase 3 FTS + matcher features; include
@@ -95,15 +107,23 @@ Owner: BMAD Analyst pass
   Why this matters: consolidation without explicit policy is untestable and unsafe.
 
 - `F-4.7` **Playbook revisioning behavior**  
-  Skill self-improvement must produce revisioned updates or versioned forks (Architect resolves),
-  never in-place destructive overwrite without rollback metadata.  
-  Why this matters: irreversible edits prevent incident recovery.
+  Skill self-improvement must produce revisioned updates or versioned forks
+  (see OPEN_QUESTIONS #10 — Analyst pins the choice between A/B/C/D; Architect
+  resolves schema/migration semantics), never in-place destructive overwrite without
+  rollback metadata. Whatever shape is chosen, F-4.3 success-rate tracking and F-4.6
+  consolidation policy must reference the same revision identity (so the matcher /
+  counter / injector chain has a stable referent).  
+  Why this matters: irreversible edits prevent incident recovery; conflicting revision
+  identity between F-4.3/F-4.6/F-4.7 splits the learned-graph state.
 
 - `F-4.8` **Auto-archive policy engine**  
   Implement stale/low-signal archive recommendations and optional auto-archive execution tied to
-  confidence + guardrails.  
+  confidence + guardrails. Interaction with Phase 3 `playbooks.status='archived'` soft-delete
+  vocabulary is pinned by OPEN_QUESTIONS #11 (auto-archive may either reuse the same 'archived'
+  status or use a distinct value like 'auto_archived' for audit traceability — Architect resolves).  
   Closes DEBT #90 (dedup/archive safety guard).  
-  Why this matters: unmanaged library growth degrades matcher precision and injection quality.
+  Why this matters: unmanaged library growth degrades matcher precision and injection quality;
+  blurring auto-archive with operator-initiated archive hides intent in audit trails.
 
 - `F-4.9` **Archive reversibility surface**  
   Provide deterministic unarchive/restore path preserving prior ranking metadata and provenance.
@@ -111,9 +131,13 @@ Owner: BMAD Analyst pass
 
 - `F-4.10` **SOP conflict detection**  
   Detect contradictory SOP/procedure guidance across active playbooks and emit conflict artifacts
-  with evidence references.  
+  with evidence references. Minimum baseline (Architect may extend, see OPEN_QUESTIONS #9):
+  (a) structural-step diff (overlapping `## Procedure` step prefixes with divergent guidance),
+  plus (b) LLM-judged semantic contradiction over candidate pairs flagged by (a). Both signals
+  must agree before raising a conflict above the lowest severity tier (see F-4.11).  
   Closes DEBT #89 partially (prompt specificity feeds conflict quality).  
-  Why this matters: contradictory guidance can push planner into oscillation or unsafe steps.
+  Why this matters: contradictory guidance can push planner into oscillation or unsafe steps;
+  un-baselined algorithms ship as architect homework and risk silent over/under-detection.
 
 - `F-4.11` **Conflict severity triage**  
   Classify conflicts by severity and confidence to reduce alert fatigue; include suppress/mute
@@ -179,9 +203,13 @@ Owner: BMAD Analyst pass
   Why this matters: claimed self-improvement must be measured with loop in place.
 
 - `F-4.22` **Curator failure containment**  
-  Curator exceptions, refusals, or bad payloads must quarantine that decision unit and continue
-  remaining cycle work.  
-  Why this matters: one malformed artifact cannot freeze the whole learning program.
+  Curator must quarantine the decision unit and continue remaining cycle work on ANY of:
+  Rust panic / propagated error, LLM refusal, malformed payload, timeout (NFR-4.1 latency
+  bound exceeded), out-of-memory, SQLite DB lock contention (BUSY error after retry budget
+  exhausted), or slot-router resolution failure (e.g. `embedding` slot misconfigured).
+  Each quarantine emits a Misc telemetry event with `kind` + `failure_category` discriminant.  
+  Why this matters: one malformed artifact cannot freeze the whole learning program; narrow
+  failure-mode coverage (exception-only) misses the operationally common cases.
 
 - `F-4.23` **Config + feature-flag controls**  
   Provide explicit runtime toggles for curator enablement, auto-archive, auto-merge, and
@@ -217,7 +245,10 @@ PM persona fills this section after Architect pass.
 Phase 4 is accepted when all of the following hold:
 
 1. One-month operational proxy is defined as: 4 consecutive weekly curator cycles in CI replay plus
-   at least 200 verified task-complete artifacts in representative fixture corpus.
+   at least 200 verified task-complete artifacts in representative fixture corpus, with total
+   wall-clock CI budget ≤ 45 min on baseline runner (per-artifact replay amortizes via stub LLM +
+   pre-rendered transcripts; Architect may relax with rationale if the bound is genuinely
+   infeasible).
 2. Under that proxy corpus, active playbook precision@3 improves by >= 15% vs Phase 3 baseline, and
    stale-playbook ratio drops by >= 25% without raising regression failure rate.
 3. Auto-archive and auto-merge safety audits meet NFR-4.7 bounds.

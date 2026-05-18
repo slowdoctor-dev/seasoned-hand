@@ -35,12 +35,18 @@ explicitly partially close with evidence.
 
 ## Categories quick-reference
 
-| Severity | Meaning | Default handling |
-|---|---|---|
-| H0 | Release-blocking correctness/safety issue | Must fix in current slice |
-| H1 | High risk, user-visible correctness/regression | Fix this phase unless explicit ADR |
-| H2 | Medium risk, bounded workaround exists | Plan in active phase with owner |
-| H3 | Low risk or optimization | Schedule when capacity allows |
+Phase 4 uses a finer-grained 4-tier scheme. Phase 0-3 used H/M/L. Cross-phase
+audits should use this mapping when comparing:
+
+| Phase 4 | Phase 0-3 | Meaning | Default handling |
+|---|---|---|---|
+| H0 | H | Release-blocking correctness/safety issue | Must fix in current slice |
+| H1 | H | High risk, user-visible correctness/regression | Fix this phase unless explicit ADR |
+| H2 | M | Medium risk, bounded workaround exists | Plan in active phase with owner |
+| H3 | L | Low risk or optimization | Schedule when capacity allows |
+
+The mapping is approximate; Phase 4's H0/H1 split distinguishes "blocking" (H0)
+from "high-risk-but-not-blocking" (H1) — both map to Phase 3's single "H".
 
 ## Seed (TBD)
 
