@@ -17,6 +17,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.0] — 2026-05-18
+
+Phase 3 release: learning loop foundations and production extraction wiring.
+Spec references: `/specs/phase-3/requirements.md`, `/specs/phase-3/architecture.md`.
+
+### Added
+- Production `PlannerSlotExtractionHandler` implementing verifier-gated synchronous
+  extraction through planner-slot LLM, deterministic redaction/adversarial checks,
+  quality-floor enforcement, output cap handling, and `playbooks` writes.
+- Server wiring for `.with_extraction(...)` on `VerifierGate`, gated by
+  `SH_LEARNING_ENABLED` (default `true`).
+- Extraction handler integration tests for success path, adversarial rejection, and PII
+  redaction.
+
+### Changed
+- Phase baseline status advanced to `Phase 3 complete → Phase 4 starting` in
+  `BASELINE.md` and `AGENTS.md` section 13.
+- Story/requirements tracking updated: story 3.17 marked done, requirements table updated.
+
+### Fixed
+- Closed Phase 3 DEBT #84 by shipping and wiring the production extraction handler
+  (previously every PASS emitted `extraction_handler_not_configured` and wrote no playbook).
+
+---
+
 ## [0.2.0] — 2026-05-16
 
 Phase 2 release: Employee interface (OS-shape). 27 stories shipped.

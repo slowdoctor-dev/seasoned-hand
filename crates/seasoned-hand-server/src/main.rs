@@ -324,7 +324,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keeps the runtime smaller when the verifier slot isn't configured.
     let verifier_shutdown = tokio_util::sync::CancellationToken::new();
     let verifier_handle = if state.verifier_enabled {
-        use seasoned_hand_core::verifier::{Worker, WorkerDeps, gate::VerifierGate};
+        use seasoned_hand_core::verifier::{
+            Worker, WorkerDeps, extraction_handler::PlannerSlotExtractionHandler,
+            gate::VerifierGate,
+        };
         let deps = WorkerDeps::from_router(
             &state.router,
             state.plan_manager.clone(),
@@ -343,8 +346,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // `checkpoint_rollback_on_verifier_fail` (env-gated) is true.
         let rollback_handler = std::sync::Arc::new(ProductionRollbackHandler::new(state.clone()))
             as std::sync::Arc<dyn seasoned_hand_core::verifier::gate::RollbackHandler>;
-        let gate = VerifierGate::new(state.db.clone(), state.events.clone(), state.runner.clone())
-            .with_rollback(rollback_handler, state.checkpoint_rollback_on_verifier_fail);
+        let learning_enabled = std::env::var("SH_LEARNING_ENABLED")
+            .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
+            .unwrap_or(true);
+        let mut gate =
+            VerifierGate::new(state.db.clone(), state.events.clone(), state.runner.clone())
+                .with_rollback(rollback_handler, state.checkpoint_rollback_on_verifier_fail);
+        if learning_enabled {
+            let extraction = PlannerSlotExtractionHandler::new(
+                state.db.clone(),
+                state.events.clone(),
+                state.router.clone(),
+            );
+            gate = gate.with_extraction(std::sync::Arc::new(extraction));
+        } else {
+            tracing::info!("learning extraction disabled (SH_LEARNING_ENABLED=false)");
+        }
         let redis = std::sync::Arc::new(state.redis.clone());
         let token = verifier_shutdown.clone();
         let gate_token = verifier_shutdown.clone();

@@ -182,7 +182,7 @@ This mirrors how Seasoned Hand itself works (recursive principle).
 
 ## 13. Current state
 
-- **Phase**: 2 complete → Phase 3 starting
+- **Phase**: 3 complete → Phase 4 starting
 - **Branch**: main
 - **Next milestone**: Phase 3 architecture pass (BMAD Architect on
   `/specs/phase-3/architecture.md`) → story breakdown → learning

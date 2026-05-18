@@ -1,6 +1,6 @@
 # Story 3.17 — Production ExtractionHandler + main.rs wiring (Phase 3 BLOCKER close-out)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8 (full Phase 3 backend slice)
 > **Phase**: 3

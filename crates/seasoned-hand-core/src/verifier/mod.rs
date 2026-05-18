@@ -17,6 +17,7 @@ use thiserror::Error;
 
 pub mod context;
 pub mod extraction;
+pub mod extraction_handler;
 pub mod gate;
 pub mod invalidation;
 pub mod parse;

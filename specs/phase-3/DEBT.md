@@ -185,7 +185,7 @@ _To be populated by the BMAD Architect pass on
   section to include the full AGENTS.md §6 gate list. Future phase close-out stories
   (Phase 4+) should template from story 3.16's updated section.
 
-13. **#84 (H, Phase 4 BLOCKER)** Production extraction handler is not wired into VerifierGate
+13. **#84 (H, CLOSED 2026-05-18 by story 3.17)** Production extraction handler is not wired into VerifierGate
 - **What**: `seasoned-hand-server/src/main.rs` constructs `VerifierGate` with rollback
   wiring only; no `.with_extraction(...)` production handler is attached. PASS verdicts
   with `tool_calls >= 5` therefore emit
@@ -210,7 +210,7 @@ _To be populated by the BMAD Architect pass on
   `seasoned-hand-server/src/main.rs:346 .with_extraction(...)`. Add real
   end-to-end test driving stub LLM through extract → match → inject → counter-update.
 
-14. **#85 (M)** `phase3_warm_benchmark` is scenario-driven, not loop-driven
+14. **#85 (M, CLOSED 2026-05-18 by story 3.17)** `phase3_warm_benchmark` is scenario-driven, not loop-driven
 - **What**: Even after iter-2's tautology fix, the test seeds Action events
   directly and asserts the threshold. It does NOT drive a real warm task through
   the agent loop with extracted+injected playbook reducing tool_calls.

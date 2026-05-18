@@ -489,6 +489,7 @@ mod tests {
 
     use super::*;
     use crate::agent::breaker::BreakerRegistry;
+    use crate::agent::init::injector::{INJECTION_BYTE_CAP, build_injection};
     use crate::agent::{AgentRunner, AgentRunnerDeps};
     use crate::cost::CostClient;
     use crate::db;
@@ -1442,10 +1443,24 @@ mod tests {
         let fixture = Phase3BenchmarkFixture::phase2_overnight_default_path();
         let db = db::open(":memory:").await.unwrap();
         let store = SqliteEventStore::new(db.clone());
+        setup_benchmark_match_context(&db, "s-cold", "p-cold", "t-cold").await;
         setup_benchmark_match_context(&db, "s-warm", "p-warm", "t-warm").await;
         seed_gate_fixture_playbook(&db, &fixture, "t-warm").await;
+        for seq in 0..fixture.cold_baseline_tool_calls {
+            store
+                .append(NewEvent {
+                    session_id: "s-cold".into(),
+                    event_type: EventType::Action,
+                    source: "agent".into(),
+                    data: json!({"kind":"tool_call","seq": seq}),
+                })
+                .await
+                .unwrap();
+        }
+        let cold_calls = count_action_events(&db, "s-cold").await;
+        set_tool_calls(&db, "s-cold", cold_calls).await;
 
-        // Gate-mode second run: identical fixture identity + normalized brief shape.
+        // Warm run with playbook injection available via deterministic matcher hit.
         let matched = db
             .with_conn(|conn| {
                 match_playbooks(
@@ -1466,8 +1481,13 @@ mod tests {
             1,
             "warm benchmark requires deterministic gate hit"
         );
-
-        let warm_action_count = (fixture.cold_baseline_tool_calls * 70) / 100;
+        let injection = build_injection(&matched, INJECTION_BYTE_CAP)
+            .expect("warm benchmark requires injection payload");
+        assert!(
+            !injection.injected_ids.is_empty(),
+            "warm benchmark requires at least one injected playbook"
+        );
+        let warm_action_count = (cold_calls * 70) / 100;
         for seq in 0..warm_action_count {
             store
                 .append(NewEvent {
