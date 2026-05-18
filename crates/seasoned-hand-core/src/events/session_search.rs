@@ -300,8 +300,11 @@ fn collect_json_strings(value: &serde_json::Value, out: &mut Vec<String>) {
             }
         }
         serde_json::Value::Object(map) => {
-            for (k, v) in map {
-                out.push(k.clone());
+            // REVIEW iter-3 A5: index VALUES only, not object KEYS. Indexing keys
+            // makes operator searches for common field names like "kind" or
+            // "playbook_id" match every Skill / Misc event regardless of relevance,
+            // which isn't part of the architecture §3 per-EventType shape table.
+            for (_k, v) in map {
                 collect_json_strings(v, out);
             }
         }

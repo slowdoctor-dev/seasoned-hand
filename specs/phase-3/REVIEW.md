@@ -399,3 +399,185 @@ injection, un-stubbed tools, and cross-phase invariants.
 - Applied M-severity fix: harden `phase3_warm_benchmark` harness to avoid direct
   threshold assignment and bind to Action-event parity.
 - Deferred H-severity extraction wiring gap to DEBT #84 with explicit pay-down path.
+
+---
+
+## REVIEW iter-3 (Claude, 2026-05-18)
+
+Independent re-audit after Codex iter-2 (`8a4e19f`). Verified N1 + N2 claims;
+extended N1 with the deeper structural finding; added 4 new findings (A3-A6).
+
+### A) Grading Codex iter-2 findings
+
+- **Agreed (2/2)**: N1, N2.
+  - **N1 verified**: `grep with_extraction` shows only 3 test sites
+    (`gate.rs:971,1044,1068`) + zero production callers. `main.rs:346` constructs
+    `VerifierGate::new(...).with_rollback(...)` and stops.
+  - **N2 verified**: `phase3_warm_benchmark` rewrite (`gate.rs:1440-1505`) correctly
+    seeds N Action events, asserts `sessions.tool_calls == count_action_events()`,
+    THEN asserts `<= 0.70 * cold_baseline`. The tautology is closed.
+- **Accepted F4 downgrade**: Codex right that gate sentinel coupling is test-only,
+  severity L. DEBT #80 stays open for the schema-shape concern.
+
+### B) New findings from iter-3 independent review
+
+#### A1 (H) — Extends N1: NO production `ExtractionHandler` impl exists ANYWHERE
+
+**Evidence**
+
+```
+$ grep -rn "impl ExtractionHandler" --include="*.rs"
+crates/seasoned-hand-core/src/verifier/gate.rs:949: impl ExtractionHandler for OkExtraction   // #[cfg(test)]
+crates/seasoned-hand-core/src/verifier/gate.rs:1022: impl ExtractionHandler for ErrExtraction // #[cfg(test)]
+crates/seasoned-hand-core/src/verifier/gate.rs:1051: impl ExtractionHandler for SleepExtraction // #[cfg(test)]
+```
+
+main.rs not calling `.with_extraction(...)` is the *visible* gap. The root cause
+is **deeper**: there is no production-grade `ExtractionHandler` impl in the
+codebase. The architecture's §2.1 LearningExtractor sketch (planner-slot LLM call
+→ structured JSON output → glue F-3.13/F-3.14/F-3.18 → write playbook) was never
+materialized as a Rust type. The PM persona's story breakdown:
+
+- Story 3.3 shipped the orchestrator scaffolding (`with_extraction` builder,
+  timeout wrapper, error-event taxonomy)
+- Story 3.4 shipped the helper functions (redaction, adversarial scan,
+  quality-floor validator) — but as free functions, not as part of an
+  ExtractionHandler implementation
+- No story explicitly says "ship the production `ExtractionHandler` that ties
+  the planner-slot LLM call to story 3.4's helpers and writes the result"
+
+**Impact** — Phase 3 ships 16/16 stories complete by acceptance-criteria letter,
+but the headline learning behavior (extract → match → inject → fewer tool calls)
+**does not run end-to-end in production**. Every PASS task with `tool_calls >= 5`
+emits `playbook_extraction_error{stage:"llm_call", reason:"extraction_handler_not_configured"}`
+to the event stream and writes no playbook.
+
+**Recommended action** — open **story 3.17** (NOT a Phase 4 deferral): ship a
+production `PlannerSlotExtractionHandler` that:
+1. Resolves `SlotName::Planner` via `SlotRouter`.
+2. Builds the extraction prompt with F-3.14 layer-1 abstraction + F-3.13 layer-1
+   refusal guidance baked in.
+3. Calls the LLM, parses structured JSON output `{title, trigger_keywords,
+   overview, steps}`.
+4. Applies F-3.14 layer-2 PII redaction + F-3.13 layer-2 adversarial scan +
+   F-3.18 quality-floor validator (these helpers already exist).
+5. Renders to `content`, applies NFR-3.5 byte cap, writes to `playbooks` table.
+6. Wires it in `seasoned-hand-server/src/main.rs:346` via `.with_extraction(...)`.
+7. Adds a real end-to-end test driving a stub LLM through the full extraction →
+   match → inject → counter-update loop.
+
+This MUST close before Phase 4 starts — otherwise Phase 4 Curator has nothing
+to curate.
+
+#### A2 (M) — `phase3_warm_benchmark` still scenario-driven, not loop-driven
+
+**Evidence** — `verifier/gate.rs:1440-1505` (post iter-2):
+
+- Seeds Action events: `for seq in 0..warm_action_count { store.append(Action) }`
+- Sets `sessions.tool_calls` to that count
+- Asserts threshold
+
+The test never actually drives a warm task through the agent loop. It asserts
+"if I synthesize a session that LOOKS like a fast warm run, the threshold check
+passes". Iter-2's parity fix closed the worst tautology (the direct threshold
+write), but the test still proves the GATE works correctly, not that LEARNING
+actually reduces tool calls.
+
+**Disposition** — Downstream of A1. Once story 3.17 ships the production handler,
+the warm benchmark can drive a real cold→warm loop with a stub LLM. Until then,
+the current test is the best proxy. Severity M (was H if not for the gate fix);
+DEBT-track for the same close-out as A1.
+
+#### A3 (L) — Status docs not updated for Phase 3 close-out
+
+**Evidence**
+
+- `/BASELINE.md` line 18: `Status: Phase 2 complete → Phase 3 starting`
+- `/AGENTS.md` §13: `Phase: 2 complete → Phase 3 starting`
+- Phase 3 is `Status: done` per requirements.md §4 + all 16 story files.
+
+**Recommended fix** — flip both to `Phase 3 complete → Phase 4 starting` (after
+A1 is closed; otherwise honestly: `Phase 3 partial — extraction handler pending`).
+
+#### A4 (L) — CHANGELOG.md missing `[0.3.0]` entry for Phase 3
+
+**Evidence** — `CHANGELOG.md` has `[0.2.0] — 2026-05-16` Phase 2 release section,
+nothing for Phase 3. Phase 2 set the precedent that each phase ships with a
+CHANGELOG version bump.
+
+**Recommended fix** — add `[0.3.0] — 2026-05-18` section after Phase 3 close-out
+(post-A1). Should include the V010 + ADR-012 + ARCH v1.2 highlights, the 16-story
+breakdown, and the known A1 caveat if closing before Phase 4 isn't feasible.
+
+#### A5 (M) — `events/session_search.rs` `collect_json_strings` indexes JSON KEYS
+
+**Evidence** (`events/session_search.rs:291-309`):
+
+```rust
+fn collect_json_strings(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        ...
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                out.push(k.clone());   // <-- KEY pushed into searchable_text
+                collect_json_strings(v, out);
+            }
+        }
+    }
+}
+```
+
+`searchable_text_for_event` then calls `flatten_json_values(&event.data)` which
+pulls every object key into the FTS index. So `playbooks_fts` / `session_search_fts`
+both tokenize field names: `kind`, `playbook_id`, `tool_name`, `stage`, `reason`,
+`matcher_mode`, `original_bytes`, etc.
+
+**Impact** — operator searching for `kind` or `playbook_id` will match every Skill
+event and most Misc events, regardless of relevance. Per-EventType shape table
+in architecture §3 describes indexing VALUES (kind value, tool_name value, ...);
+keys are metadata that operators rarely search by.
+
+**Recommended fix** — drop the `out.push(k.clone())` line. Object-key indexing is
+not part of any documented shape. 1-line change.
+
+#### A6 (L) — Searchable-text double-counts explicit + flatten fields
+
+**Evidence** — every match arm in `searchable_text_for_event` extracts specific
+fields (e.g. `field_string(data, &["kind"])`) then appends
+`flatten_json_values(&event.data)` which includes the same fields again.
+
+**Impact** — duplicates appear in `searchable_text`. FTS5 weighting is mildly
+skewed (search for `match` hits twice in any `Skill{kind:"match"}` row). Storage
+overhead is small.
+
+**Recommended fix** — drop the trailing `flatten_json_values` from the Message /
+Plan / Skill / Misc arms; rely on the explicit field extraction. Defer to A5's
+fix slice or to a small follow-up.
+
+### C) Iter-3 fix summary
+
+- **A5 fixed inline**: removed JSON-key push from `collect_json_strings`.
+- **A1 + A2 deferred** to **story 3.17** (NOT a Phase 4 work item — must close
+  before Phase 4 starts). DEBT #84 already covers A1 from Codex iter-2;
+  promote severity to "Phase 4 BLOCKER" and add iter-3 evidence.
+- **A3 + A4** deferred: should land paired with story 3.17 close-out (status
+  flip + CHANGELOG entry are honest signal only when the learning loop actually
+  loops).
+- **A6** DEBT-tracked for editorial cleanup.
+
+### D) Recommendation
+
+**Phase 3 is functionally incomplete.** All 16 stories pass acceptance criteria
+at the letter, but the headline learning behavior does not run in production
+(A1). The Phase 3 "complete" claim should not stand until story 3.17 ships.
+
+Two options:
+1. **Open story 3.17 now** and ship the production `ExtractionHandler` before
+   any Phase 4 work begins. ~3-5h of work; mirrors the architecture §2.1
+   LearningExtractor sketch.
+2. **Mark Phase 3 as partial-complete** in BASELINE.md / AGENTS.md / CHANGELOG.md
+   with an explicit caveat, defer A1 to Phase 4-day-1, and proceed to Phase 4
+   architecture pass knowing the extraction handler is the first Phase 4 story.
+
+Both options need user direction. Recommend option 1 — Phase 4 Curator has
+nothing to curate without A1 closed.

@@ -185,15 +185,46 @@ _To be populated by the BMAD Architect pass on
   section to include the full AGENTS.md §6 gate list. Future phase close-out stories
   (Phase 4+) should template from story 3.16's updated section.
 
-13. **#84 (H)** Production extraction handler is not wired into VerifierGate
+13. **#84 (H, Phase 4 BLOCKER)** Production extraction handler is not wired into VerifierGate
 - **What**: `seasoned-hand-server/src/main.rs` constructs `VerifierGate` with rollback
   wiring only; no `.with_extraction(...)` production handler is attached. PASS verdicts
   with `tool_calls >= 5` therefore emit
   `Misc{kind:"playbook_extraction_error", reason:"extraction_handler_not_configured"}`
   and write no playbooks.
-- **Why now**: Iter-2 found this gap while deep-diving `verifier/gate.rs` and server
-  boot wiring. Story-level tests used mock handlers and did not validate production
-  gate construction.
-- **Pay down**: Land a real production `ExtractionHandler` implementation + main.rs
-  wiring in one slice, with integration coverage proving PASS verdicts can write
-  playbooks and that timeout/error branches still emit `playbook_extraction_*` events.
+- **REVIEW iter-3 extension**: the deeper cause is that NO production
+  `ExtractionHandler` Rust impl exists anywhere in the codebase — only test impls
+  (`OkExtraction`/`ErrExtraction`/`SleepExtraction` under `#[cfg(test)]` in
+  `gate.rs:949/1022/1051`). main.rs can't wire what doesn't exist. The PM story
+  breakdown shipped scaffolding (3.3) + helpers (3.4) but no story explicitly built
+  the production handler that ties planner-slot LLM + helpers + DB write together.
+- **Why now**: Iter-2 found the wiring gap; iter-3 confirmed it's a structural
+  Phase 3 incompleteness, not just a forgotten wire.
+- **Pay down**: Open **story 3.17** (NOT a Phase 4 deferral — this MUST close
+  before Phase 4 starts because the Curator has nothing to curate without it).
+  Story 3.17 ships a `PlannerSlotExtractionHandler` per architecture §2.1:
+  resolve `SlotName::Planner`, build extraction prompt with F-3.13/F-3.14 layer-1
+  guidance, call LLM, parse structured JSON output `{title, trigger_keywords,
+  overview, steps}`, apply existing F-3.14 layer-2 redaction + F-3.13 layer-2
+  adversarial scan + F-3.18 quality-floor validator, render to `content`, apply
+  NFR-3.5 cap, write to `playbooks`. Wire via
+  `seasoned-hand-server/src/main.rs:346 .with_extraction(...)`. Add real
+  end-to-end test driving stub LLM through extract → match → inject → counter-update.
+
+14. **#85 (M)** `phase3_warm_benchmark` is scenario-driven, not loop-driven
+- **What**: Even after iter-2's tautology fix, the test seeds Action events
+  directly and asserts the threshold. It does NOT drive a real warm task through
+  the agent loop with extracted+injected playbook reducing tool_calls.
+- **Why now**: Downstream of #84. Can't loop-test what doesn't loop in production.
+- **Pay down**: Story 3.17 close-out updates `phase3_warm_benchmark` to drive
+  a stub-LLM-backed cold→warm path through the full agent loop, asserting the
+  injected playbook actually shortens the warm session.
+
+15. **#86 (L)** Searchable-text double-counts explicit + flatten in serializer
+- **What**: `events/session_search.rs::searchable_text_for_event` extracts specific
+  fields per EventType then appends `flatten_json_values(&event.data)` which
+  includes those same fields again. FTS5 weighting is mildly skewed; storage
+  overhead is small.
+- **Why now**: Editorial. iter-3 also fixed A5 (object-key indexing) in the same
+  function; this duplication remains.
+- **Pay down**: Phase 4 editorial pass — drop trailing `flatten_json_values` from
+  Message / Plan / Skill / Misc arms, rely on explicit extraction.
