@@ -487,3 +487,93 @@ to capture the new dep.
 Recommend dispatching Codex iter-2 for cross-verification (Phase 3 precedent —
 Codex iter-2 caught 2 additional M-issues Claude missed). If iter-2 saturates,
 hand off to first GSD execute-story dispatch (story 4.2 — V011 atomic slice).
+
+## REVIEW iter-2 (Codex, 2026-05-18) — PM pass
+
+Scope: Claude PM iter-1 at `bc42b33` + current 23-story Phase 4 plan.
+
+### A) Grade Claude iter-1 findings
+
+Verdict: **2/2 agree**, **0 disagree**.
+
+- `P-IT1-F1` (M, NFR-4.4 coverage gap): agree with severity and root cause. Story 4.12 covers
+  telemetry emission/taxonomy but does not own retention-window + compaction + storage-cap runtime
+  behavior required by NFR-4.4. Adding story 4.23 is the correct structural fix.
+- `P-IT1-F2` (L, 4.22 dependency update): agree. Updating 4.22 deps to include 4.23 is correct.
+
+Story 4.23 rigor check:
+- Scope is concrete and testable (retention scheduler, compaction path, cap trigger, atomicity,
+  idempotency, observability).
+- Implementation plan has 9 actionable steps and maps cleanly to architecture §3.2/§12.12.
+
+### B) Independent re-audit
+
+#### DEBT carry-forward mapping
+
+Verified all Phase 3 carry-forward ids are tagged to Phase 4 stories:
+- `#72/#73/#75/#76/#77/#87/#88/#89/#90/#91` -> mapped in story refs (including close-out 4.22).
+
+#### Phase 4-introduced DEBT mapping
+
+Verified all `#92-#102` are tagged to at least one Phase 4 story (directly or close-out 4.22).
+No orphan DEBT id found.
+
+#### Story format compliance
+
+All 23 stories include required structure:
+- header fields (`Status/Estimated/Dependencies/Phase/Type`)
+- sections (`Goal/Acceptance criteria/Non-goals/Implementation steps/Verification/Refs`)
+
+#### Verification-block compliance
+
+All 23 stories include full gate commands:
+- `cargo clippy --all-targets -- -D warnings`
+- `cargo fmt --check`
+- `cargo test --workspace`
+- `bash scripts/spec-check.sh`
+
+#### Load-bearing story checks (4.3-4.10)
+
+Each load-bearing story requires:
+- production runtime implementation (not test-only trait scaffold)
+- runtime wiring through `main.rs` / CuratorWorker graph
+- integration test exercising end-to-end behavior with stubs where needed
+
+#### Dependency graph
+
+No cycle found. Flow remains DAG:
+- foundation `4.1 -> 4.2`,
+- runtime/component stories fan out,
+- close-out `4.22` waits on `4.2-4.21, 4.23`.
+
+#### Total estimate sanity
+
+23 stories total estimate is ~54.5 hours, which is reasonable for a 3-week Phase 4 execution window
+with 1-3h story granularity.
+
+#### V011 atomic-slice story check (4.2)
+
+Story 4.2 acceptance still pins all required atomic pieces:
+- V011 SQL migration,
+- ADR-013,
+- ARCH bump/reconciliation,
+- event taxonomy expansion,
+- FTS trigger semantics,
+- backfill behavior.
+
+### C) Cross-phase consistency
+
+Story 4.23 is a clean pre-execution gap fix (not a conflicting overlap):
+- Story 4.12 owns telemetry emission/taxonomy.
+- Story 4.23 owns retention/compaction lifecycle for emitted data.
+
+This avoids repeating Phase 3's post-execution structural-gap recovery pattern.
+
+### D/E) Iter-2 action and verdict
+
+- **New iter-2 findings**: 0 (M+), 0 (L)
+- **Inline fixes applied**: none
+- **New DEBT seeded**: none
+
+Saturation verdict: PM hardening is complete; proceed to GSD execute-story dispatch starting with
+story 4.2 (V011 atomic slice).
