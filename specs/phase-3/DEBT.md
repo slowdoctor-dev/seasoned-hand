@@ -127,3 +127,60 @@ _To be populated by the BMAD Architect pass on
       - ARCH version `v1.2` reconciliation marker
       - Phase 3 required CLI groups in `specs/phase-3/architecture.md`
   - Landed with Story 3.16 acceptance gate slice.
+
+## REVIEW iter-1 (Claude, 2026-05-18) — DEBT additions
+
+9. **#80 (M)** Gate-matcher fixture/brief sentinel coupling
+- **What**: `matcher::gate_match` (`crates/seasoned-hand-core/src/matcher/mod.rs:88-96`)
+  encodes the F-3.4 identity tuple `(fixture_id, normalized_brief)` as TWO LIKE-substring
+  matches on `playbooks.trigger_keywords`. The seed at `verifier/gate.rs:1334` writes
+  `["fixture:<id>", "brief:<normalized>"]` into the JSON-shaped trigger_keywords.
+- **Why it's debt**: (a) FTS5 `playbooks_fts` indexes trigger_keywords, so production-mode
+  queries can hit gate-fixture sentinels; (b) SQL LIKE substring match allows prefix-
+  collision false positives (`fixture:phase2_overnight_default_path` would match
+  `fixture:phase2_overnight_default_path_v2`); (c) the tuple is encoded structurally
+  (JSON-array text) rather than as a typed schema, so Phase 4 retuning of trigger_keywords
+  semantics could silently break gate matching.
+- **Why now**: Phase 3 ships green tests with the substring approach. Refactoring to
+  dedicated columns or a `gate_fixtures` join table is a deeper schema change.
+- **Pay down**: Phase 4 perf/quality pass — add `fixture_id TEXT` + `gate_brief_hash TEXT`
+  columns to `playbooks` (or a separate `gate_fixtures` table) + regression test
+  ("seed a benign playbook whose content contains 'fixture:' and assert production mode
+  does NOT return it under a benchmark-shaped query").
+
+10. **#81 (M)** Extraction PII regex over-redaction (PHONE_RE, IPV4_RE)
+- **What**: `verifier/extraction.rs:24-29` `PHONE_RE` matches any 2-16 digit run starting
+  with non-zero (false positives: order IDs, version numbers, timestamps). `IPV4_RE`
+  matches `\d{1,3}.\d{1,3}.\d{1,3}.\d{1,3}` — also matches software version strings
+  like `1.2.3.4` and build IDs like `2025.10.15.0`.
+- **Why it's debt**: extracted playbook content with technical version references gets
+  garbled into `[REDACTED_IP]` and `[REDACTED_PHONE]`, degrading signal density inside
+  the NFR-3.3 12 KB injection budget.
+- **Why now**: F-3.14 was authored as a security floor; over-redaction is the safer
+  failure mode for Phase 3. Tightening regex risks under-redaction without a corpus
+  to validate against.
+- **Pay down**: Phase 4 Curator builds a test corpus capturing the false-positive
+  cases (version strings, build IDs, timestamps) and tightens `PHONE_RE` (require
+  `+` prefix OR separator) + `IPV4_RE` (skip when preceded by `v`/`version` or
+  any octet > 255 making it not a valid IP).
+
+11. **#82 (L)** No orchestrator-level test for combined "post-cap quality_floor fail" emit
+- **What**: Architecture §3 step 6 mandates: when NFR-3.5 output cap fires AND post-cap
+  content drops below the F-3.18 quality floor, BOTH `playbook_extraction_output_capped`
+  AND `playbook_extraction_rejected{layer:"quality_floor"}` events must emit. Unit
+  tests at `verifier/extraction.rs:294-298` test the helpers; no integration test
+  drives a real extractor through the combined branch.
+- **Why it's debt**: orchestrator could regress to emitting only one event after a
+  refactor; nothing catches it.
+- **Pay down**: integration test under the extraction orchestrator's test module
+  that synthesizes a 24KB+ LLM response with step content that loses its 200-char
+  floor after capping; asserts both Misc events appear in the events table for the
+  synthetic session.
+
+12. **#83 (process)** AGENTS.md §6 full gate list at phase close-out
+- **What**: Story 3.16 acceptance verification ran only the Phase-3-specific tests +
+  `spec-check.sh` — skipped `cargo test --workspace`, `cargo clippy --all-targets
+  -- -D warnings`, `cargo fmt --check`. This let F1/F2/F3 ship to main.
+- **Pay down (already applied)**: REVIEW iter-1 backfilled story 3.16's Verification
+  section to include the full AGENTS.md §6 gate list. Future phase close-out stories
+  (Phase 4+) should template from story 3.16's updated section.

@@ -3,8 +3,8 @@
 use anyhow::{Result, anyhow};
 use clap::Subcommand;
 use rusqlite::OptionalExtension;
-use serde::Serialize;
 use seasoned_hand_core::db;
+use serde::Serialize;
 
 #[derive(Debug, Subcommand)]
 pub enum PlaybookCmd {
@@ -176,7 +176,11 @@ fn now_micros() -> i64 {
 mod tests {
     use super::*;
 
+    // Serial-group key matches the env var the test mutates; the `sop` test
+    // uses the same key so they're mutually exclusive under cargo's parallel
+    // test runner (Phase 3 REVIEW iter-1 F1).
     #[tokio::test]
+    #[serial_test::serial(SH_DATABASE_URL)]
     async fn lifecycle_list_show_delete() {
         let tmp = tempfile::tempdir().unwrap();
         let db_url = format!("sqlite:{}", tmp.path().join("playbook.db").display());
@@ -225,8 +229,10 @@ mod tests {
 
         let status: String = pool
             .with_conn(|conn| {
-                conn.query_row("SELECT status FROM playbooks WHERE id='pb-1'", [], |r| r.get(0))
-                    .unwrap()
+                conn.query_row("SELECT status FROM playbooks WHERE id='pb-1'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap()
             })
             .await;
         assert_eq!(status, "archived");
@@ -234,4 +240,3 @@ mod tests {
         unsafe { std::env::remove_var("SH_DATABASE_URL") };
     }
 }
-

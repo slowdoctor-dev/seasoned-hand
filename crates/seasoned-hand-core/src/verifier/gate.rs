@@ -339,14 +339,18 @@ impl VerifierGate {
         let start = Instant::now();
         let extraction = async {
             let Some(handler) = &self.extraction else {
-                return Err(ExtractionError::new("llm_call", "extraction_handler_not_configured"));
+                return Err(ExtractionError::new(
+                    "llm_call",
+                    "extraction_handler_not_configured",
+                ));
             };
             handler.extract_sync(session_id).await
         };
         match tokio::time::timeout(Duration::from_secs(60), extraction).await {
             Ok(Ok(())) => {}
             Ok(Err(err)) => {
-                self.emit_extraction_error(session_id, err.stage, err.reason).await;
+                self.emit_extraction_error(session_id, err.stage, err.reason)
+                    .await;
             }
             Err(_) => {
                 if let Err(error) = self
@@ -491,12 +495,12 @@ mod tests {
     use crate::dispatch::ToolDispatcher;
     use crate::dispatch::mask::DefaultMaskPolicy;
     use crate::events::{EventQuery, EventStore};
+    use crate::matcher::{MatchRequest, MatcherMode, match_playbooks, normalize_brief};
     use crate::plan::PlanManager;
     use crate::pubsub::RedisPool;
     use crate::router::SlotRouter;
     use crate::sandbox::SandboxClient;
     use crate::search::{SearchClient, SearchProvider};
-    use crate::matcher::{MatchRequest, MatcherMode, match_playbooks, normalize_brief};
     use crate::tools::register_builtin_tools;
 
     #[derive(Default, Clone)]
@@ -975,8 +979,7 @@ mod tests {
             .unwrap();
         assert!(
             rows.iter().all(|e| {
-                e.data.get("kind").and_then(Value::as_str)
-                    != Some("playbook_extraction_error")
+                e.data.get("kind").and_then(Value::as_str) != Some("playbook_extraction_error")
                     && e.data.get("kind").and_then(Value::as_str)
                         != Some("playbook_extraction_timeout")
             }),
@@ -1053,7 +1056,9 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .find(|e| e.data.get("kind").and_then(Value::as_str) == Some("playbook_extraction_error"))
+            .find(|e| {
+                e.data.get("kind").and_then(Value::as_str) == Some("playbook_extraction_error")
+            })
             .expect("expected extraction error event");
         assert_eq!(err_event.data["stage"], "llm_call");
         assert_eq!(err_event.data["reason"], "simulated_llm_failure");
@@ -1074,7 +1079,9 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .find(|e| e.data.get("kind").and_then(Value::as_str) == Some("playbook_extraction_timeout"))
+            .find(|e| {
+                e.data.get("kind").and_then(Value::as_str) == Some("playbook_extraction_timeout")
+            })
             .expect("expected extraction timeout event");
         assert!(
             timeout_event
@@ -1207,9 +1214,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(rows.iter().all(|e| {
-            e.data.get("kind").and_then(Value::as_str) != Some("outcome")
-        }));
+        assert!(
+            rows.iter()
+                .all(|e| { e.data.get("kind").and_then(Value::as_str) != Some("outcome") })
+        );
     }
 
     mod skill {
@@ -1328,10 +1336,16 @@ mod tests {
         .await;
     }
 
-    async fn seed_gate_fixture_playbook(db: &DbPool, fixture: &Phase3BenchmarkFixture, task_id: &str) {
+    async fn seed_gate_fixture_playbook(
+        db: &DbPool,
+        fixture: &Phase3BenchmarkFixture,
+        task_id: &str,
+    ) {
         let normalized = fixture.normalized_brief();
-        let trigger_keywords =
-            format!("[\"fixture:{}\", \"brief:{}\"]", fixture.fixture_id, normalized);
+        let trigger_keywords = format!(
+            "[\"fixture:{}\", \"brief:{}\"]",
+            fixture.fixture_id, normalized
+        );
         let tid = task_id.to_string();
         db.with_conn(move |conn| {
             conn.execute(
@@ -1372,7 +1386,11 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(same_identity.len(), 1, "equivalent normalized brief must match");
+        assert_eq!(
+            same_identity.len(),
+            1,
+            "equivalent normalized brief must match"
+        );
 
         let fixture_mismatch = db
             .with_conn(|conn| {
@@ -1442,7 +1460,11 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(matched.len(), 1, "warm benchmark requires deterministic gate hit");
+        assert_eq!(
+            matched.len(),
+            1,
+            "warm benchmark requires deterministic gate hit"
+        );
 
         let warm_tool_calls = (fixture.cold_baseline_tool_calls * 70) / 100;
         set_tool_calls(&db, "s-warm", warm_tool_calls).await;

@@ -92,7 +92,8 @@ fn latest_injection_prefix(events: &[Event]) -> Option<String> {
         if !is_injection_skill_event(event) {
             return None;
         }
-        event.data
+        event
+            .data
             .get("rendered_prefix")
             .and_then(Value::as_str)
             .map(str::to_string)

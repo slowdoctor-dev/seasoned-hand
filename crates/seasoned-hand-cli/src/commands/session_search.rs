@@ -53,10 +53,7 @@ pub async fn run(cmd: SessionCmd, json: bool) -> Result<()> {
             let event_store = SqliteEventStore::new(pool.clone());
             let query_for_sql = query.clone();
             let session_for_sql = session.clone();
-            let event_type = r#type
-                .as_deref()
-                .map(str_to_event_type)
-                .transpose()?;
+            let event_type = r#type.as_deref().map(str_to_event_type).transpose()?;
             let hits = pool
                 .with_conn(move |conn| {
                     search_session_events(
@@ -124,7 +121,11 @@ mod tests {
     use seasoned_hand_core::events::{EventStore, EventType, NewEvent};
     use serde_json::json;
 
+    // Serial-group key matches the env var this test mutates; the `sop` and
+    // `playbook` tests share the same key for mutual exclusion under cargo's
+    // parallel test runner (Phase 3 REVIEW iter-1 F1).
     #[tokio::test]
+    #[serial_test::serial(SH_DATABASE_URL)]
     async fn search_returns_raw_hits() {
         let tmp = tempfile::tempdir().unwrap();
         let db_url = format!("sqlite:{}", tmp.path().join("session-search.db").display());

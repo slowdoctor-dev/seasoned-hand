@@ -28,3 +28,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"
 rusqlite = { version = "0.31", features = ["bundled"] }
 tempfile = "3"
+# Phase 3 REVIEW iter-1 F1: serialize CLI tests that mutate the global
+# SH_DATABASE_URL env var; otherwise `cargo test --workspace` races and
+# tests step on each other's tempdir databases.
+serial_test = "3"

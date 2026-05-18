@@ -38,13 +38,28 @@ Phase 3 version-hook discipline.
 
 ## Verification
 
+Phase 3 acceptance MUST run the complete AGENTS.md §6 gate list (not just the
+Phase-3-specific subset — see REVIEW iter-1 F7):
+
 ```bash
+# AGENTS.md §6 (full gate set, all 6)
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+cargo test --workspace
+pnpm typecheck
+pnpm test
+bash scripts/spec-check.sh
+
+# Phase-3-specific evidence (subset that proves the learning loop ships)
 cargo test phase3_warm_benchmark
 cargo test sessions_tool_calls_matches_action_count
 cargo test phase3_production_matcher_smoke
 cargo test -p seasoned-hand-core fts5::trigger_correctness
-bash scripts/spec-check.sh
 ```
+
+The Phase-3-specific tests are evidence that the learning machinery works; the
+AGENTS.md §6 gates are evidence that Phase 3 didn't regress the rest of the
+workspace. Both must pass.
 
 ---
 

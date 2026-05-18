@@ -408,23 +408,25 @@ async fn learning_tools_surface_is_live() {
         })
         .await;
     let reg = register_builtin_tools();
-    assert!(reg.get("sop_read").is_some());
-    assert!(reg.get("glossary_lookup").is_some());
-    assert!(reg.get("playbook_search").is_some());
-    assert!(reg
-        .get("sop_read")
-        .unwrap()
-        .invoke(json!({"id":"sop-a"}), &cx)
-        .await
-        .unwrap()
-        .ok);
-    assert!(reg
-        .get("glossary_lookup")
-        .unwrap()
-        .invoke(json!({"term":"alpha"}), &cx)
-        .await
-        .unwrap()
-        .ok);
+    assert!(reg.contains_key("sop_read"));
+    assert!(reg.contains_key("glossary_lookup"));
+    assert!(reg.contains_key("playbook_search"));
+    assert!(
+        reg.get("sop_read")
+            .unwrap()
+            .invoke(json!({"id":"sop-a"}), &cx)
+            .await
+            .unwrap()
+            .ok
+    );
+    assert!(
+        reg.get("glossary_lookup")
+            .unwrap()
+            .invoke(json!({"term":"alpha"}), &cx)
+            .await
+            .unwrap()
+            .ok
+    );
 }
 
 #[tokio::test]

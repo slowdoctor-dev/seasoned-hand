@@ -255,7 +255,12 @@ fn searchable_text_for_event(event: &Event) -> String {
             let kind = field_string(&event.data, &["kind"]);
             let playbook_id = field_string(&event.data, &["playbook_id"]);
             let matcher_mode = field_string(&event.data, &["matcher_mode"]);
-            join_parts(&[kind, playbook_id, matcher_mode, flatten_json_values(&event.data)])
+            join_parts(&[
+                kind,
+                playbook_id,
+                matcher_mode,
+                flatten_json_values(&event.data),
+            ])
         }
         EventType::Misc => {
             let kind = field_string(&event.data, &["kind"]);

@@ -63,7 +63,7 @@ pub fn build_injection(matches: &[MatchedPlaybook], byte_cap: usize) -> Option<I
 }
 
 #[cfg(test)]
-mod injector {
+mod tests {
     use super::*;
     use crate::matcher::MatcherMode;
 

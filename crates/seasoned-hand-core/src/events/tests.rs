@@ -269,14 +269,42 @@ mod session_search {
     async fn all_event_types_queryable() {
         let (pool, store) = fixture().await;
         let all = [
-            (EventType::Message, "agent", json!({"role": "assistant", "text": "needle_alpha"})),
-            (EventType::Action, "tool:x", json!({"tool_name": "needle_alpha", "tool_input": {"x": "needle_alpha"}})),
-            (EventType::Observation, "tool:x", json!({"tool_name": "needle_alpha", "tool_result": "needle_alpha"})),
-            (EventType::Plan, "planner", json!({"goal": "needle_alpha", "phases": [{"title": "needle_alpha"}]})),
-            (EventType::Knowledge, "memory", json!({"fact": "needle_alpha"})),
+            (
+                EventType::Message,
+                "agent",
+                json!({"role": "assistant", "text": "needle_alpha"}),
+            ),
+            (
+                EventType::Action,
+                "tool:x",
+                json!({"tool_name": "needle_alpha", "tool_input": {"x": "needle_alpha"}}),
+            ),
+            (
+                EventType::Observation,
+                "tool:x",
+                json!({"tool_name": "needle_alpha", "tool_result": "needle_alpha"}),
+            ),
+            (
+                EventType::Plan,
+                "planner",
+                json!({"goal": "needle_alpha", "phases": [{"title": "needle_alpha"}]}),
+            ),
+            (
+                EventType::Knowledge,
+                "memory",
+                json!({"fact": "needle_alpha"}),
+            ),
             (EventType::Datasource, "web", json!({"url": "needle_alpha"})),
-            (EventType::Skill, "learning", json!({"kind": "match", "playbook_id": "needle_alpha", "matcher_mode": "production"})),
-            (EventType::Misc, "system", json!({"kind": "playbook_extraction_rejected", "reason": "needle_alpha"})),
+            (
+                EventType::Skill,
+                "learning",
+                json!({"kind": "match", "playbook_id": "needle_alpha", "matcher_mode": "production"}),
+            ),
+            (
+                EventType::Misc,
+                "system",
+                json!({"kind": "playbook_extraction_rejected", "reason": "needle_alpha"}),
+            ),
         ];
 
         for (event_type, source, data) in all {

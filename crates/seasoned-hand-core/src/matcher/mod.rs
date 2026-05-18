@@ -54,7 +54,10 @@ pub fn normalize_brief(input: &str) -> String {
     lowered.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-pub fn match_playbooks(conn: &Connection, request: &MatchRequest) -> rusqlite::Result<Vec<MatchedPlaybook>> {
+pub fn match_playbooks(
+    conn: &Connection,
+    request: &MatchRequest,
+) -> rusqlite::Result<Vec<MatchedPlaybook>> {
     let project_id: Option<String> = conn
         .query_row(
             "SELECT t.project_id
@@ -74,7 +77,11 @@ pub fn match_playbooks(conn: &Connection, request: &MatchRequest) -> rusqlite::R
     }
 }
 
-fn gate_match(conn: &Connection, project_id: &str, request: &MatchRequest) -> rusqlite::Result<Vec<MatchedPlaybook>> {
+fn gate_match(
+    conn: &Connection,
+    project_id: &str,
+    request: &MatchRequest,
+) -> rusqlite::Result<Vec<MatchedPlaybook>> {
     let Some(fixture_id) = request.fixture_id.as_deref() else {
         return Ok(Vec::new());
     };
@@ -120,7 +127,11 @@ fn gate_match(conn: &Connection, project_id: &str, request: &MatchRequest) -> ru
     Ok(scored)
 }
 
-fn production_match(conn: &Connection, project_id: &str, request: &MatchRequest) -> rusqlite::Result<Vec<MatchedPlaybook>> {
+fn production_match(
+    conn: &Connection,
+    project_id: &str,
+    request: &MatchRequest,
+) -> rusqlite::Result<Vec<MatchedPlaybook>> {
     let normalized = normalize_brief(&request.brief);
     if normalized.is_empty() {
         return Ok(Vec::new());
@@ -174,7 +185,12 @@ fn production_match(conn: &Connection, project_id: &str, request: &MatchRequest)
     Ok(scored)
 }
 
-fn score_candidate(candidate: Candidate, mode: MatcherMode, tokens: &[&str], now_micros: i64) -> MatchedPlaybook {
+fn score_candidate(
+    candidate: Candidate,
+    mode: MatcherMode,
+    tokens: &[&str],
+    now_micros: i64,
+) -> MatchedPlaybook {
     let content_excerpt = candidate.content.chars().take(512).collect::<String>();
     let match_score = match mode {
         MatcherMode::Gate => 10.0 + recency_boost(now_micros, candidate.created_at),
@@ -246,7 +262,7 @@ fn now_micros() -> i64 {
 }
 
 #[cfg(test)]
-mod matcher {
+mod tests {
     use super::*;
     use crate::db;
 
@@ -563,7 +579,10 @@ mod matcher {
         assert_eq!(out[1].playbook_id, "pb-mid");
         assert_eq!(out[2].playbook_id, "pb-low");
 
-        let ids = out.iter().map(|m| m.playbook_id.as_str()).collect::<Vec<_>>();
+        let ids = out
+            .iter()
+            .map(|m| m.playbook_id.as_str())
+            .collect::<Vec<_>>();
         assert!(
             !ids.contains(&"pb-archived"),
             "archived rows must be excluded from production matcher"

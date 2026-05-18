@@ -270,10 +270,14 @@ mod fts5 {
                 assert_eq!(updated_hits, 1);
 
                 let source_count: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM session_search_index", [], |row| row.get(0))
+                    .query_row("SELECT COUNT(*) FROM session_search_index", [], |row| {
+                        row.get(0)
+                    })
                     .unwrap();
                 let fts_count: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM session_search_fts", [], |row| row.get(0))
+                    .query_row("SELECT COUNT(*) FROM session_search_fts", [], |row| {
+                        row.get(0)
+                    })
                     .unwrap();
                 assert_eq!(source_count, fts_count);
 
@@ -291,10 +295,14 @@ mod fts5 {
                     )
                     .unwrap();
                 let source_after_delete: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM session_search_index", [], |row| row.get(0))
+                    .query_row("SELECT COUNT(*) FROM session_search_index", [], |row| {
+                        row.get(0)
+                    })
                     .unwrap();
                 let fts_after_delete: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM session_search_fts", [], |row| row.get(0))
+                    .query_row("SELECT COUNT(*) FROM session_search_fts", [], |row| {
+                        row.get(0)
+                    })
                     .unwrap();
                 assert_eq!(post_delete_hits, 0);
                 assert_eq!(source_after_delete, 0);

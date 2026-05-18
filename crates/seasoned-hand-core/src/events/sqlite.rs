@@ -8,8 +8,8 @@ use rusqlite::OptionalExtension;
 
 use super::{Event, EventError, EventQuery, EventStore, EventType, NewEvent};
 use crate::db::DbPool;
-use crate::pubsub::RedisPool;
 use crate::events::session_search;
+use crate::pubsub::RedisPool;
 
 pub struct SqliteEventStore {
     pool: DbPool,

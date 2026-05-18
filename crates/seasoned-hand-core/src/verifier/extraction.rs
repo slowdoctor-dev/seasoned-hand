@@ -27,10 +27,16 @@ static PHONE_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static IPV4_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").expect("valid regex"));
-static IPV6_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b(?:[0-9A-Fa-f]{1,4}:){2,}[0-9A-Fa-f:]{1,4}\b").expect("valid regex"));
+static IPV6_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:[0-9A-Fa-f]{1,4}:){2,}[0-9A-Fa-f:]{1,4}\b").expect("valid regex")
+});
+// Phase 3 REVIEW iter-1 F5: expand beyond Authorization:Bearer + X-Api-Key
+// to cover the other commonly-leaked secret-bearing header shapes.
 static AUTH_HEADER_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?im)\b(?:Authorization:\s*Bearer|X-Api-Key:)\s*[^\s]+").expect("valid regex")
+    Regex::new(
+        r"(?im)\b(?:Authorization:\s*(?:Bearer|Basic)|Proxy-Authorization:\s*(?:Bearer|Basic)|X-Api-Key:|X-Auth-Token:|X-CSRF-Token:|(?:Set-)?Cookie:)\s*[^\s]+",
+    )
+    .expect("valid regex")
 });
 
 const INJECTION_PHRASES: &[&str] = &[
@@ -116,7 +122,10 @@ pub fn detect_adversarial(text: &str) -> Option<String> {
     if URL_RAW_IP_RE.is_match(text) {
         return Some("url_raw_ip".to_string());
     }
-    if INJECTION_PHRASES.iter().any(|phrase| lower.contains(phrase)) {
+    if INJECTION_PHRASES
+        .iter()
+        .any(|phrase| lower.contains(phrase))
+    {
         return Some("prompt_injection_phrase".to_string());
     }
     if BASE64_BLOB_RE.is_match(text) {
@@ -214,7 +223,7 @@ pub fn extraction_output_capped_event(truncation: &Truncation) -> serde_json::Va
 }
 
 #[cfg(test)]
-mod extraction {
+mod tests {
     use super::*;
 
     #[test]

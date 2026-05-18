@@ -3,8 +3,8 @@
 use anyhow::{Result, anyhow};
 use clap::Subcommand;
 use rusqlite::{OptionalExtension, params};
-use serde::Serialize;
 use seasoned_hand_core::db;
+use serde::Serialize;
 
 #[derive(Debug, Subcommand)]
 pub enum SopCmd {
@@ -164,7 +164,10 @@ pub async fn run(cmd: SopCmd, json: bool) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&rows)?);
             } else {
                 for row in rows {
-                    println!("{}\t{}\tv{}\tenforced={}", row.id, row.title, row.version, row.enforced);
+                    println!(
+                        "{}\t{}\tv{}\tenforced={}",
+                        row.id, row.title, row.version, row.enforced
+                    );
                 }
             }
         }
@@ -250,7 +253,11 @@ fn now_micros() -> i64 {
 mod tests {
     use super::*;
 
+    // Serial-group key matches the env var this test mutates; the `playbook`
+    // test uses the same key so they're mutually exclusive under cargo's
+    // parallel test runner (Phase 3 REVIEW iter-1 F1).
     #[tokio::test]
+    #[serial_test::serial(SH_DATABASE_URL)]
     async fn create_edit_list_show_delete_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
         let db_url = format!("sqlite:{}", tmp.path().join("sop.db").display());
@@ -306,7 +313,9 @@ mod tests {
         assert_eq!(row.3, 0);
 
         run(SopCmd::List, true).await.unwrap();
-        run(SopCmd::Show { id: "sop-1".into() }, true).await.unwrap();
+        run(SopCmd::Show { id: "sop-1".into() }, true)
+            .await
+            .unwrap();
         run(SopCmd::Delete { id: "sop-1".into() }, true)
             .await
             .unwrap();

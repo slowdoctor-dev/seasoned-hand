@@ -20,10 +20,10 @@ pub mod feature_list;
 pub mod injector;
 pub mod progress;
 
+use crate::matcher::{MatchRequest, MatcherMode, match_playbooks};
 use briefing::{BriefingAction, MAX_EDIT_CYCLES, RunConfig, RunOutcome, UserResponse, apply_edits};
 use feature_list::{Feature, FeatureList, FeatureStatus};
 use injector::{INJECTION_BYTE_CAP, build_injection};
-use crate::matcher::{MatchRequest, MatcherMode, match_playbooks};
 
 const FALLBACK_REASON_PLANNER_ERROR: &str = "planner_error";
 const FALLBACK_REASON_MALFORMED: &str = "malformed_plan";
