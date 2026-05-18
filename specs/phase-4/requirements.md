@@ -234,11 +234,30 @@ Owner: BMAD Analyst pass
 
 ## 4. Story breakdown
 
-PM persona fills this section after Architect pass.
-
 | story_id | title | est | deps | status |
 |---|---|---:|---|---|
-| 4.1+ | approximately 20-26 stories | TBD | TBD | draft |
+| 4.1 | Phase 4 scaffolds (retroactive doc baseline) | 0.5h | — | done |
+| 4.2 | Atomic slice: V011 + ADR-013 + ARCH v1.3 + taxonomy/FTS/backfill | 3.0h | 4.1 | ready |
+| 4.3 | CuratorWorker production runtime + main.rs wiring | 3.0h | 4.2 | ready |
+| 4.4 | CandidateBuilder + EmbeddingReranker production wiring | 3.0h | 4.2, 4.3 | ready |
+| 4.5 | ConsolidationEngine with revision-chain writes | 3.0h | 4.2, 4.4 | ready |
+| 4.6 | ConflictDetector production implementation | 2.5h | 4.2, 4.4 | ready |
+| 4.7 | RetrospectiveGenerator weekly cadence + citation validator | 3.0h | 4.2, 4.3, 4.6 | ready |
+| 4.8 | WorkPatternExtractor + recommendation loop | 2.5h | 4.2, 4.3 | ready |
+| 4.9 | OperatorReviewQueue + curator CLI surfaces | 3.0h | 4.2, 4.3, 4.5, 4.6 | ready |
+| 4.10 | Knowledge/Datasource writers + L2 enforcement rollout | 3.0h | 4.2, 4.3, 4.4 | ready |
+| 4.11 | Curator failure containment + adversarial confidence bounds | 2.5h | 4.3, 4.4, 4.5, 4.6 | ready |
+| 4.12 | Curator telemetry schema + event taxonomy reconciliation | 2.0h | 4.2, 4.3, 4.5, 4.6, 4.7, 4.8 | ready |
+| 4.13 | Auto-archive policy engine + reversibility | 2.5h | 4.5, 4.9, 4.12 | ready |
+| 4.14 | Strict SH_CURATOR_* config parsing + feature flags | 2.0h | 4.3 | ready |
+| 4.15 | Project-scope isolation enforcement regression | 1.5h | 4.2, 4.3, 4.5, 4.10 | ready |
+| 4.16 | NFR-4.7 false-positive audit harness | 2.5h | 4.5, 4.13 | ready |
+| 4.17 | Revision-chain integrity regression | 2.0h | 4.2, 4.5 | ready |
+| 4.18 | curator_search_fts maintenance-trigger correctness regression | 1.5h | 4.2 | ready |
+| 4.19 | Review queue state-machine regression + suppression TTL | 1.5h | 4.9 | ready |
+| 4.20 | Embedding cost circuit-breaker regression | 2.0h | 4.4, 4.14 | ready |
+| 4.21 | phase4_warm_full_loop_benchmark | 3.0h | 4.3, 4.4, 4.5, 4.7, 4.8, 4.10, 4.12, 4.13 | ready |
+| 4.22 | Phase 4 acceptance gate + close-out | 2.5h | 4.2-4.21 | ready |
 
 ## 5. Acceptance criteria (Phase-level)
 
