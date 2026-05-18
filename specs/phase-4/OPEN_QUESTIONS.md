@@ -44,6 +44,7 @@ Cons:
 - Requires robust telemetry and safeguards
 
 Suggested next step: Architect resolves baseline policy; PM scopes staged rollout.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.1 (option B).
 
 ## 2. Consolidation similarity metric strategy
 
@@ -92,6 +93,7 @@ Cons:
 - May reduce throughput in early iteration
 
 Suggested next step: Architect resolves with explicit NFR budget alignment.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.2 (option D).
 
 ## 3. Consolidation write behavior
 
@@ -130,6 +132,7 @@ Cons:
 - More operational overhead
 
 Suggested next step: Architect resolves; PM may stage B then optional C.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.3 (option B).
 
 ## 4. Curator cycle trigger control
 
@@ -168,6 +171,7 @@ Cons:
 - More testing matrix size
 
 Suggested next step: Architect resolves default; PM ensures regression coverage.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.4 (option C).
 
 ## 5. Curator failure isolation boundary
 
@@ -206,6 +210,7 @@ Cons:
 - Complex idempotency handling
 
 Suggested next step: Architect resolves with clear retry semantics.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.5 (option C).
 
 ## 6. Retrospective generation cadence
 
@@ -244,6 +249,7 @@ Cons:
 - Harder longitudinal comparison
 
 Suggested next step: Architect/PM jointly resolve; maintain roadmap fidelity.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.6 (option B).
 
 ## 7. Retrospective model slot choice
 
@@ -282,6 +288,7 @@ Cons:
 - Harder reproducibility
 
 Suggested next step: Architect resolves with NFR-4.6 cost budget.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.7 (option B).
 
 ## 8. Work-pattern signal source
 
@@ -320,6 +327,7 @@ Cons:
 - More schema surfaces
 
 Suggested next step: Architect resolves representation and lifecycle.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.8 (option C).
 
 ## 9. SOP conflict detection algorithm
 
@@ -358,6 +366,7 @@ Cons:
 - Needs careful tuning
 
 Suggested next step: Architect resolves baseline and audit method.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.9 (option C).
 
 ## 10. Skill self-improvement application mode
 
@@ -396,6 +405,7 @@ Cons:
 - Operational queue burden
 
 Suggested next step: Architect resolves with PM sequencing.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.10 (option B).
 
 ## 11. Curator and `playbooks.status='archived'`
 
@@ -434,6 +444,7 @@ Cons:
 - Higher implementation complexity
 
 Suggested next step: Architect resolves schema strategy.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.11 (option B).
 
 ## 12. Telemetry retention vs storage budget
 
@@ -472,6 +483,7 @@ Cons:
 - Harder support/debug
 
 Suggested next step: Architect resolves default + PM docs requirement.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.12 (option B).
 
 ## 13. Embedding warm-up policy
 
@@ -510,6 +522,7 @@ Cons:
 - Requires usage forecasting
 
 Suggested next step: Architect resolves with NFR-4.6 constraints.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.13 (option C).
 
 ## 14. L2 cross-source verification rollout timing
 
@@ -548,6 +561,7 @@ Cons:
 - Could linger without enforcement discipline
 
 Suggested next step: Architect/PM align on staged delivery.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.14 (option B).
 
 ## 15. Knowledge/Datasource emit conditions
 
@@ -586,6 +600,7 @@ Cons:
 - Requires promotion logic
 
 Suggested next step: Architect resolves data lifecycle.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.15 (option C).
 
 ## 16. Weekly retrospective evidence policy
 
@@ -624,6 +639,7 @@ Cons:
 - Requires robust parser/validator
 
 Suggested next step: Architect resolves; PM defines acceptance harness.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.16 (option C).
 
 ## 17. Curator decision explainability format
 
@@ -662,6 +678,7 @@ Cons:
 - Versioning concerns
 
 Suggested next step: Architect resolves schema shape and retention strategy.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.17 (option C).
 
 ## 18. Cross-project curation in Phase 4
 
@@ -698,6 +715,7 @@ Cons:
 - High policy and schema complexity
 
 Suggested next step: Analyst recommends A or B only for Phase 4.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.18 (option A).
 
 ## 19. Curator governance for low-confidence actions
 
@@ -736,6 +754,7 @@ Cons:
 - Requires sampling policy design
 
 Suggested next step: Architect + PM resolve throughput/safety balance.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.19 (option C).
 
 ## 20. Phase 4 close-out metric strategy
 
@@ -773,6 +792,7 @@ Cons:
 - Fails phase-level rigor expectation
 
 Suggested next step: Architect defines measurement instrumentation; PM pins gate story.
+Resolution footer: -> resolved in /specs/phase-4/architecture.md §12.20 (option B).
 
 ## Suggested resolution order
 

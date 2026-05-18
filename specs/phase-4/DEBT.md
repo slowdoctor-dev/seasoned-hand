@@ -67,3 +67,50 @@ Architect and PM passes will append concrete entries in this format:
 
 This file is intentionally lean at kickoff. The key function is inheritance clarity and closure
 accountability, not speculative implementation details.
+
+## Architect seed additions (from OPEN_QUESTIONS resolutions, 2026-05-18)
+
+### #92 Adaptive auto-archive thresholds (H3)
+- **Opened**: 2026-05-18 by Architect
+- **Context**: Q1 chose project-level static thresholds (option B) over adaptive distributional mode.
+- **Impact**: archive precision may lag as corpus distribution shifts.
+- **Plan**: evaluate adaptive thresholds after Phase 4 telemetry stabilizes.
+- **Owner**: Phase 5 Architect
+- **Target phase/story**: Phase 5 curation-tuning slice
+- **Status**: open
+
+### #93 Optional fork-promotion governance mode (H3)
+- **Opened**: 2026-05-18 by Architect
+- **Context**: Q3/Q10 chose mandatory revision chain over fork-promotion default.
+- **Impact**: highly regulated teams may want stricter manual promotion semantics.
+- **Plan**: add optional policy mode (fork + explicit promote) behind feature flag.
+- **Owner**: PM/Architect (Phase 5)
+- **Target phase/story**: Phase 5 policy variants
+- **Status**: open
+
+### #94 Retrospective tiered model-by-size policy (H3)
+- **Opened**: 2026-05-18 by Architect
+- **Context**: Q7 chose dedicated summarizer profile, deferred size-tiered routing.
+- **Impact**: potential cost/quality optimization left on table for extreme report sizes.
+- **Plan**: evaluate size-aware profile switching once baseline quality metrics are stable.
+- **Owner**: Phase 5 Architect
+- **Target phase/story**: Phase 5 retrospective optimization
+- **Status**: open
+
+### #95 Cross-project read-only analytics pilot (H3)
+- **Opened**: 2026-05-18 by Architect
+- **Context**: Q18 chose strict project isolation in Phase 4.
+- **Impact**: no early network-effect insight across projects.
+- **Plan**: design read-only, opt-in analytics path with strong isolation controls.
+- **Owner**: Phase 5 Architect
+- **Target phase/story**: Phase 5 multi-project analytics
+- **Status**: open
+
+### #96 Curator rationale schema evolution tooling (H3)
+- **Opened**: 2026-05-18 by Architect
+- **Context**: Q17 chose structured rationale object; schema version migration tooling deferred.
+- **Impact**: future rationale shape changes could create migration friction.
+- **Plan**: add rationale schema registry + migration validator.
+- **Owner**: Phase 5 Architect
+- **Target phase/story**: Phase 5 data evolution hardening
+- **Status**: open
