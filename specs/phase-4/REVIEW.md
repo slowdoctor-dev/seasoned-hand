@@ -418,3 +418,72 @@ Verdict: **10/10 agree**, **0 disagree**.
 - **New DEBT seeded**: none (no new deferrals introduced).
 
 Saturation verdict: Architect hardening is now in good shape for PM dispatch.
+
+---
+
+## REVIEW iter-1 (Claude, 2026-05-18) — PM pass
+
+Scope: Codex PM output at `1e11a0f` — 22 stories + requirements.md §4 table.
+Reviewed coverage matrix (every F-4.x + NFR-4.x → ≥1 story), dependency
+correctness, and story format compliance against Phase 3 PM precedent.
+
+### Findings summary
+
+| # | Severity | Category | Title |
+|---|---|---|---|
+| P-IT1-F1 | **M** | coverage gap | NFR-4.4 (telemetry retention + compaction + storage cap) → 0 stories |
+| P-IT1-F2 | L | dep transitivity | story 4.22 close-out deps `4.2-4.21` skips explicit 4.23 (the new story); fix-up edited |
+
+### F1 (M, FIXED) — NFR-4.4 zero-story coverage
+
+**Evidence** — coverage scan over `stories/story-4.*.md` for each NFR-4.X:
+- NFR-4.1 → 2 stories
+- NFR-4.2 → 1 story
+- NFR-4.3 → 1 story
+- **NFR-4.4 → 0 stories** ← gap
+- NFR-4.5..NFR-4.8 → 1-3 stories each
+
+NFR-4.4 mandates 90-day hot retention + 300 MB/month/project cap + tiered
+raw→summarized compaction (per §12.12 resolution option B). Without a story
+owning the retention/compaction runtime, Phase 4 emits substantial telemetry
+(`curator_*` Misc, `Skill{kind:"curation_decision"}`, `curator_decisions`
+ledger, `weekly_retrospectives` + `retrospective_citations`,
+`curator_search_index`) with no compaction tail — the per-project SQLite DB
+grows unbounded and the 300 MB cap fails operationally even if mentioned in
+prose.
+
+Story 4.12 (Curator telemetry schema) was the closest fit but covers emit
+mechanics only (event payload shape, taxonomy validation); extending it to
+include retention runtime would push it well past the 3h estimate ceiling.
+
+**Fix applied** — added new **story 4.23 — Curator telemetry retention +
+compaction** (2.5h, deps 4.2 + 4.12). Owns the 90-day window, tiered
+raw→summarized compaction, cap-exceeded trigger, atomic per-batch commits
+(NFR-4.3 reuse), and idempotent re-run semantics. Updated requirements.md
+§4 table + story 4.22 close-out deps to include 4.23.
+
+This mirrors the Phase 3 story 3.17 post-hoc-fix pattern, but caught BEFORE
+execution starts (vs Phase 3's post-execution discovery in REVIEW iter-3).
+Recovery cost is minimal — no rework of already-shipped code.
+
+### F2 (L, FIXED inline) — story 4.22 dep range needed extension
+
+Updated requirements.md §4 row for 4.22 from `4.2-4.21` → `4.2-4.21, 4.23`
+to capture the new dep.
+
+### Iter-1 conclusion
+
+- 1 M-severity finding fixed by adding story 4.23.
+- 1 L-severity finding fixed inline (dep update on 4.22).
+- All 26 F-4.x and 8 NFR-4.x now have ≥1 story coverage (verified via grep).
+- Dependency graph remains acyclic: 4.1 → 4.2 → others; close-out 4.22 waits
+  on all others.
+- Story format matches Phase 3 precedent (Status/Estimated/Dependencies/Phase/Type
+  header; Goal/Acceptance/Non-goals/Implementation/Verification/Refs structure).
+- Each load-bearing component (4.3-4.10) story explicitly requires production
+  impl + main.rs wiring + integration test (Phase 3 story 3.17 lesson applied).
+- Required regression tests from architecture §11 all present (4.15-4.20).
+
+Recommend dispatching Codex iter-2 for cross-verification (Phase 3 precedent —
+Codex iter-2 caught 2 additional M-issues Claude missed). If iter-2 saturates,
+hand off to first GSD execute-story dispatch (story 4.2 — V011 atomic slice).
