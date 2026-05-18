@@ -1,6 +1,6 @@
 # Story 3.14 — Regression: FTS5 maintenance trigger correctness
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 1 hour
 > **Dependencies**: 3.2, 3.8
 > **Phase**: 3
@@ -15,9 +15,9 @@ session-search indexes across insert/update/delete paths.
 
 ## Acceptance criteria
 
-- [ ] Integration tests cover `playbooks_ai/ad/au` behavior.
-- [ ] Integration tests cover `session_search_index_ai/ad/au` behavior.
-- [ ] Trigger-backed index contents stay consistent with source rows.
+- [x] Integration tests cover `playbooks_ai/ad/au` behavior.
+- [x] Integration tests cover `session_search_index_ai/ad/au` behavior.
+- [x] Trigger-backed index contents stay consistent with source rows.
 
 ## Non-goals
 
