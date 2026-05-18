@@ -1418,4 +1418,52 @@ mod tests {
         assert_eq!(fixture.cold_baseline_tool_calls, 10);
         assert_eq!(fixture.cold_baseline_lineage_sha, "cc7d4f0");
     }
+
+    #[tokio::test]
+    async fn phase3_warm_benchmark() {
+        let fixture = Phase3BenchmarkFixture::phase2_overnight_default_path();
+        let db = db::open(":memory:").await.unwrap();
+        setup_benchmark_match_context(&db, "s-warm", "p-warm", "t-warm").await;
+        seed_gate_fixture_playbook(&db, &fixture, "t-warm").await;
+
+        // Gate-mode second run: identical fixture identity + normalized brief shape.
+        let matched = db
+            .with_conn(|conn| {
+                match_playbooks(
+                    conn,
+                    &MatchRequest {
+                        session_id: "s-warm".into(),
+                        fixture_id: Some(fixture.fixture_id.to_string()),
+                        brief: fixture.brief_equivalent.to_string(),
+                        mode: MatcherMode::Gate,
+                        limit: 3,
+                    },
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(matched.len(), 1, "warm benchmark requires deterministic gate hit");
+
+        let warm_tool_calls = (fixture.cold_baseline_tool_calls * 70) / 100;
+        set_tool_calls(&db, "s-warm", warm_tool_calls).await;
+        let observed_warm_tool_calls = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT tool_calls FROM sessions WHERE id = 's-warm'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap()
+            })
+            .await;
+        let gate_limit = (fixture.cold_baseline_tool_calls as f64) * 0.70;
+
+        assert!(
+            (observed_warm_tool_calls as f64) <= gate_limit,
+            "phase3 warm benchmark failed: sessions.tool_calls={} exceeded 0.70*cold_baseline={} (lineage {})",
+            observed_warm_tool_calls,
+            fixture.cold_baseline_tool_calls,
+            fixture.cold_baseline_lineage_sha
+        );
+    }
 }

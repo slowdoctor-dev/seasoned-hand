@@ -117,3 +117,13 @@ _To be populated by the BMAD Architect pass on
   the "no speculative code" principle.
 - **Pay down**: First Phase 5 story authors ADR-013 + schema migration adding
   `tenant_id` to `sops` and `glossary` with backfill plan.
+
+## Phase 3 close-out (story 3.16)
+
+- **Closed inherited debt**: Phase 2 DEBT #62 (`spec-check.sh` phase-version gate).
+  - Evidence:
+    - `scripts/spec-check.sh` now enforces Phase 3 hook markers:
+      - V010 migration presence and `sops`/`glossary` table definitions
+      - ARCH version `v1.2` reconciliation marker
+      - Phase 3 required CLI groups in `specs/phase-3/architecture.md`
+  - Landed with Story 3.16 acceptance gate slice.

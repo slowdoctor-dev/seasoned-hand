@@ -77,9 +77,16 @@ for f in CLAUDE.md AGENTS.md README.md specs/01-architecture/ARCHITECTURE.md doc
   check "$f exists" "[ -f '$f' ]"
 done
 
-# Check 7: Story 1.5 tool catalog stability test guard
-check "tool_catalog_order_is_stable test exists" \
-  "grep -q 'fn tool_catalog_order_is_stable' crates/seasoned-hand-core/src/dispatch/mask.rs"
+# Check 7: Story 1.5 guard + Phase 3 hook (story 3.16, closes Phase 2 DEBT #62)
+check "tool catalog stability + Phase 3 spec hook" \
+  "grep -q 'fn tool_catalog_order_is_stable' crates/seasoned-hand-core/src/dispatch/mask.rs \
+   && [ -f migrations/V010__phase3_learning_artifacts.sql ] \
+   && grep -q 'CREATE TABLE sops' migrations/V010__phase3_learning_artifacts.sql \
+   && grep -q 'CREATE TABLE glossary' migrations/V010__phase3_learning_artifacts.sql \
+   && grep -q 'v1\\.2' specs/01-architecture/ARCHITECTURE.md \
+   && grep -q 'sop create / edit / list / show / delete' specs/phase-3/architecture.md \
+   && grep -q 'playbook list / show / delete' specs/phase-3/architecture.md \
+   && grep -q 'session search <query>' specs/phase-3/architecture.md"
 
 echo ""
 echo "=== Results ==="

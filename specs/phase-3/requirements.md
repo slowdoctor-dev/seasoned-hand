@@ -197,7 +197,7 @@ Detailed contracts live in `/specs/phase-3/stories/story-3.X.md`.
 | 3.13 | Regression: production matcher smoke | 1.5h | 3.5 | done |
 | 3.14 | Regression: FTS5 maintenance trigger correctness | 1h | 3.2, 3.8 | done |
 | 3.15 | Benchmark fixture + gate-mode harness | 2h | 3.2, 3.5, 3.6 | done |
-| 3.16 | Phase 3 acceptance gate and close-out | 2h | 3.12, 3.13, 3.14, 3.15 | ready |
+| 3.16 | Phase 3 acceptance gate and close-out | 2h | 3.12, 3.13, 3.14, 3.15 | done |
 
 Total: 16 stories, ~30 hours.
 
