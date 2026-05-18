@@ -1,6 +1,6 @@
 # Story 3.15 — Benchmark fixture + gate-mode harness
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 3.2, 3.5, 3.6
 > **Phase**: 3
@@ -15,9 +15,9 @@ brief normalization invariants, and cold-baseline capture wiring.
 
 ## Acceptance criteria
 
-- [ ] Deterministic `phase2_overnight_default_path`-style fixture is wired for phase3 tests.
-- [ ] Gate-mode second-run identity checks same fixture ID + normalized brief.
-- [ ] Cold baseline lineage source for warm test assertion is fixed and documented in test.
+- [x] Deterministic `phase2_overnight_default_path`-style fixture is wired for phase3 tests.
+- [x] Gate-mode second-run identity checks same fixture ID + normalized brief.
+- [x] Cold baseline lineage source for warm test assertion is fixed and documented in test.
 
 ## Non-goals
 

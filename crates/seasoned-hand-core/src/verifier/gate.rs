@@ -496,6 +496,7 @@ mod tests {
     use crate::router::SlotRouter;
     use crate::sandbox::SandboxClient;
     use crate::search::{SearchClient, SearchProvider};
+    use crate::matcher::{MatchRequest, MatcherMode, match_playbooks, normalize_brief};
     use crate::tools::register_builtin_tools;
 
     #[derive(Default, Clone)]
@@ -1259,5 +1260,162 @@ mod tests {
                 .await;
             assert_eq!(counts, (0, 0));
         }
+    }
+
+    #[derive(Debug, Clone)]
+    struct Phase3BenchmarkFixture {
+        fixture_id: &'static str,
+        brief_raw: &'static str,
+        brief_equivalent: &'static str,
+        brief_non_equivalent: &'static str,
+        cold_baseline_tool_calls: i64,
+        cold_baseline_lineage_sha: &'static str,
+    }
+
+    impl Phase3BenchmarkFixture {
+        fn phase2_overnight_default_path() -> Self {
+            Self {
+                fixture_id: "phase2_overnight_default_path",
+                brief_raw: "  Café\t\n  PLAN  ",
+                brief_equivalent: "cafe\u{301} plan",
+                brief_non_equivalent: "cafe plan different",
+                // Pinned cold baseline for Story 3.16 warm-gate assertion.
+                // Re-baseline only via deliberate PR with lineage update.
+                cold_baseline_tool_calls: 10,
+                cold_baseline_lineage_sha: "cc7d4f0",
+            }
+        }
+
+        fn normalized_brief(&self) -> String {
+            normalize_brief(self.brief_raw)
+        }
+    }
+
+    async fn setup_benchmark_match_context(
+        db: &DbPool,
+        session_id: &str,
+        project_id: &str,
+        task_id: &str,
+    ) {
+        let sid = session_id.to_string();
+        let pid = project_id.to_string();
+        let tid = task_id.to_string();
+        db.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO sessions (id, created_at, updated_at, state)
+                 VALUES (?, 1, 1, 'RUNNING')",
+                rusqlite::params![sid],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, status, title, created_at, updated_at)
+                 VALUES (?, 'active', 'Phase3 benchmark', 1, 1)",
+                rusqlite::params![pid],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tasks (id, project_id, status, title, created_at, updated_at)
+                 VALUES (?, ?, 'Running', 'Benchmark task', 1, 1)",
+                rusqlite::params![tid, pid],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE sessions SET task_id = ? WHERE id = ?",
+                rusqlite::params![tid, sid],
+            )
+            .unwrap();
+        })
+        .await;
+    }
+
+    async fn seed_gate_fixture_playbook(db: &DbPool, fixture: &Phase3BenchmarkFixture, task_id: &str) {
+        let normalized = fixture.normalized_brief();
+        let trigger_keywords =
+            format!("[\"fixture:{}\", \"brief:{}\"]", fixture.fixture_id, normalized);
+        let tid = task_id.to_string();
+        db.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO playbooks (
+                    id, tenant_id, title, content_path, schema_version, source_task_id,
+                    created_at, updated_at, trigger_keywords, content, success_count, failure_count,
+                    avg_duration_ms, avg_tool_calls, status, version
+                 ) VALUES (
+                    'pb-benchmark-gate', NULL, 'Benchmark gate seed', '', 1, ?,
+                    1, 1, ?, 'benchmark body', 1, 0, NULL, NULL, 'active', 1
+                 )",
+                rusqlite::params![tid, trigger_keywords],
+            )
+            .unwrap();
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn phase3_benchmark_fixture_identity() {
+        let fixture = Phase3BenchmarkFixture::phase2_overnight_default_path();
+        let db = db::open(":memory:").await.unwrap();
+        setup_benchmark_match_context(&db, "s-bench", "p-bench", "t-bench").await;
+        seed_gate_fixture_playbook(&db, &fixture, "t-bench").await;
+
+        let same_identity = db
+            .with_conn(|conn| {
+                match_playbooks(
+                    conn,
+                    &MatchRequest {
+                        session_id: "s-bench".into(),
+                        fixture_id: Some(fixture.fixture_id.to_string()),
+                        brief: fixture.brief_equivalent.to_string(),
+                        mode: MatcherMode::Gate,
+                        limit: 3,
+                    },
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(same_identity.len(), 1, "equivalent normalized brief must match");
+
+        let fixture_mismatch = db
+            .with_conn(|conn| {
+                match_playbooks(
+                    conn,
+                    &MatchRequest {
+                        session_id: "s-bench".into(),
+                        fixture_id: Some("phase2_other_fixture".to_string()),
+                        brief: fixture.brief_equivalent.to_string(),
+                        mode: MatcherMode::Gate,
+                        limit: 3,
+                    },
+                )
+            })
+            .await
+            .unwrap();
+        assert!(
+            fixture_mismatch.is_empty(),
+            "fixture-id mismatch must block gate identity match"
+        );
+
+        let brief_mismatch = db
+            .with_conn(|conn| {
+                match_playbooks(
+                    conn,
+                    &MatchRequest {
+                        session_id: "s-bench".into(),
+                        fixture_id: Some(fixture.fixture_id.to_string()),
+                        brief: fixture.brief_non_equivalent.to_string(),
+                        mode: MatcherMode::Gate,
+                        limit: 3,
+                    },
+                )
+            })
+            .await
+            .unwrap();
+        assert!(
+            brief_mismatch.is_empty(),
+            "normalized-brief mismatch must block gate identity match"
+        );
+
+        assert_eq!(fixture.normalized_brief(), "cafe\u{301} plan");
+        assert_eq!(fixture.cold_baseline_tool_calls, 10);
+        assert_eq!(fixture.cold_baseline_lineage_sha, "cc7d4f0");
     }
 }
