@@ -296,3 +296,106 @@ Backfill F7 by amending story 3.16's verification list (1-line spec edit).
 
 After Claude iter-1 lands these fixes + DEBT, dispatch Codex iter-2 to look for
 issues Claude missed.
+
+---
+
+## REVIEW iter-2 (Codex, 2026-05-18)
+
+Scope: independent re-audit after Claude iter-1 (`c6669b2`) with hotspot deep-dive on
+V010 migration SQL, `verifier/gate.rs`, session-search serialization, initializer
+injection, un-stubbed tools, and cross-phase invariants.
+
+### A) Grading Claude iter-1 findings (F1-F8)
+
+- **Agreed (7/8)**: F1, F2, F3, F5, F6, F7, F8.
+  - Severity + root cause are directionally correct.
+- **Disagreed (1/8)**: F4 severity.
+  - Claude marked **M**; iter-2 downgrades to **L** in current code reality because the
+    `fixture:*` / `brief:*` sentinel rows are test harness seeds only, not produced by
+    the extraction pipeline. The schema smell remains real (keep DEBT #80), but present
+    production impact is limited.
+
+### B) New findings from independent review
+
+#### N1 (H) — Production `VerifierGate` runs without an extraction handler
+
+**Evidence**
+- `crates/seasoned-hand-server/src/main.rs:346-349` constructs:
+  - `VerifierGate::new(...).with_rollback(...)`
+  - but **never** calls `.with_extraction(...)`.
+- `VerifierGate::run_sync_extraction()` treats missing handler as:
+  - `ExtractionError::new("llm_call", "extraction_handler_not_configured")`
+  - and emits `Misc{kind:"playbook_extraction_error", stage:"llm_call", ...}`.
+- Repo-wide search shows no production `ExtractionHandler` implementation bound into
+  server wiring.
+
+**Impact**
+- On every PASS verdict with `tool_calls >= 5`, the runtime emits extraction-error
+  telemetry and writes no playbooks. That undermines the Phase 3 learning loop
+  contract (F-3.1/F-3.7/F-3.8/F-3.15).
+
+**Disposition**
+- Not fixed in iter-2 (requires non-trivial implementation + wiring slice).
+- Seeded as **DEBT #84 (H)** below.
+
+#### N2 (M) — `phase3_warm_benchmark` acceptance gate was self-fulfilling
+
+**Evidence (pre-fix)**
+- Test set `sessions.tool_calls` directly to `0.70 * cold_baseline`, then asserted
+  the same inequality.
+
+**Fix applied in iter-2**
+- `crates/seasoned-hand-core/src/verifier/gate.rs` `phase3_warm_benchmark` now:
+  - seeds Action events (`warm_action_count`),
+  - derives `tool_calls` from Action-event count,
+  - asserts `sessions.tool_calls == action_count`,
+  - then applies `<= 0.70 * cold_baseline`.
+- This removes the tautological write-and-assert pattern and binds the warm gate to
+  the same canonical counter wiring used by F-3.6 parity expectations.
+
+### C) Cross-phase regression checks
+
+- **Phase 1 verifier verdict flow**: unchanged transition logic for
+  `TaskComplete`/`Invalidation`/`CircuitBreaker` in `verifier/gate.rs`; no new state
+  transition regressions found.
+- **Phase 2 task lifecycle / task_complete path**: verifier PASS path still emits
+  `task_complete` Misc and transitions to `FINISHED`; extraction hook is in-path but
+  non-blocking (timeout/error emits + continue).
+- **Event-stream append-only invariant**: preserved.
+  - `SqliteEventStore::append()` inserts into `events`, then indexes into
+    `session_search_index` in the same DB closure/transactional unit.
+  - No UPDATE/DELETE introduced on `events`.
+- **Tool catalog count**: unchanged.
+  - `tools/builtin.rs` still at `39` `map.insert(...)` lines
+    (`38` unique + `task_deliver` prod override pattern).
+
+### D) Spec-fidelity trace audit (3 random requirements)
+
+1. **F-3.16 (session search index scope)**
+- Req: `specs/phase-3/requirements.md` F-3.16.
+- Arch: `specs/phase-3/architecture.md` §3 + per-type searchable_text table.
+- Code: `events/sqlite.rs` (`index_event_for_search`) + `events/session_search.rs`
+  event-type serializers.
+- Tests: `events/tests.rs::session_search::all_event_types_queryable`.
+- Status: **implemented; no drift found**.
+
+2. **F-3.11 (top-3 injection, zero-match silent skip)**
+- Req: F-3.11.
+- Arch: §2.3 `PlaybookInjector`.
+- Code: `agent/init/injector.rs` (`take(3)`, truncation behavior) + `agent/init/mod.rs`
+  early return on no matches.
+- Tests: `injector.rs::tests::top3_behavior`.
+- Status: **implemented; no drift found**.
+
+3. **F-3.3 (warm benchmark gate <=0.70x cold baseline)**
+- Req: F-3.3.
+- Arch: §11 Acceptance gate.
+- Code: `verifier/gate.rs::phase3_warm_benchmark`.
+- Tests: same test (plus iter-2 hardening above).
+- Status: **partially drifted pre-fix (tautological harness); hardened in iter-2**.
+
+### E) Iter-2 fix summary
+
+- Applied M-severity fix: harden `phase3_warm_benchmark` harness to avoid direct
+  threshold assignment and bind to Action-event parity.
+- Deferred H-severity extraction wiring gap to DEBT #84 with explicit pay-down path.

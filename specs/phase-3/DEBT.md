@@ -184,3 +184,16 @@ _To be populated by the BMAD Architect pass on
 - **Pay down (already applied)**: REVIEW iter-1 backfilled story 3.16's Verification
   section to include the full AGENTS.md §6 gate list. Future phase close-out stories
   (Phase 4+) should template from story 3.16's updated section.
+
+13. **#84 (H)** Production extraction handler is not wired into VerifierGate
+- **What**: `seasoned-hand-server/src/main.rs` constructs `VerifierGate` with rollback
+  wiring only; no `.with_extraction(...)` production handler is attached. PASS verdicts
+  with `tool_calls >= 5` therefore emit
+  `Misc{kind:"playbook_extraction_error", reason:"extraction_handler_not_configured"}`
+  and write no playbooks.
+- **Why now**: Iter-2 found this gap while deep-diving `verifier/gate.rs` and server
+  boot wiring. Story-level tests used mock handlers and did not validate production
+  gate construction.
+- **Pay down**: Land a real production `ExtractionHandler` implementation + main.rs
+  wiring in one slice, with integration coverage proving PASS verdicts can write
+  playbooks and that timeout/error branches still emit `playbook_extraction_*` events.
