@@ -169,3 +169,86 @@ Recommend dispatching Codex Architect next. If the user wants iter-2 (Codex
 review of this iter-1) for symmetry with the Phase 3 5-iteration cadence,
 that's fine but probably not load-bearing — the Analyst output is now in the
 "editorial nits only" zone.
+
+## REVIEW iter-2 (Codex, 2026-05-18)
+
+### A) Grade Claude iter-1 findings (F1-F8)
+
+Verdict: **8/8 agree**, **0 disagree**.
+
+- `P4-IT1-F1` (M): agree on root cause and fix. The H0/H1/H2/H3 -> H/M/L mapping keeps
+  Phase 4 fidelity while preserving cross-phase comparability; this is better than flattening back
+  to H/M/L only.
+- `P4-IT1-F2` (M): agree. F-4.7 had cross-cutting scope implications and now correctly links the
+  dependency chain (F-4.3/F-4.6/F-4.20 + OQ #10).
+- `P4-IT1-F3` (L): agree. Added NFR baselines are reasonable defaults. They are explicit enough for
+  Architect retuning without over-constraining implementation.
+- `P4-IT1-F4` (L): agree. Adding CI wall-clock bound closes a real acceptance ambiguity.
+- `P4-IT1-F5` (L): agree. Cross-reference tightening was needed for traceability.
+- `P4-IT1-F6` (M): agree. Expanded failure taxonomy closes a meaningful robustness gap.
+- `P4-IT1-F7` (L): agree. Baseline algorithm pin is appropriate at Analyst level.
+- `P4-IT1-F8` (L): agree. OPEN_QUESTIONS linkage now meets Phase 3 traceability precedent.
+
+NFR baseline commentary: the iter-1 constants are acceptable **initial defaults**, not final tuning.
+They are framed as adjustable by Architect with rationale, which is the right balance at Analyst
+stage.
+
+### B) Independent re-audit
+
+#### OPEN_QUESTIONS #4-#20
+
+Checked all sections (#4 through #20): each has context, 3-option (or more where applicable)
+tradeoff framing, neutral pros/cons, and explicit suggested owner/next-step. No structural gaps.
+
+#### INPUTS.md quality
+
+- Code-surface map is accurate to current Phase 3/3.17 reality.
+- ADR linkage is complete at Analyst granularity (ADR-007/010/012 explicitly anchored).
+- No contradictory claims against ARCH v1.2 or Phase 3 review history.
+
+#### ROADMAP Phase 4 deliverable coverage map
+
+All 8 roadmap deliverables map to >=1 functional requirement:
+
+1. Curator worker -> F-4.1, F-4.2, F-4.22
+2. Success-rate tracking -> F-4.3
+3. Duplicate consolidation -> F-4.4, F-4.5, F-4.6
+4. Auto-archive -> F-4.8, F-4.9
+5. Skill self-improvement -> F-4.7, F-4.20
+6. SOP conflict detection -> F-4.10, F-4.11
+7. Work-pattern modeling -> F-4.19, F-4.20
+8. Weekly retrospectives -> F-4.17, F-4.18
+
+No deliverable coverage gap found.
+
+#### DEBT carry-forward mapping verification
+
+Phase 3 carry-forward entries in scope (`#72/#73/#75/#76/#77/#87/#88/#89/#90/#91`) are:
+- explicitly listed in `phase-4/DEBT.md`
+- mapped in `phase-4/requirements.md` via direct closure statements and F-4.26 accountability rule
+
+Mapping is complete; no orphaned in-scope debt id.
+
+#### Phase 3 -> Phase 4 interface fidelity
+
+Requirements and INPUTS correctly reference the key Phase 3 surfaces at contract level:
+- production extraction handler foundation (story 3.17 outcome)
+- matcher/session_search/tool surfaces
+- V010 lineage and project-scope/filter semantics
+
+No hand-wave that rises to M+ severity at Analyst stage.
+
+### C) Cross-phase regression check
+
+- No iter-1 changes violate `ARCHITECTURE.md` v1.2 contracts.
+- `spec-check` hook expectations remain satisfied.
+- Phase 3 carry-forward expectations remain explicit and consistent.
+
+### D/E) Iter-2 action and saturation
+
+- **New iter-2 findings**: 0 (M+), 0 (L)
+- **Inline fixes applied**: none required
+- **DEBT additions**: none
+
+**Iter-2 saturation note**: Hardening is complete for Analyst pass; this spec set is ready for
+BMAD Architect dispatch.
