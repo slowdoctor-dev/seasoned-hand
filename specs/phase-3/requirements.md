@@ -198,8 +198,9 @@ Detailed contracts live in `/specs/phase-3/stories/story-3.X.md`.
 | 3.14 | Regression: FTS5 maintenance trigger correctness | 1h | 3.2, 3.8 | done |
 | 3.15 | Benchmark fixture + gate-mode harness | 2h | 3.2, 3.5, 3.6 | done |
 | 3.16 | Phase 3 acceptance gate and close-out | 2h | 3.12, 3.13, 3.14, 3.15 | done |
+| 3.17 | Production ExtractionHandler + main.rs wiring (Phase 4 BLOCKER close-out) | 3h | 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8 | ready |
 
-Total: 16 stories, ~30 hours.
+Total: 17 stories, ~33 hours. (Story 3.17 added post-hoc by REVIEW iter-3 after the headline learning loop was found scaffolded but not closed in production.)
 
 ## 5. Acceptance criteria (Phase-level)
 
