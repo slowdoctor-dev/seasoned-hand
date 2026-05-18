@@ -210,7 +210,7 @@ _To be populated by the BMAD Architect pass on
   `seasoned-hand-server/src/main.rs:346 .with_extraction(...)`. Add real
   end-to-end test driving stub LLM through extract → match → inject → counter-update.
 
-14. **#85 (M, CLOSED 2026-05-18 by story 3.17)** `phase3_warm_benchmark` is scenario-driven, not loop-driven
+14. **#85 (M, PARTIAL — see REVIEW iter-4 C3)** `phase3_warm_benchmark` is scenario-driven, not loop-driven
 - **What**: Even after iter-2's tautology fix, the test seeds Action events
   directly and asserts the threshold. It does NOT drive a real warm task through
   the agent loop with extracted+injected playbook reducing tool_calls.
@@ -228,3 +228,60 @@ _To be populated by the BMAD Architect pass on
   function; this duplication remains.
 - **Pay down**: Phase 4 editorial pass — drop trailing `flatten_json_values` from
   Message / Plan / Skill / Misc arms, rely on explicit extraction.
+
+## REVIEW iter-4 (Claude, 2026-05-18) — DEBT additions
+
+16. **#87 (M)** Warm benchmark doesn't drive extraction → match → inject as one flow
+- **What**: `phase3_warm_benchmark` (post story 3.17) hand-seeds the warm-side
+  playbook via `seed_gate_fixture_playbook`, then exercises matcher + injector.
+  It does NOT call `PlannerSlotExtractionHandler::extract_sync` to produce the
+  playbook from a fixture transcript. The full loop is tested in pieces:
+  `extraction_handler::tests::end_to_end_loop` exercises extract → match → inject;
+  `phase3_warm_benchmark` exercises match → inject → threshold. Never the full
+  three-stage flow in one transaction.
+- **Why now**: Splitting was the pragmatic path under the iter-3 BLOCKER closure
+  pressure; the end-to-end coverage is technically present across two tests.
+- **Pay down**: Phase 4 — add `phase3_warm_benchmark_full_loop` that runs a
+  stubbed-LLM cold task to verifier-PASS, drives extract_sync, then runs a warm
+  task and asserts injection reduces tool_calls. This closes DEBT #85 fully.
+
+17. **#88 (L)** Success-path event kind `playbook_extraction_written` undocumented
+- **What**: `extraction_handler.rs:296` emits
+  `Misc{kind:"playbook_extraction_written", playbook_id}` on the success path.
+  This kind isn't enumerated in architecture §4 alongside the six existing
+  `playbook_extraction_*` kinds (error/timeout/input_truncated/output_capped/
+  rejected/pii_redacted).
+- **Why now**: Adding it consistent w/ the prefix family is fine, just needs
+  spec documentation.
+- **Pay down**: Phase 4 spec pass — add `playbook_extraction_written` to
+  architecture.md §4 event-payload enumeration. Useful operator telemetry
+  (count of playbooks ACTUALLY written vs reasons for skipping).
+
+18. **#89 (L)** LLM refusal-guidance prompt is non-specific
+- **What**: `extraction_handler.rs:122` system prompt instructs the LLM to avoid
+  "shell substitutions, role-reversal markers, prompt-injection patterns" but
+  doesn't enumerate the specific phrases the deterministic layer (F-3.13 layer 2)
+  will reject ("ignore previous instructions", "you are now", base64-shaped blobs
+  ≥40 chars, `$(...)`, `| sh / | bash`, raw IPv4 in URLs).
+- **Why now**: Deterministic layer catches the gap; iter-3 verified the layer
+  works. Tighter prompt would reduce redundant post-hoc rejection but isn't
+  required for safety.
+- **Pay down**: Phase 4 prompt-engineering pass — copy the specific deterministic
+  phrases into the system prompt verbatim. Phase 4 can tune from
+  `playbook_extraction_rejected{layer:"deterministic"}` telemetry.
+
+19. **#90 (L)** No dedup guard for re-triggered extraction
+- **What**: `extract_sync` always inserts a new row with a fresh
+  `pb-{uuid}`. If extraction fires twice for the same `source_task_id` (e.g.,
+  retry after transient gate-side error), two playbook rows survive. Both match
+  future tasks. F-3.7 implies once-per-task.
+- **Why now**: Phase 3 doesn't have a known retry path; this is a defense-in-depth
+  concern not a current bug.
+- **Pay down**: Add `SELECT 1 FROM playbooks WHERE source_task_id = ? LIMIT 1`
+  guard before insert; if extant, emit `playbook_extraction_skipped{reason:"duplicate"}`
+  and return Ok.
+
+## REVIEW iter-4 inline fixes (Claude, 2026-05-18)
+
+- **C1 (M, FIXED)** — `extraction_handler.rs:81-87` now reads `ORDER BY id DESC LIMIT 200` + reverse-in-memory, so extraction sees the most-recent 200 events (the procedure body) instead of the first 200 (session setup).
+- **C2 (M, FIXED)** — F-3.14 deterministic redaction now applies to title + trigger_keywords + overview + steps (all 4 LLM-produced fields), not just overview + steps. Closes a real PII-leak surface where an LLM could embed an email or bearer token in title/trigger_keywords and bypass the redaction floor.

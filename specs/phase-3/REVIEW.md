@@ -581,3 +581,132 @@ Two options:
 
 Both options need user direction. Recommend option 1 — Phase 4 Curator has
 nothing to curate without A1 closed.
+
+---
+
+## REVIEW iter-4 (Claude, 2026-05-18)
+
+Scope: review of Codex's story 3.17 implementation (`e4daca1`) — 487-line
+`extraction_handler.rs` + main.rs wiring + 3 integration tests + warm benchmark
+update. Per "iterate until no issue found" discipline.
+
+### Findings
+
+#### C1 (M) — Transcript window reads FIRST 200 events, not LAST 200 (FIXED inline)
+
+**Evidence** (`extraction_handler.rs:81-87`):
+
+```rust
+let mut stmt = conn.prepare(
+    "SELECT type, source, data
+     FROM events
+     WHERE session_id = ?
+     ORDER BY id ASC
+     LIMIT 200",
+)?;
+```
+
+A Phase 3 task with 50+ tool calls produces 100+ events (Action + Observation
+per call, plus Plan + Misc). LIMIT 200 ORDER BY id ASC keeps the FIRST 200 —
+typically session setup / plan creation — and DROPS the mid-task procedure body
+where the actual reusable workflow happens. Extraction quality silently degrades
+on long tasks.
+
+**Fix applied** — switched to `ORDER BY id DESC LIMIT 200` + reverse in memory,
+so the LLM sees the most-recent 200 events in time order. The tail of the task
+(where the procedure converges + verifier passes) is the relevant slice.
+
+#### C2 (M, security) — F-3.14 redaction skips title + trigger_keywords (FIXED inline)
+
+**Evidence** (`extraction_handler.rs:172-195`, pre-fix) — `redact_pii` was only
+called on `parsed.overview` and each `parsed.steps[i]`. The `title` field and
+the `trigger_keywords[]` strings went straight to the INSERT without redaction.
+
+**Impact** — an LLM that leaks an email / bearer token / phone number into the
+playbook title or trigger keywords bypasses F-3.14 layer-2 redaction. The title
+is operator-visible in `seasoned-hand playbook list/show` output; trigger keywords
+are FTS5-indexed and matchable. Both are PII surface area equal to overview/steps.
+
+**Fix applied** — generalized redaction to ALL LLM-produced text fields:
+`title`, `overview`, every entry of `steps[]`, every entry of `trigger_keywords[]`.
+PII counts and categories accumulate across all fields into the single
+`playbook_extraction_pii_redacted` event.
+
+#### C3 (M) — `phase3_warm_benchmark` exercises matcher+injector but NOT extraction
+
+**Evidence** (`verifier/gate.rs:1442-1505`) — warm benchmark now:
+1. Seeds cold session w/ Action events
+2. Hand-seeds a fixture playbook via `seed_gate_fixture_playbook`
+3. Calls `match_playbooks(MatcherMode::Gate)` + `build_injection`
+4. Asserts matcher hit + injection non-empty
+5. Seeds warm Action events at 70%
+6. Asserts threshold
+
+Improvement over iter-2 (now actually exercises matcher + injector), but the
+playbook is HAND-SEEDED, not produced by the extraction handler. The end-to-end
+loop (extract → match → inject → counter) is split across `end_to_end_loop`
+test (extract path) and `phase3_warm_benchmark` (match+inject path) but never
+tested in one flow.
+
+**Disposition** — DEBT-tracked (#85 is partial-close). Closing fully requires
+a benchmark that runs extraction → match → inject as one transaction.
+
+#### C4 (L) — New event kind `playbook_extraction_written` undocumented
+
+**Evidence** (`extraction_handler.rs:293-298`) — handler emits
+`Misc{kind:"playbook_extraction_written", playbook_id}` on success path. This
+kind isn't enumerated in architecture §4 alongside the other six
+`playbook_extraction_*` kinds.
+
+**Disposition** — DEBT-tracked editorial. Architecture §4 should be updated
+to acknowledge the success-path emit (it's useful operator telemetry — count
+of playbooks ACTUALLY written vs reasons for skipping).
+
+#### C5 (L) — LLM refusal-guidance system prompt is vague
+
+**Evidence** (`extraction_handler.rs:122`):
+
+```
+"...Do not draft playbooks that include shell substitutions, raw external IP
+URLs, role-reversal markers, prompt-injection patterns, or opaque blobs."
+```
+
+Doesn't enumerate the specific phrases the deterministic layer (F-3.13 layer 2)
+will reject. The LLM's layer-1 protection is weaker than it could be — the
+deterministic layer catches the gap, but a tighter prompt reduces redundant
+post-hoc rejection.
+
+**Disposition** — DEBT-tracked editorial. Phase 4 may tune from rejection
+telemetry.
+
+#### C6 (L) — No dedup guard for re-triggered extraction
+
+**Evidence** — `extract_sync` always issues `INSERT INTO playbooks` with a
+fresh `pb-{uuid}`. If extraction fires twice for the same session (e.g. retry
+after transient gate-side failure), two playbook rows are created with same
+`source_task_id`. Both survive, both match future tasks. F-3.7 implies
+once-per-task.
+
+**Disposition** — DEBT-tracked. Add a guard
+`SELECT 1 FROM playbooks WHERE source_task_id = ? LIMIT 1` before insert; if
+extant, emit `playbook_extraction_skipped{reason:"duplicate"}` and return.
+
+### Iter-4 fix summary
+
+- **C1 + C2 FIXED inline**: transcript reads last 200 events; PII redaction
+  covers all 4 LLM-produced fields.
+- **C3 / C4 / C5 / C6** seeded as DEBT entries for Phase 4 follow-up. None
+  are Phase 4 BLOCKERS — the learning loop now genuinely closes in production
+  thanks to story 3.17; these are refinements.
+
+### Recommendation
+
+Phase 3 is functionally complete after story 3.17 + iter-4 C1/C2 fixes.
+- Headline learning loop closes end-to-end (extract → match → inject → counter)
+- All 6 AGENTS.md §6 gates green
+- Security floor (F-3.13/F-3.14) applies to all LLM-emitted fields
+- 17/17 stories Status: done
+
+If the user wants iter-5 (Codex review of iter-4) for symmetry, dispatch
+Codex; otherwise call hardening complete and proceed to Phase 4 architecture
+pass.

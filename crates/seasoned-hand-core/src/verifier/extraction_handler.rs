@@ -78,19 +78,25 @@ impl ExtractionHandler for PlannerSlotExtractionHandler {
                     let Some((task_id, brief)) = task_and_brief else {
                         return Ok(None);
                     };
+                    // REVIEW iter-4 C1: read the most-recent 200 events, not the first 200.
+                    // Long tasks (50+ tool calls = 100+ events) had their actual procedure
+                    // body in mid/late events dropped by the previous ORDER BY id ASC LIMIT 200.
+                    // Pull DESC + reverse so the LLM sees the tail of the task in time order.
                     let mut stmt = conn.prepare(
                         "SELECT type, source, data
                      FROM events
                      WHERE session_id = ?
-                     ORDER BY id ASC
+                     ORDER BY id DESC
                      LIMIT 200",
                     )?;
                     let mut rows = stmt.query(rusqlite::params![session_id])?;
-                    let mut transcript = String::new();
+                    let mut rev_rows: Vec<(String, String, String)> = Vec::new();
                     while let Some(row) = rows.next()? {
-                        let event_type: String = row.get(0)?;
-                        let source: String = row.get(1)?;
-                        let data: String = row.get(2)?;
+                        rev_rows.push((row.get(0)?, row.get(1)?, row.get(2)?));
+                    }
+                    rev_rows.reverse();
+                    let mut transcript = String::new();
+                    for (event_type, source, data) in rev_rows {
                         transcript.push_str(&event_type);
                         transcript.push(' ');
                         transcript.push_str(&source);
@@ -169,21 +175,14 @@ impl ExtractionHandler for PlannerSlotExtractionHandler {
             return Ok(());
         }
 
-        let overview_redacted = redact_pii(&parsed.overview);
-        parsed.overview = overview_redacted.0;
-        let mut pii_count = overview_redacted
-            .1
-            .as_ref()
-            .map(|r| r.count)
-            .unwrap_or(0usize);
-        let mut pii_categories = overview_redacted
-            .1
-            .as_ref()
-            .map(|r| r.categories.clone())
-            .unwrap_or_default();
-        for step in &mut parsed.steps {
-            let (step_redacted, report) = redact_pii(step);
-            *step = step_redacted;
+        // REVIEW iter-4 C2: F-3.14 layer-2 PII redaction applies to ALL fields the LLM
+        // produces — not just overview+steps. Title and trigger_keywords are also
+        // operator-visible after the playbook is written and indexed by FTS5; an LLM
+        // that leaks an email or bearer token into the title bypasses the redaction
+        // floor otherwise.
+        let mut pii_count = 0usize;
+        let mut pii_categories: Vec<String> = Vec::new();
+        let mut accumulate = |report: Option<crate::verifier::extraction::RedactionReport>| {
             if let Some(report) = report {
                 pii_count += report.count;
                 for category in report.categories {
@@ -192,6 +191,22 @@ impl ExtractionHandler for PlannerSlotExtractionHandler {
                     }
                 }
             }
+        };
+        let title_redacted = redact_pii(&parsed.title);
+        parsed.title = title_redacted.0;
+        accumulate(title_redacted.1);
+        let overview_redacted = redact_pii(&parsed.overview);
+        parsed.overview = overview_redacted.0;
+        accumulate(overview_redacted.1);
+        for step in &mut parsed.steps {
+            let (step_redacted, report) = redact_pii(step);
+            *step = step_redacted;
+            accumulate(report);
+        }
+        for keyword in &mut parsed.trigger_keywords {
+            let (kw_redacted, report) = redact_pii(keyword);
+            *keyword = kw_redacted;
+            accumulate(report);
         }
         if pii_count > 0 {
             self.emit_misc(
