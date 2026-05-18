@@ -171,18 +171,27 @@ Phase 4 requires V011 migration to close F-4.14 and provide durable curation sur
 
 ### 3.2 Schema SQL sketch (authoritative shape for implementation stories)
 
+> **Forward-compat note (REVIEW iter-1 F2)**: every new Phase 4 table below MUST include a
+> nullable `tenant_id TEXT` column at the same column position pattern that V009 used for
+> `skills` and `playbooks`. Phase 4 writers write `NULL` (single-operator scope). Phase 5
+> multi-user will flip these to `NOT NULL` with backfill per the ADR-013 pattern. Without
+> this forward-compat column now, Phase 5 will require destructive schema migration of
+> every Phase 4 table. The sketch below shows the column on each CREATE TABLE; existing
+> `playbooks` already has `tenant_id` from V009.
+
 ```sql
 -- 1) playbooks denormalization + revision pointer
 ALTER TABLE playbooks ADD COLUMN source_project_id TEXT;
 ALTER TABLE playbooks ADD COLUMN active_revision_id TEXT;
 ALTER TABLE playbooks ADD COLUMN archived_reason TEXT;
-ALTER TABLE playbooks ADD COLUMN archived_at TEXT;
+ALTER TABLE playbooks ADD COLUMN archived_at INTEGER;
 
 CREATE INDEX idx_playbooks_project_status ON playbooks(source_project_id, status);
 
 -- 2) revision graph (chosen F-4.7 model)
 CREATE TABLE playbook_revisions (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT,
   playbook_id TEXT NOT NULL,
   revision_no INTEGER NOT NULL,
   parent_revision_id TEXT,
@@ -194,8 +203,8 @@ CREATE TABLE playbook_revisions (
   author_type TEXT NOT NULL CHECK(author_type IN ('human','curator','extractor')),
   change_kind TEXT NOT NULL CHECK(change_kind IN ('extract','merge','improve','archive','restore')),
   confidence REAL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  superseded_at TEXT,
+  created_at INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER)),
+  superseded_at INTEGER,
   UNIQUE(playbook_id, revision_no),
   FOREIGN KEY(playbook_id) REFERENCES playbooks(id)
 );
@@ -205,17 +214,19 @@ CREATE INDEX idx_playbook_revisions_project ON playbook_revisions(source_project
 -- 3) revision-scoped success/failure metrics
 CREATE TABLE playbook_revision_outcomes (
   revision_id TEXT PRIMARY KEY,
+  tenant_id TEXT,
   success_count INTEGER NOT NULL DEFAULT 0,
   failure_count INTEGER NOT NULL DEFAULT 0,
   decayed_success REAL NOT NULL DEFAULT 0,
   decayed_failure REAL NOT NULL DEFAULT 0,
-  last_outcome_at TEXT,
+  last_outcome_at INTEGER,
   FOREIGN KEY(revision_id) REFERENCES playbook_revisions(id)
 );
 
 -- 4) curator decision ledger (append-only)
 CREATE TABLE curator_decisions (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT,
   project_id TEXT NOT NULL,
   cycle_id TEXT NOT NULL,
   decision_type TEXT NOT NULL CHECK(decision_type IN (
@@ -228,7 +239,7 @@ CREATE TABLE curator_decisions (
   evidence_json TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN ('applied','queued_review','rejected','suppressed','error')),
   failure_category TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  created_at TEXT NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER))
 );
 CREATE INDEX idx_curator_decisions_project_time ON curator_decisions(project_id, created_at DESC);
 CREATE INDEX idx_curator_decisions_cycle ON curator_decisions(cycle_id);
@@ -236,6 +247,7 @@ CREATE INDEX idx_curator_decisions_cycle ON curator_decisions(cycle_id);
 -- 5) review queue
 CREATE TABLE curator_review_queue (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT,
   decision_id TEXT NOT NULL,
   project_id TEXT NOT NULL,
   queue_reason TEXT NOT NULL,
@@ -243,8 +255,8 @@ CREATE TABLE curator_review_queue (
   state TEXT NOT NULL CHECK(state IN ('pending','approved','rejected','suppressed')),
   reviewer TEXT,
   reviewer_note TEXT,
-  resolved_at TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  resolved_at INTEGER,
+  created_at INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER)),
   FOREIGN KEY(decision_id) REFERENCES curator_decisions(id)
 );
 CREATE INDEX idx_curator_review_pending ON curator_review_queue(project_id, state, created_at DESC);
@@ -252,6 +264,7 @@ CREATE INDEX idx_curator_review_pending ON curator_review_queue(project_id, stat
 -- 6) conflict artifacts
 CREATE TABLE sop_conflicts (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT,
   project_id TEXT NOT NULL,
   left_revision_id TEXT NOT NULL,
   right_revision_id TEXT NOT NULL,
@@ -260,13 +273,14 @@ CREATE TABLE sop_conflicts (
   severity TEXT NOT NULL CHECK(severity IN ('low','medium','high')),
   status TEXT NOT NULL CHECK(status IN ('open','muted','resolved')),
   evidence_json TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  created_at TEXT NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER))
 );
 CREATE INDEX idx_sop_conflicts_project_status ON sop_conflicts(project_id, status, created_at DESC);
 
 -- 7) Knowledge + Datasource writers
 CREATE TABLE knowledge_items (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT,
   project_id TEXT NOT NULL,
   revision_id TEXT,
   source_task_id TEXT,
@@ -274,12 +288,13 @@ CREATE TABLE knowledge_items (
   value TEXT NOT NULL,
   confidence REAL,
   evidence_json TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  created_at TEXT NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER))
 );
 CREATE INDEX idx_knowledge_items_project_key ON knowledge_items(project_id, key);
 
 CREATE TABLE datasource_items (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT,
   project_id TEXT NOT NULL,
   revision_id TEXT,
   source_task_id TEXT,
@@ -288,26 +303,31 @@ CREATE TABLE datasource_items (
   trust_level TEXT NOT NULL CHECK(trust_level IN ('l0','l1','l2')),
   confidence REAL,
   evidence_json TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  created_at TEXT NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER))
 );
 CREATE INDEX idx_datasource_items_project_type ON datasource_items(project_id, source_type, created_at DESC);
 
 -- 8) weekly retrospectives + citations
 CREATE TABLE weekly_retrospectives (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT,
   project_id TEXT NOT NULL,
-  week_start TEXT NOT NULL,
-  week_end TEXT NOT NULL,
+  -- week_start/week_end stored as microsecond INTEGER timestamps for sort + cross-table
+  -- compatibility with events table (ARCH §2.1). Operators see human-readable form via
+  -- CLI/UI conversion at display time.
+  week_start INTEGER NOT NULL,
+  week_end INTEGER NOT NULL,
   content TEXT NOT NULL,
   citation_coverage REAL NOT NULL,
   generation_status TEXT NOT NULL CHECK(generation_status IN ('success','refused','error')),
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  created_at INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER)),
   UNIQUE(project_id, week_start, week_end)
 );
 CREATE INDEX idx_weekly_retrospectives_project_week ON weekly_retrospectives(project_id, week_end DESC);
 
 CREATE TABLE retrospective_citations (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT,
   retrospective_id TEXT NOT NULL,
   claim_index INTEGER NOT NULL,
   citation_kind TEXT NOT NULL CHECK(citation_kind IN ('event','decision','conflict','task')),
@@ -327,11 +347,12 @@ CREATE INDEX idx_retrospective_citations_retrospective ON retrospective_citation
 ```sql
 CREATE TABLE curator_search_index (
   row_id INTEGER PRIMARY KEY,
+  tenant_id TEXT,
   project_id TEXT NOT NULL,
   source_type TEXT NOT NULL,
   source_id TEXT NOT NULL,
   searchable_text TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  created_at TEXT NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000000 AS INTEGER))
 );
 
 CREATE VIRTUAL TABLE curator_search_fts USING fts5(
@@ -522,6 +543,15 @@ Phase 4 keeps Phase 3 taxonomy discipline:
 - `Skill` remains semantic learning events.
 - `Misc` remains operational pipeline telemetry.
 
+**Architecture taxonomy expansion (REVIEW iter-1 F3)**: Phase 3 F-3.8 pinned the
+`Skill.kind` vocabulary to `{match, injection, outcome}`. Phase 4 ADDS the
+`curation_decision` kind as a fourth canonical Skill sub-kind. This is an
+architecture-level taxonomy extension; the V011 atomic-slice ADR-013 must document
+the expanded F-3.8 vocab as `{match, injection, outcome, curation_decision}` and
+update ARCH §2.1 event-kind enumeration alongside ARCH §2.5 v1.2 → v1.3 schema bump.
+Downstream consumers (event-stream replay, session search index, dashboards) must
+treat the new kind as first-class, not unknown.
+
 New `Skill` kind:
 
 ```json
@@ -662,6 +692,32 @@ Global policy:
 - PII handling: retrospective citations store bounded snippets and reuse Phase 3 redaction helpers.
 - Prompt-injection resistance: Curator LLM prompts operate on filtered, redacted artifacts only;
   adversarial markers produce refusal/quarantine, not direct write.
+
+### 9.1 Adversarial Curator scenario (REVIEW iter-1 F7)
+
+An attacker may try to weaponize the Curator by manipulating the confidence-scoring
+pipeline so a malicious merge/archive decision lands above the F-4.25 / §12.19 review
+threshold (>0.75) and auto-applies without human gating.
+
+Mitigation — confidence is composed from a deterministic floor + bounded LLM contribution,
+not from LLM alone:
+
+- **Deterministic signals (untrusted-input independent)**: FTS overlap score, structural
+  step-diff similarity, lexical Jaccard, recency delta. Computed in-process from the
+  candidate artifacts; not influenced by LLM output.
+- **LLM signal (bounded contribution)**: embedding cosine + LLM-judged semantic agreement.
+  Maximum LLM contribution to the blended `confidence` is capped at `0.45` (less than the
+  review threshold delta of `0.75 - lowest_deterministic_floor`); means a malicious LLM
+  score of `1.0` cannot, on its own, push a decision past the auto-apply threshold.
+- **Floor enforcement**: if `max(deterministic_signals) < 0.30`, the candidate is
+  short-circuited to "queue review" regardless of LLM agreement. An LLM convinced of a
+  bad merge cannot bypass a low-floor candidate.
+- **Adversarial input itself**: any artifact passing Phase 3 F-3.13 (deterministic
+  adversarial scan) reaches the Curator already scrubbed. Curator's redaction reuse
+  (per §9 bullet 4) further blunts injected payload influence on its own prompts.
+
+Without these compositional bounds, a single compromised model run could effect
+multiple auto-archive/merge decisions across the corpus in one cycle.
 
 ## 10. Migration and rollout plan (V011 atomic slice)
 

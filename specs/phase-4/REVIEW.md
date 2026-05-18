@@ -252,3 +252,97 @@ No hand-wave that rises to M+ severity at Analyst stage.
 
 **Iter-2 saturation note**: Hardening is complete for Analyst pass; this spec set is ready for
 BMAD Architect dispatch.
+
+---
+
+## REVIEW iter-1 (Claude, 2026-05-18) — Architect pass
+
+Scope: Codex Architect output at `aebd0ad` — 1013-line architecture.md with §1-§13
+substantive coverage, 20/20 OPEN_QUESTIONS resolved, V011 schema sketch, type
+sketches, coverage map. Reviewed for security / spec-consistency / simplicity /
+readability against requirements + Phase 3 precedent.
+
+### Findings summary
+
+| # | Severity | Category | Title |
+|---|---|---|---|
+| A-IT1-F1 | **M** | spec-consistency | Cross-table timestamp format drift (ISO-8601 vs unixepoch microseconds) |
+| A-IT1-F2 | **M** | forward-compat | 10 new tables lack nullable tenant_id for Phase 5 multi-user backfill |
+| A-IT1-F3 | **M** | event taxonomy | F-3.8 vocab expansion to include curation_decision needs explicit ARCH update |
+| A-IT1-F4 | L | dependency justification | 3 new crates listed without per-crate rationale |
+| A-IT1-F5 | L | config rigor | CuratorConfig single field vs NFR-4.6 two-threshold pattern |
+| A-IT1-F6 | L | budget arithmetic | §7 cycle budget depends on undocumented amortization |
+| A-IT1-F7 | **M** | security | Adversarial Curator confidence-manipulation scenario unaddressed |
+| A-IT1-F8 | L | failure handling | F-4.22 OOM conflates process-OOM and batch-OOM |
+| A-IT1-F9 | L | testing rigor | F-4.21 warm-loop benchmark description thinner than Phase 3 precedent |
+| A-IT1-F10 | L | schema integrity | playbook_revisions.parent_revision_id missing FK constraint |
+
+### M-severity fixes applied inline
+
+**F1 (timestamp format)** — replaced 8 occurrences of
+`strftime('%Y-%m-%dT%H:%M:%fZ','now')` ISO-8601 with
+`CAST(unixepoch('subsec') * 1000000 AS INTEGER)` microsecond INTEGER to match
+Phase 3 V010 + ARCH §2.1 events table. Also flipped column types
+(`week_start TEXT` → `week_start INTEGER` etc.) on 6 nullable timestamp columns.
+Cross-table time-ordered queries (e.g., "show me curator_decisions joined with
+events ordered by timestamp") now work without per-row conversion. Operators see
+human-readable form via CLI/UI conversion at display time.
+
+**F2 (tenant_id forward-compat)** — added nullable `tenant_id TEXT` to 10 new
+Phase 4 tables: playbook_revisions, playbook_revision_outcomes,
+curator_decisions, curator_review_queue, sop_conflicts, knowledge_items,
+datasource_items, weekly_retrospectives, retrospective_citations,
+curator_search_index. Phase 4 writers write NULL (single-operator scope); Phase 5
+multi-user flips to NOT NULL with backfill per the V009 → Phase 5 ADR-013 pattern.
+Without this, Phase 5 needs destructive migration of every Phase 4 table; with
+it, Phase 5 is a single ALTER + backfill per table.
+
+**F3 (event taxonomy expansion)** — added explicit §4.5 note pinning that
+F-3.8's `Skill.kind` vocab is expanding from {match, injection, outcome} to
+{match, injection, outcome, curation_decision}. The V011 atomic-slice ADR-013
+must document this taxonomy expansion alongside the schema bump, so downstream
+consumers (event-stream replay, session search, dashboards) treat the new kind
+as first-class. Without this pin, Phase 3 consumers would treat
+`curation_decision` as unknown.
+
+**F7 (adversarial Curator)** — added §9.1 with compositional confidence-scoring
+bounds. The attack: malicious LLM output yielding high confidence pushes an
+auto-merge/auto-archive past the F-4.25 / §12.19 review threshold (>0.75)
+without human gating. The defense:
+- Confidence composed from deterministic signals (FTS overlap, structural diff,
+  Jaccard, recency) + bounded LLM contribution (max +0.45)
+- LLM-alone cannot push past auto-apply threshold (0.45 < 0.75 - lowest floor)
+- Hard short-circuit to review queue when deterministic floor < 0.30
+- Adversarial input itself blocked by Phase 3 F-3.13 + Curator's reuse of Phase 3
+  redaction helpers
+
+### L-severity findings (DEBT-seeded for Phase 4 implementation polish)
+
+- **F4** — DEBT #97: per-crate justification for `cron`/`ordered-float`/`lru`
+  before adoption. cron may be over-engineered for simple weekly cadence;
+  ordered-float may be avoidable if score comparisons happen at decision sites
+  not in collection keys.
+- **F5** — DEBT #98: split CuratorConfig.embedding_budget_percent_cap into
+  soft_cap_pct (0.08) + hard_breaker_pct (0.12) to match NFR-4.6's two-threshold
+  pattern.
+- **F6** — DEBT #99: §7 budget arithmetic depends on retrospective being "weekly
+  amortized" — pin the amortization formula explicitly (sum of subcomponents
+  3600ms per cycle excluding retrospective, +1200ms once weekly).
+- **F8** — DEBT #100: F-4.22 OOM handling should distinguish process-OOM (panic
+  → task aborts, supervisor restarts) from batch-OOM (controlled retry with
+  reduced batch). Current text conflates them.
+- **F9** — DEBT #101: F-4.21 phase4_warm_full_loop_benchmark needs concrete
+  setup description in §11.3 (mirror Phase 3 phase3_warm_benchmark's seed →
+  cold → curator → warm → assert pattern).
+- **F10** — DEBT #102: add FOREIGN KEY(parent_revision_id) REFERENCES
+  playbook_revisions(id) ON DELETE SET NULL to playbook_revisions table for
+  graph consistency.
+
+### Iter-1 conclusion
+
+4 M-severity findings fixed inline; 6 L-severity findings DEBT-tracked.
+Architecture is substantially correct and Phase 3-consistent after iter-1.
+
+Recommend dispatching Codex iter-2 for cross-verification (similar to Phase 3
+iter-2 saturation pattern). If iter-2 finds no M+ issues, hand off to BMAD PM
+for story breakdown.

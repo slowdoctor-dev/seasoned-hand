@@ -114,3 +114,76 @@ accountability, not speculative implementation details.
 - **Owner**: Phase 5 Architect
 - **Target phase/story**: Phase 5 data evolution hardening
 - **Status**: open
+
+## Architect REVIEW iter-1 (Claude) — DEBT seeds for L-severity findings
+
+### #97 Per-crate justification for new dependencies (H3)
+- **Opened**: 2026-05-18 by Claude review iter-1
+- **Context**: §5 lists `cron`/`ordered-float`/`lru` without per-crate concrete justification.
+  `cron` may be over-engineered for simple weekly cadence (a Tokio interval timer + day-of-week
+  check suffices); `ordered-float` may be avoidable if score f32 comparisons happen at decision
+  sites, not as map keys.
+- **Impact**: 3 new dep adoptions trigger 3 separate ARCH §1 addendum updates + audit surface.
+- **Plan**: Architect/PM stories drop or justify each before adoption. Default to standard
+  library where pragmatic.
+- **Owner**: Architect (Phase 4 implementation slice)
+- **Target phase/story**: each crate-adoption story
+- **Status**: open
+
+### #98 Split embedding budget cap field (H3)
+- **Opened**: 2026-05-18 by Claude review iter-1
+- **Context**: §4.1 `CuratorConfig.embedding_budget_percent_cap: f32` is one field but NFR-4.6
+  defines two thresholds: soft 8% + hard 12%.
+- **Impact**: ambiguous which cap the single field represents; implementation could ship one or
+  the other but not both.
+- **Plan**: Split to `embedding_budget_soft_cap_pct: f32` + `embedding_budget_hard_breaker_pct: f32`.
+- **Owner**: PM (config story)
+- **Target phase/story**: Phase 4 CuratorConfig story
+- **Status**: open
+
+### #99 §7 cycle budget amortization arithmetic (H3)
+- **Opened**: 2026-05-18 by Claude review iter-1
+- **Context**: §7 subcomponent budgets sum to 4800ms but total cycle bound is 4000ms. The gap
+  is explained by retrospective being "weekly amortized" but the amortization formula isn't
+  written.
+- **Plan**: pin formula explicitly — per-cycle = 400+1800+700+700 = 3600ms (excluding
+  retrospective); retrospective +1200ms once weekly. Total weekly = 4 × 3600 + 1200 = 15600ms.
+- **Owner**: Architect (next iter-2 or PM stories)
+- **Target phase/story**: Phase 4 §7 hardening or first benchmark story
+- **Status**: open
+
+### #100 F-4.22 OOM handling: process vs batch (H3)
+- **Opened**: 2026-05-18 by Claude review iter-1
+- **Context**: §8 category 5 "Out-of-memory: split candidate batch size by half and retry once"
+  treats OOM as controlled-allocation failure. Rust process-level OOM = allocator abort, no
+  retry possible at userspace.
+- **Impact**: implementation may try the "retry once" pattern on process-OOM and crash differently
+  than expected.
+- **Plan**: distinguish (a) batch-OOM (predicted by candidate size; controlled retry with smaller
+  batch) from (b) process-OOM (allocator abort; supervisor restarts CuratorWorker; emit
+  `curator_decision_quarantined` post-restart).
+- **Owner**: PM (CuratorWorker failure-handling story)
+- **Target phase/story**: Phase 4 CuratorWorker failure story
+- **Status**: open
+
+### #101 phase4_warm_full_loop_benchmark concrete setup (H3)
+- **Opened**: 2026-05-18 by Claude review iter-1
+- **Context**: §11.3 mentions `phase4_warm_full_loop_benchmark` for F-4.21 but in one line.
+  Phase 3 phase3_warm_benchmark had a concrete setup: seed → cold → matcher → injection → warm
+  → assert. Phase 4 should mirror.
+- **Plan**: §11.3 (or new §11.5) describes: 200-artifact stub corpus → cold curator cycle →
+  apply auto-merge/auto-archive decisions → warm curator cycle measures improvement vs cold.
+  Specify which metric (precision@3? stale ratio?) is the gate.
+- **Owner**: PM (benchmark fixture story)
+- **Target phase/story**: Phase 4 F-4.21 fixture story
+- **Status**: open
+
+### #102 playbook_revisions FOREIGN KEY for parent_revision_id (H3)
+- **Opened**: 2026-05-18 by Claude review iter-1
+- **Context**: §3.2 `playbook_revisions.parent_revision_id TEXT` (nullable) has no FOREIGN KEY
+  reference. Graph integrity depends on writer discipline alone.
+- **Plan**: add `FOREIGN KEY(parent_revision_id) REFERENCES playbook_revisions(id) ON DELETE SET NULL`
+  to schema. Catches dangling parents at write time.
+- **Owner**: Architect (next iter) or PM (V011 migration story)
+- **Target phase/story**: Phase 4 V011 migration story
+- **Status**: open
