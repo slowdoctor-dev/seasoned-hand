@@ -425,6 +425,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or(0.12),
             embedding_model: std::env::var("SH_EMBEDDING_MODEL")
                 .unwrap_or_else(|_| "text-embedding-3-small".to_string()),
+            auto_archive_enabled: std::env::var("SH_CURATOR_AUTO_ARCHIVE_ENABLED")
+                .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
+                .unwrap_or(false),
+            archive_recommend_min_confidence: std::env::var(
+                "SH_CURATOR_ARCHIVE_RECOMMEND_MIN_CONFIDENCE",
+            )
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.40),
+            archive_apply_min_confidence: std::env::var("SH_CURATOR_ARCHIVE_APPLY_MIN_CONFIDENCE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.55),
             project_id: std::env::var("SH_CURATOR_PROJECT_ID")
                 .unwrap_or_else(|_| "default".to_string()),
         };
@@ -434,8 +447,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             embedding_slot.api_key.clone(),
         );
         let candidate_builder = std::sync::Arc::new(SqliteCandidateBuilder::new(state.db.clone()));
-        let consolidation_engine =
-            std::sync::Arc::new(SqliteConsolidationEngine::new(state.db.clone()));
+        let consolidation_engine = std::sync::Arc::new(
+            SqliteConsolidationEngine::new(state.db.clone()).with_archive_policy(
+                config.auto_archive_enabled,
+                config.archive_recommend_min_confidence,
+                config.archive_apply_min_confidence,
+            ),
+        );
         let conflict_slot = state.router.resolve(SlotName::SessionSearch);
         let conflict_llm = LlmClient::new(
             conflict_slot.base_url.clone(),

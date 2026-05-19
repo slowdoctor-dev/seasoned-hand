@@ -30,6 +30,9 @@ pub struct CuratorConfig {
     pub embedding_budget_soft_cap_pct: f32,
     pub embedding_budget_hard_breaker_pct: f32,
     pub embedding_model: String,
+    pub auto_archive_enabled: bool,
+    pub archive_recommend_min_confidence: f32,
+    pub archive_apply_min_confidence: f32,
     pub project_id: String,
 }
 
@@ -44,6 +47,9 @@ impl Default for CuratorConfig {
             embedding_budget_soft_cap_pct: 0.08,
             embedding_budget_hard_breaker_pct: 0.12,
             embedding_model: "text-embedding-3-small".to_string(),
+            auto_archive_enabled: false,
+            archive_recommend_min_confidence: 0.40,
+            archive_apply_min_confidence: 0.55,
             project_id: "default".to_string(),
         }
     }
@@ -284,6 +290,7 @@ pub enum ConsolidationDecisionKind {
     Keep,
     ArchiveRecommend,
     ArchiveApply,
+    Restore,
     Quarantine,
 }
 
@@ -294,6 +301,7 @@ impl ConsolidationDecisionKind {
             ConsolidationDecisionKind::Keep => "keep",
             ConsolidationDecisionKind::ArchiveRecommend => "archive",
             ConsolidationDecisionKind::ArchiveApply => "archive",
+            ConsolidationDecisionKind::Restore => "restore",
             ConsolidationDecisionKind::Quarantine => "keep",
         }
     }
@@ -527,6 +535,9 @@ impl CandidateBuilder for SqliteCandidateBuilder {
 #[derive(Clone)]
 pub struct SqliteConsolidationEngine {
     db: DbPool,
+    auto_archive_enabled: bool,
+    archive_recommend_min_confidence: f32,
+    archive_apply_min_confidence: f32,
 }
 
 #[derive(Clone)]
@@ -1289,7 +1300,26 @@ impl KnowledgeDatasourceWriter for SqliteKnowledgeDatasourceWriter {
 
 impl SqliteConsolidationEngine {
     pub fn new(db: DbPool) -> Self {
-        Self { db }
+        Self {
+            db,
+            auto_archive_enabled: false,
+            archive_recommend_min_confidence: 0.40,
+            archive_apply_min_confidence: 0.55,
+        }
+    }
+
+    pub fn with_archive_policy(
+        mut self,
+        auto_archive_enabled: bool,
+        archive_recommend_min_confidence: f32,
+        archive_apply_min_confidence: f32,
+    ) -> Self {
+        let recommend = archive_recommend_min_confidence.clamp(0.0, 1.0);
+        let apply = archive_apply_min_confidence.clamp(recommend, 1.0);
+        self.auto_archive_enabled = auto_archive_enabled;
+        self.archive_recommend_min_confidence = recommend;
+        self.archive_apply_min_confidence = apply;
+        self
     }
 }
 
@@ -1310,7 +1340,9 @@ impl ConsolidationEngine for SqliteConsolidationEngine {
                 ConsolidationDecisionKind::Merge
             } else if confidence >= 0.65 {
                 ConsolidationDecisionKind::Keep
-            } else if confidence >= 0.40 {
+            } else if self.auto_archive_enabled && confidence >= self.archive_apply_min_confidence {
+                ConsolidationDecisionKind::ArchiveApply
+            } else if confidence >= self.archive_recommend_min_confidence {
                 ConsolidationDecisionKind::ArchiveRecommend
             } else {
                 ConsolidationDecisionKind::Quarantine
@@ -1412,6 +1444,10 @@ impl ConsolidationEngine for SqliteConsolidationEngine {
                         }
                         ConsolidationDecisionKind::ArchiveApply => {
                             apply_archive(conn, decision, now)?;
+                            result.applied = result.applied.saturating_add(1);
+                        }
+                        ConsolidationDecisionKind::Restore => {
+                            apply_restore(conn, decision, now)?;
                             result.applied = result.applied.saturating_add(1);
                         }
                         ConsolidationDecisionKind::ArchiveRecommend
@@ -2430,10 +2466,40 @@ fn apply_archive(
          SET status = 'archived', archived_reason = ?1, archived_at = ?2, updated_at = ?2
          WHERE id = ?3",
         rusqlite::params![
-            format!("curator_decision:{}", decision.decision_id),
+            format!(
+                "curator_decision:{}|confidence={:.3}|action=archive",
+                decision.decision_id, decision.confidence
+            ),
             now,
             playbook_id
         ],
+    )?;
+    Ok(())
+}
+
+fn apply_restore(
+    conn: &rusqlite::Connection,
+    decision: &ConsolidationDecision,
+    now: i64,
+) -> Result<(), CuratorWorkerError> {
+    let target_revision = decision
+        .target_revision_id
+        .as_deref()
+        .unwrap_or_default()
+        .to_string();
+    if target_revision.is_empty() {
+        return Ok(());
+    }
+    let playbook_id: String = conn.query_row(
+        "SELECT playbook_id FROM playbook_revisions WHERE id = ?",
+        [target_revision],
+        |row| row.get(0),
+    )?;
+    conn.execute(
+        "UPDATE playbooks
+         SET status = 'active', archived_reason = NULL, archived_at = NULL, updated_at = ?1
+         WHERE id = ?2",
+        rusqlite::params![now, playbook_id],
     )?;
     Ok(())
 }
@@ -3064,6 +3130,9 @@ mod tests {
                 embedding_budget_soft_cap_pct: 0.08,
                 embedding_budget_hard_breaker_pct: 0.12,
                 embedding_model: "text-embedding-3-small".to_string(),
+                auto_archive_enabled: false,
+                archive_recommend_min_confidence: 0.40,
+                archive_apply_min_confidence: 0.55,
                 project_id: "proj-1".to_string(),
             },
             db,
@@ -3203,6 +3272,9 @@ mod tests {
                 embedding_budget_soft_cap_pct: 0.08,
                 embedding_budget_hard_breaker_pct: 0.12,
                 embedding_model: "text-embedding-3-small".to_string(),
+                auto_archive_enabled: false,
+                archive_recommend_min_confidence: 0.40,
+                archive_apply_min_confidence: 0.55,
                 project_id: "proj-consolidate".to_string(),
             },
             db.clone(),
@@ -3242,6 +3314,94 @@ mod tests {
             assert_eq!(merge_count, 1);
             assert_eq!(keep_count, 1);
             assert_eq!(merged_revision_count, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn e2e_consolidation_archive_and_restore_roundtrip_preserves_outcome_counts() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_revision_pair(&db, "proj-archive").await;
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO playbook_revision_outcomes (
+                    revision_id, tenant_id, success_count, failure_count, decayed_success, decayed_failure, last_outcome_at
+                 ) VALUES ('rev-l-1', NULL, 7, 2, 0, 0, NULL)",
+                [],
+            )
+            .expect("seed outcomes");
+        })
+        .await;
+
+        let engine =
+            SqliteConsolidationEngine::new(db.clone()).with_archive_policy(true, 0.40, 0.55);
+        let archive = ConsolidationDecision {
+            decision_id: "cd-archive-1".to_string(),
+            kind: ConsolidationDecisionKind::ArchiveApply,
+            subject_revision_ids: vec!["rev-l-1".to_string()],
+            target_revision_id: Some("rev-l-1".to_string()),
+            confidence: 0.62,
+            rationale_json: json!({"policy":"story_4_13_archive"}),
+            requires_review: false,
+        };
+        let archived = engine
+            .apply("proj-archive", "cycle-archive", &[archive])
+            .await
+            .expect("archive apply");
+        assert_eq!(archived.applied, 1);
+
+        db.with_conn(|conn| {
+            let (status, reason, archived_at): (String, Option<String>, Option<i64>) = conn
+                .query_row(
+                    "SELECT status, archived_reason, archived_at FROM playbooks WHERE id='pb-l'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .expect("archived state");
+            assert_eq!(status, "archived");
+            let reason = reason.expect("archived reason");
+            assert!(reason.contains("curator_decision:cd-archive-1"));
+            assert!(reason.contains("confidence=0.620"));
+            assert!(archived_at.is_some());
+        })
+        .await;
+
+        let restore = ConsolidationDecision {
+            decision_id: "cd-restore-1".to_string(),
+            kind: ConsolidationDecisionKind::Restore,
+            subject_revision_ids: vec!["rev-l-1".to_string()],
+            target_revision_id: Some("rev-l-1".to_string()),
+            confidence: 0.91,
+            rationale_json: json!({"policy":"story_4_13_restore"}),
+            requires_review: false,
+        };
+        let restored = engine
+            .apply("proj-archive", "cycle-restore", &[restore])
+            .await
+            .expect("restore apply");
+        assert_eq!(restored.applied, 1);
+
+        db.with_conn(|conn| {
+            let (status, reason, archived_at): (String, Option<String>, Option<i64>) = conn
+                .query_row(
+                    "SELECT status, archived_reason, archived_at FROM playbooks WHERE id='pb-l'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .expect("restored state");
+            assert_eq!(status, "active");
+            assert!(reason.is_none());
+            assert!(archived_at.is_none());
+
+            let (success_count, failure_count): (i64, i64) = conn
+                .query_row(
+                    "SELECT success_count, failure_count FROM playbook_revision_outcomes WHERE revision_id='rev-l-1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("outcome counts preserved");
+            assert_eq!(success_count, 7);
+            assert_eq!(failure_count, 2);
         })
         .await;
     }
@@ -3627,6 +3787,9 @@ mod tests {
                 embedding_budget_soft_cap_pct: 0.08,
                 embedding_budget_hard_breaker_pct: 0.12,
                 embedding_model: "text-embedding-3-small".to_string(),
+                auto_archive_enabled: false,
+                archive_recommend_min_confidence: 0.40,
+                archive_apply_min_confidence: 0.55,
                 project_id: "proj-conflict".to_string(),
             },
             db.clone(),
@@ -3703,6 +3866,9 @@ mod tests {
                 embedding_budget_soft_cap_pct: 0.08,
                 embedding_budget_hard_breaker_pct: 0.12,
                 embedding_model: "text-embedding-3-small".to_string(),
+                auto_archive_enabled: false,
+                archive_recommend_min_confidence: 0.40,
+                archive_apply_min_confidence: 0.55,
                 project_id: "proj-no-conflict".to_string(),
             },
             db2.clone(),
@@ -3764,6 +3930,9 @@ mod tests {
                     embedding_budget_soft_cap_pct: 0.08,
                     embedding_budget_hard_breaker_pct: 0.12,
                     embedding_model: "text-embedding-3-small".to_string(),
+                    auto_archive_enabled: false,
+                    archive_recommend_min_confidence: 0.40,
+                    archive_apply_min_confidence: 0.55,
                     project_id: project_id.to_string(),
                 },
                 db.clone(),
@@ -3796,6 +3965,9 @@ mod tests {
                 embedding_budget_soft_cap_pct: 0.08,
                 embedding_budget_hard_breaker_pct: 0.12,
                 embedding_model: "text-embedding-3-small".to_string(),
+                auto_archive_enabled: false,
+                archive_recommend_min_confidence: 0.40,
+                archive_apply_min_confidence: 0.55,
                 project_id: "proj-retro".to_string(),
             },
             db.clone(),
@@ -3912,6 +4084,9 @@ mod tests {
                 embedding_budget_soft_cap_pct: 0.08,
                 embedding_budget_hard_breaker_pct: 0.12,
                 embedding_model: "text-embedding-3-small".to_string(),
+                auto_archive_enabled: false,
+                archive_recommend_min_confidence: 0.40,
+                archive_apply_min_confidence: 0.55,
                 project_id: "proj-pattern".to_string(),
             },
             db.clone(),
@@ -4024,6 +4199,9 @@ mod tests {
                 embedding_budget_soft_cap_pct: 0.08,
                 embedding_budget_hard_breaker_pct: 0.12,
                 embedding_model: "text-embedding-3-small".to_string(),
+                auto_archive_enabled: false,
+                archive_recommend_min_confidence: 0.40,
+                archive_apply_min_confidence: 0.55,
                 project_id: "proj-kd".to_string(),
             },
             db.clone(),
@@ -4110,6 +4288,9 @@ mod tests {
                 embedding_budget_soft_cap_pct: 0.08,
                 embedding_budget_hard_breaker_pct: 0.12,
                 embedding_model: "text-embedding-3-small".to_string(),
+                auto_archive_enabled: false,
+                archive_recommend_min_confidence: 0.40,
+                archive_apply_min_confidence: 0.55,
                 project_id: "proj-review".to_string(),
             },
             db.clone(),
@@ -4163,6 +4344,9 @@ mod tests {
                 embedding_budget_soft_cap_pct: 0.08,
                 embedding_budget_hard_breaker_pct: 0.12,
                 embedding_model: "text-embedding-3-small".to_string(),
+                auto_archive_enabled: false,
+                archive_recommend_min_confidence: 0.40,
+                archive_apply_min_confidence: 0.55,
                 project_id: "proj-quarantine".to_string(),
             },
             db,
@@ -4227,6 +4411,9 @@ mod tests {
                 embedding_budget_soft_cap_pct: 0.08,
                 embedding_budget_hard_breaker_pct: 0.12,
                 embedding_model: "text-embedding-3-small".to_string(),
+                auto_archive_enabled: false,
+                archive_recommend_min_confidence: 0.40,
+                archive_apply_min_confidence: 0.55,
                 project_id: "proj-taxonomy".to_string(),
             },
             db.clone(),

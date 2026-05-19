@@ -1,6 +1,6 @@
 # Story 4.13 — Auto-archive policy engine + reversibility
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 4.5, 4.9, 4.12
 > **Phase**: 4
@@ -15,10 +15,10 @@ reason/confidence metadata.
 
 ## Acceptance criteria
 
-- [ ] Auto-archive recommendations and apply path are implemented.
-- [ ] Restore/unarchive path preserves provenance and ranking metadata.
-- [ ] Archive metadata (`archived_reason`, confidence context) is persisted.
-- [ ] Integration test covers archive + restore roundtrip.
+- [x] Auto-archive recommendations and apply path are implemented.
+- [x] Restore/unarchive path preserves provenance and ranking metadata.
+- [x] Archive metadata (`archived_reason`, confidence context) is persisted.
+- [x] Integration test covers archive + restore roundtrip.
 
 ## Non-goals
 
@@ -45,4 +45,4 @@ bash scripts/spec-check.sh
 
 - requirements: F-4.8, F-4.9, NFR-4.7
 - architecture: §3.2, §12.1, §12.11
-- debt closed: #90 (close), #92 (close)
+- debt closed: #90 (close), #92 (partial)

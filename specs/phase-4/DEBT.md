@@ -258,6 +258,24 @@ accountability, not speculative implementation details.
   - evidence:
     `crates/seasoned-hand-core/src/curator/mod.rs`,
     `crates/seasoned-hand-server/src/main.rs`,
+
+## Story 4.13 close-out (2026-05-19)
+
+- `#90` CLOSED by story 4.13:
+  - archive recommendation/apply policy now has project-level thresholds in production runtime
+    (`auto_archive_enabled`, `archive_recommend_min_confidence`, `archive_apply_min_confidence`)
+    and is wired from server env config into `SqliteConsolidationEngine`
+  - deterministic restore/unarchive path is implemented (`decision_type='restore'`) and keeps
+    revision outcome counters intact during archive/restore roundtrip
+  - archive provenance now persists confidence context in `playbooks.archived_reason`
+  - evidence:
+    `crates/seasoned-hand-core/src/curator/mod.rs`,
+    `crates/seasoned-hand-server/src/main.rs`,
+    `curator::tests::e2e_consolidation_archive_and_restore_roundtrip_preserves_outcome_counts`
+
+- `#92` PARTIAL by story 4.13:
+  - project-level static threshold policy from architecture §12.1 is now implemented and wired.
+  - adaptive thresholding remains deferred to Phase 5 by original debt scope.
     `curator::tests::e2e_cycle_knowledge_datasource_emit_and_l2_promotion_paths`
 
 ## Story 4.11 close-out (2026-05-19)
