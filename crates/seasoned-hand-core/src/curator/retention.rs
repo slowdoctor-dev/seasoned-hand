@@ -16,10 +16,11 @@
 //! refs: /specs/phase-4/stories/story-4.23.md, NFR-4.4, NFR-4.3
 
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::params;
 use serde_json::json;
+use tokio_util::sync::CancellationToken;
 
 use crate::curator::CuratorWorkerError;
 use crate::db::DbPool;
@@ -309,6 +310,67 @@ pub fn current_now_micros() -> Result<i64, CuratorWorkerError> {
         .map_err(|err| CuratorWorkerError::Executor(err.to_string()))?
         .as_micros();
     i64::try_from(micros).map_err(|err| CuratorWorkerError::Executor(err.to_string()))
+}
+
+pub const DEFAULT_RETENTION_INTERVAL_SECS: u64 = 24 * 60 * 60;
+
+/// Daily-tick wrapper around [`CuratorRetentionJob::run_cycle`] for the
+/// server boot path. Mirrors `WorkspaceTtlCron::run` shape so `main.rs`
+/// spawn-and-await pattern stays uniform across long-running maintenance
+/// tasks. Cycle errors are logged and swallowed; the loop only exits when
+/// the cancellation token fires.
+pub struct RetentionScheduler {
+    job: Arc<CuratorRetentionJob>,
+    interval: Duration,
+}
+
+impl RetentionScheduler {
+    pub fn new(job: Arc<CuratorRetentionJob>, interval: Duration) -> Self {
+        Self { job, interval }
+    }
+
+    pub fn from_default_interval(job: Arc<CuratorRetentionJob>) -> Self {
+        Self::new(job, Duration::from_secs(DEFAULT_RETENTION_INTERVAL_SECS))
+    }
+
+    pub fn interval(&self) -> Duration {
+        self.interval
+    }
+
+    pub async fn run(self, shutdown: CancellationToken) {
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => return,
+                _ = tokio::time::sleep(self.interval) => {
+                    match current_now_micros() {
+                        Ok(now) => match self.job.run_cycle(now).await {
+                            Ok(report) => {
+                                if report.raw_decisions_pruned > 0
+                                    || report.summary_rows_written > 0
+                                    || report.citations_pruned > 0
+                                    || report.search_rows_pruned > 0
+                                    || report.cap_warning_emitted
+                                {
+                                    tracing::info!(
+                                        project_id = %report.project_id,
+                                        raw_decisions_pruned = report.raw_decisions_pruned,
+                                        summary_rows_written = report.summary_rows_written,
+                                        citations_pruned = report.citations_pruned,
+                                        search_rows_pruned = report.search_rows_pruned,
+                                        cap_warning = report.cap_warning_emitted,
+                                        elapsed_ms = report.elapsed_ms,
+                                        "curator retention cycle complete",
+                                    );
+                                }
+                            }
+                            Err(error) => tracing::error!(%error, "curator retention cycle failed"),
+                        },
+                        Err(error) => tracing::error!(%error, "curator retention clock failure"),
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -641,5 +703,63 @@ mod tests {
             .await
             .expect("read summary count");
         assert_eq!(summary_count, 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scheduler_runs_one_cycle_then_honours_cancellation() {
+        let (db, events) = setup().await;
+        let project = "proj-sched";
+
+        let now = 365 * MICROS_PER_DAY;
+        // Aged decision and aged citation: scheduler tick must prune both.
+        seed_decision(&db, project, "cyc-A", "merge", 0.7, iso_micros(now, 120)).await;
+        seed_retrospective_with_citation(&db, project, iso_micros(now, 200)).await;
+
+        let job = Arc::new(CuratorRetentionJob::new(
+            db.clone(),
+            events.clone(),
+            RetentionConfig::for_project(project),
+        ));
+        let interval = Duration::from_secs(60);
+        let scheduler = RetentionScheduler::new(Arc::clone(&job), interval);
+        let token = CancellationToken::new();
+        let token_for_task = token.clone();
+        let handle = tokio::spawn(async move { scheduler.run(token_for_task).await });
+
+        // Let the spawned task get polled once so the `select!` arms its
+        // sleep future, then advance the paused clock past the interval.
+        // After advance, repeated yields let the cycle's db + event work
+        // complete before we cancel.
+        tokio::task::yield_now().await;
+        tokio::time::advance(interval + Duration::from_secs(1)).await;
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+
+        token.cancel();
+        handle.await.expect("scheduler join");
+
+        // After one cycle the aged decision must be gone.
+        let remaining = count(
+            &db,
+            "SELECT COUNT(*) FROM curator_decisions WHERE project_id = ?1",
+            project,
+        )
+        .await;
+        assert_eq!(remaining, 0, "scheduler tick must run one retention cycle");
+
+        // And the cycle-completed event must be in the stream.
+        let session = format!("curator-retention:{project}");
+        let stored = events
+            .query(&session, Default::default())
+            .await
+            .expect("query events");
+        let saw_completed = stored.iter().any(|e| {
+            e.data
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .is_some_and(|k| k == "curator_retention_cycle_completed")
+        });
+        assert!(saw_completed, "scheduler must emit completion telemetry");
     }
 }

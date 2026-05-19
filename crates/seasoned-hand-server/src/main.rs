@@ -7,6 +7,9 @@ use std::path::PathBuf;
 use seasoned_hand_core::capability::{
     CapabilityProbe, assert_main_supports_tool_calling, warn_implied_slot_capability_mismatches,
 };
+use seasoned_hand_core::curator::retention::{
+    CuratorRetentionJob, DEFAULT_RETENTION_INTERVAL_SECS, RetentionConfig, RetentionScheduler,
+};
 use seasoned_hand_core::curator::{
     CuratorConfig, CuratorRuntimeDeps, EmbeddingBudget, LlmSemanticAdjudicator,
     ProductionCuratorCycleExecutor, ProductionCuratorWorker, ProductionEmbeddingReranker,
@@ -615,6 +618,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // Story 4.23 / Phase 4 close-out hardening iter-1: retention scheduler
+    // runs on the same enabled gate as the curator worker — no curator
+    // means no telemetry growth means no retention work. Default interval
+    // is 24h; SH_CURATOR_RETENTION_INTERVAL_SEC overrides via the strict
+    // numeric parser introduced by story 4.14.
+    let retention_shutdown = curator_shutdown.clone();
+    let retention_handle = if curator_handle.is_some() {
+        let retention_project_id =
+            std::env::var("SH_CURATOR_PROJECT_ID").unwrap_or_else(|_| "default".to_string());
+        let interval_secs = env_u64_or_default(
+            &env_lookup,
+            "SH_CURATOR_RETENTION_INTERVAL_SEC",
+            DEFAULT_RETENTION_INTERVAL_SECS,
+        )
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        let job = std::sync::Arc::new(CuratorRetentionJob::new(
+            state.db.clone(),
+            state.events.clone(),
+            RetentionConfig::for_project(retention_project_id),
+        ));
+        let scheduler = RetentionScheduler::new(job, std::time::Duration::from_secs(interval_secs));
+        Some(tokio::spawn(async move {
+            scheduler.run(retention_shutdown).await;
+        }))
+    } else {
+        None
+    };
+
     // Story 2.17 / Phase 0 DEBT #16: spawn the workspace TTL cron.
     // Single-task loop that wakes every `SANDBOX_CLEANUP_INTERVAL_SEC`
     // (default 3600), tears down container + workspace for terminal-
@@ -653,6 +684,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     curator_shutdown.cancel();
     if let Some(handle) = curator_handle {
         log_join_error("curator", handle.await);
+    }
+    if let Some(handle) = retention_handle {
+        log_join_error("curator-retention", handle.await);
     }
 
     // Story 1.13: drain the checkpoint manager.

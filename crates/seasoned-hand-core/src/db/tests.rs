@@ -202,6 +202,58 @@ async fn migration_v011_idempotent_via_embedded_runner() {
     .await;
 }
 
+#[tokio::test]
+async fn migration_v012_creates_curator_decisions_summary() {
+    let pool = open(":memory:").await.unwrap();
+    pool.with_conn(|conn| {
+        let table_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='table' AND name='curator_decisions_summary'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            table_exists, 1,
+            "V012 must create curator_decisions_summary"
+        );
+
+        let index_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name='idx_curator_decisions_summary_project_week'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_exists, 1, "project-week index must exist");
+
+        // UNIQUE(project_id, week_start, week_end, decision_type) is what makes
+        // CuratorRetentionJob's UPSERT idempotent — assert it is enforced.
+        conn.execute(
+            "INSERT INTO curator_decisions_summary (
+                 id, tenant_id, project_id, week_start, week_end, decision_type,
+                 decision_count, mean_confidence, created_at
+             ) VALUES ('s1', NULL, 'proj-a', 0, 6048, 'merge', 5, 0.8, 0)",
+            [],
+        )
+        .unwrap();
+        let dup_result = conn.execute(
+            "INSERT INTO curator_decisions_summary (
+                 id, tenant_id, project_id, week_start, week_end, decision_type,
+                 decision_count, mean_confidence, created_at
+             ) VALUES ('s2', NULL, 'proj-a', 0, 6048, 'merge', 1, 0.9, 0)",
+            [],
+        );
+        assert!(
+            dup_result.is_err(),
+            "UNIQUE(project_id, week_start, week_end, decision_type) must block duplicate bucket"
+        );
+    })
+    .await;
+}
+
 #[test]
 fn migration_v011_backfill_from_v010_rows() {
     use rusqlite::Connection;
