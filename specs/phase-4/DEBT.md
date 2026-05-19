@@ -314,3 +314,25 @@ accountability, not speculative implementation details.
   - evidence:
     `crates/seasoned-hand-core/src/curator/mod.rs`,
     `curator::tests::emits_curation_decision_skill_and_curator_misc_taxonomy_events`
+
+## Story 4.14 close-out (2026-05-19)
+
+- `#91` CLOSED by story 4.14:
+  - `SH_CURATOR_*` env values now use strict parser semantics with explicit startup errors for
+    invalid booleans/numbers instead of permissive fallback coercion
+  - strict boolean parsing also applied to L2 enforcement flags
+    (`SH_CURATOR_L2_ENFORCE_KNOWLEDGE`, `SH_CURATOR_L2_ENFORCE_DATASOURCE`)
+  - evidence:
+    `crates/seasoned-hand-server/src/main.rs` (`load_curator_config_from_lookup`,
+    `env_bool_or_default`, strict parser tests in `src/main.rs`)
+
+- `#98` CLOSED by story 4.14:
+  - configuration surface is explicitly split into
+    `embedding_budget_soft_cap_pct` and `embedding_budget_hard_breaker_pct` with strict range and
+    monotonicity checks (`hard >= soft`)
+  - zero-baseline fallback behavior is regression-tested using absolute monthly budget cap
+  - evidence:
+    `crates/seasoned-hand-server/src/main.rs`,
+    `crates/seasoned-hand-core/src/curator/mod.rs`,
+    `tests::embedding_budget_zero_baseline_fallback_is_absolute_cap`,
+    `curator::tests::embedding_budget_uses_monthly_token_fallback_when_total_tokens_zero`

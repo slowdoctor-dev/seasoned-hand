@@ -1,6 +1,6 @@
 # Story 4.14 — Strict SH_CURATOR_* config parsing + feature flags
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 4.3
 > **Phase**: 4
@@ -14,11 +14,11 @@ Implement strict parsing for Curator flags and split embedding cap config into s
 
 ## Acceptance criteria
 
-- [ ] `SH_CURATOR_*` flags are strictly parsed with explicit invalid-value errors.
-- [ ] Config surface includes `embedding_budget_soft_cap_pct` and
+- [x] `SH_CURATOR_*` flags are strictly parsed with explicit invalid-value errors.
+- [x] Config surface includes `embedding_budget_soft_cap_pct` and
       `embedding_budget_hard_breaker_pct`.
-- [ ] Zero-baseline fallback budget behavior is implemented.
-- [ ] Integration test covers valid/invalid env values and breaker behavior.
+- [x] Zero-baseline fallback budget behavior is implemented.
+- [x] Integration test covers valid/invalid env values and breaker behavior.
 
 ## Non-goals
 

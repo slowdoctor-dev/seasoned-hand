@@ -4382,6 +4382,19 @@ mod tests {
         assert!(boosted <= 0.65);
     }
 
+    #[test]
+    fn embedding_budget_uses_monthly_token_fallback_when_total_tokens_zero() {
+        let budget = EmbeddingBudget {
+            monthly_embedding_tokens: 50_000,
+            soft_cap_pct: 0.08,
+            hard_breaker_pct: 0.12,
+        };
+        assert!(!budget.soft_cap_exceeded(49_999, 0));
+        assert!(budget.soft_cap_exceeded(50_000, 0));
+        assert!(!budget.breaker_open(49_999, 0));
+        assert!(budget.breaker_open(50_000, 0));
+    }
+
     #[tokio::test]
     async fn emits_curation_decision_skill_and_curator_misc_taxonomy_events() {
         let db = db::open(":memory:").await.expect("db");

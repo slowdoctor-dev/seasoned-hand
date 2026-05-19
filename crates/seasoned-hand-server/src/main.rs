@@ -28,6 +28,137 @@ fn log_join_error(name: &str, result: Result<(), tokio::task::JoinError>) {
     }
 }
 
+fn parse_bool_strict(name: &str, raw: &str) -> Result<bool, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" => Ok(true),
+        "0" | "false" => Ok(false),
+        _ => Err(format!(
+            "{name} invalid boolean value '{raw}' (expected one of: 1, 0, true, false)"
+        )),
+    }
+}
+
+fn parse_u64_strict(name: &str, raw: &str) -> Result<u64, String> {
+    raw.trim()
+        .parse::<u64>()
+        .map_err(|_| format!("{name} invalid unsigned integer value '{raw}'"))
+}
+
+fn parse_u32_strict(name: &str, raw: &str) -> Result<u32, String> {
+    raw.trim()
+        .parse::<u32>()
+        .map_err(|_| format!("{name} invalid unsigned integer value '{raw}'"))
+}
+
+fn parse_f32_strict(name: &str, raw: &str) -> Result<f32, String> {
+    raw.trim()
+        .parse::<f32>()
+        .map_err(|_| format!("{name} invalid float value '{raw}'"))
+}
+
+fn env_bool_or_default<F>(lookup: &F, name: &str, default: bool) -> Result<bool, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    match lookup(name) {
+        Some(raw) => parse_bool_strict(name, &raw),
+        None => Ok(default),
+    }
+}
+
+fn env_u64_or_default<F>(lookup: &F, name: &str, default: u64) -> Result<u64, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    match lookup(name) {
+        Some(raw) => parse_u64_strict(name, &raw),
+        None => Ok(default),
+    }
+}
+
+fn env_u32_or_default<F>(lookup: &F, name: &str, default: u32) -> Result<u32, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    match lookup(name) {
+        Some(raw) => parse_u32_strict(name, &raw),
+        None => Ok(default),
+    }
+}
+
+fn env_f32_or_default<F>(lookup: &F, name: &str, default: f32) -> Result<f32, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    match lookup(name) {
+        Some(raw) => parse_f32_strict(name, &raw),
+        None => Ok(default),
+    }
+}
+
+fn load_curator_config_from_lookup<F>(lookup: &F) -> Result<Option<CuratorConfig>, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let enabled = env_bool_or_default(lookup, "SH_CURATOR_ENABLED", false)?;
+    if !enabled {
+        return Ok(None);
+    }
+    let soft = env_f32_or_default(lookup, "SH_CURATOR_EMBEDDING_SOFT_CAP_PCT", 0.08)?;
+    let hard = env_f32_or_default(lookup, "SH_CURATOR_EMBEDDING_HARD_BREAKER_PCT", 0.12)?;
+    if !(0.0..=1.0).contains(&soft) {
+        return Err(format!(
+            "SH_CURATOR_EMBEDDING_SOFT_CAP_PCT out of range {soft} (expected 0.0..=1.0)"
+        ));
+    }
+    if !(0.0..=1.0).contains(&hard) {
+        return Err(format!(
+            "SH_CURATOR_EMBEDDING_HARD_BREAKER_PCT out of range {hard} (expected 0.0..=1.0)"
+        ));
+    }
+    if hard < soft {
+        return Err(format!(
+            "SH_CURATOR_EMBEDDING_HARD_BREAKER_PCT ({hard}) must be >= SH_CURATOR_EMBEDDING_SOFT_CAP_PCT ({soft})"
+        ));
+    }
+
+    Ok(Some(CuratorConfig {
+        enabled: true,
+        interval_seconds: env_u64_or_default(lookup, "SH_CURATOR_INTERVAL_SECONDS", 300)?,
+        backlog_threshold: env_u32_or_default(lookup, "SH_CURATOR_BACKLOG_THRESHOLD", 10)?,
+        max_candidates_per_cycle: env_u32_or_default(
+            lookup,
+            "SH_CURATOR_MAX_CANDIDATES_PER_CYCLE",
+            50,
+        )?,
+        embedding_budget_monthly_tokens: env_u64_or_default(
+            lookup,
+            "SH_CURATOR_EMBEDDING_BUDGET_MONTHLY_TOKENS",
+            50_000,
+        )?,
+        embedding_budget_soft_cap_pct: soft,
+        embedding_budget_hard_breaker_pct: hard,
+        embedding_model: lookup("SH_EMBEDDING_MODEL")
+            .unwrap_or_else(|| "text-embedding-3-small".to_string()),
+        auto_archive_enabled: env_bool_or_default(
+            lookup,
+            "SH_CURATOR_AUTO_ARCHIVE_ENABLED",
+            false,
+        )?,
+        archive_recommend_min_confidence: env_f32_or_default(
+            lookup,
+            "SH_CURATOR_ARCHIVE_RECOMMEND_MIN_CONFIDENCE",
+            0.40,
+        )?,
+        archive_apply_min_confidence: env_f32_or_default(
+            lookup,
+            "SH_CURATOR_ARCHIVE_APPLY_MIN_CONFIDENCE",
+            0.55,
+        )?,
+        project_id: lookup("SH_CURATOR_PROJECT_ID").unwrap_or_else(|| "default".to_string()),
+    }))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing();
@@ -389,58 +520,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let curator_shutdown = tokio_util::sync::CancellationToken::new();
-    let curator_enabled = std::env::var("SH_CURATOR_ENABLED")
-        .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
-        .unwrap_or(false);
-    let curator_handle = if curator_enabled {
-        let config = CuratorConfig {
-            enabled: true,
-            interval_seconds: std::env::var("SH_CURATOR_INTERVAL_SECONDS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(300),
-            backlog_threshold: std::env::var("SH_CURATOR_BACKLOG_THRESHOLD")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(10),
-            max_candidates_per_cycle: std::env::var("SH_CURATOR_MAX_CANDIDATES_PER_CYCLE")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(50),
-            embedding_budget_monthly_tokens: std::env::var(
-                "SH_CURATOR_EMBEDDING_BUDGET_MONTHLY_TOKENS",
-            )
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(50_000),
-            embedding_budget_soft_cap_pct: std::env::var("SH_CURATOR_EMBEDDING_SOFT_CAP_PCT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0.08),
-            embedding_budget_hard_breaker_pct: std::env::var(
-                "SH_CURATOR_EMBEDDING_HARD_BREAKER_PCT",
-            )
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0.12),
-            embedding_model: std::env::var("SH_EMBEDDING_MODEL")
-                .unwrap_or_else(|_| "text-embedding-3-small".to_string()),
-            auto_archive_enabled: std::env::var("SH_CURATOR_AUTO_ARCHIVE_ENABLED")
-                .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
-                .unwrap_or(false),
-            archive_recommend_min_confidence: std::env::var(
-                "SH_CURATOR_ARCHIVE_RECOMMEND_MIN_CONFIDENCE",
-            )
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0.40),
-            archive_apply_min_confidence: std::env::var("SH_CURATOR_ARCHIVE_APPLY_MIN_CONFIDENCE")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0.55),
-            project_id: std::env::var("SH_CURATOR_PROJECT_ID")
-                .unwrap_or_else(|_| "default".to_string()),
-        };
+    let env_lookup = |key: &str| std::env::var(key).ok();
+    let curator_config = load_curator_config_from_lookup(&env_lookup)
+        .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
+    let curator_handle = if let Some(config) = curator_config {
         let embedding_slot = state.router.resolve(SlotName::Embedding);
         let embedding_llm = LlmClient::new(
             embedding_slot.base_url.clone(),
@@ -479,12 +562,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::sync::Arc::new(SqliteWorkPatternExtractor::new(state.db.clone()));
         let operator_review_queue =
             std::sync::Arc::new(SqliteOperatorReviewQueue::new(state.db.clone()));
-        let enforce_l2_knowledge = std::env::var("SH_CURATOR_L2_ENFORCE_KNOWLEDGE")
-            .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
-            .unwrap_or(true);
-        let enforce_l2_datasource = std::env::var("SH_CURATOR_L2_ENFORCE_DATASOURCE")
-            .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
-            .unwrap_or(true);
+        let enforce_l2_knowledge =
+            env_bool_or_default(&env_lookup, "SH_CURATOR_L2_ENFORCE_KNOWLEDGE", true)
+                .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
+        let enforce_l2_datasource =
+            env_bool_or_default(&env_lookup, "SH_CURATOR_L2_ENFORCE_DATASOURCE", true)
+                .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
         let knowledge_datasource_writer =
             std::sync::Arc::new(SqliteKnowledgeDatasourceWriter::new(
                 state.db.clone(),
@@ -689,5 +772,84 @@ impl seasoned_hand_core::verifier::gate::RollbackHandler for ProductionRollbackH
             )
             .await;
         out.ok
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::{env_bool_or_default, load_curator_config_from_lookup};
+    use seasoned_hand_core::curator::EmbeddingBudget;
+
+    fn lookup_from(map: HashMap<&'static str, &'static str>) -> impl Fn(&str) -> Option<String> {
+        move |key| map.get(key).map(|value| (*value).to_string())
+    }
+
+    #[test]
+    fn curator_config_strict_parsing_accepts_valid_values() {
+        let lookup = lookup_from(HashMap::from([
+            ("SH_CURATOR_ENABLED", "true"),
+            ("SH_CURATOR_INTERVAL_SECONDS", "120"),
+            ("SH_CURATOR_BACKLOG_THRESHOLD", "5"),
+            ("SH_CURATOR_MAX_CANDIDATES_PER_CYCLE", "25"),
+            ("SH_CURATOR_EMBEDDING_BUDGET_MONTHLY_TOKENS", "100000"),
+            ("SH_CURATOR_EMBEDDING_SOFT_CAP_PCT", "0.05"),
+            ("SH_CURATOR_EMBEDDING_HARD_BREAKER_PCT", "0.10"),
+            ("SH_CURATOR_AUTO_ARCHIVE_ENABLED", "1"),
+            ("SH_CURATOR_ARCHIVE_RECOMMEND_MIN_CONFIDENCE", "0.45"),
+            ("SH_CURATOR_ARCHIVE_APPLY_MIN_CONFIDENCE", "0.60"),
+            ("SH_CURATOR_PROJECT_ID", "proj-x"),
+        ]));
+        let cfg = load_curator_config_from_lookup(&lookup)
+            .expect("valid config parse")
+            .expect("enabled config");
+        assert_eq!(cfg.interval_seconds, 120);
+        assert_eq!(cfg.backlog_threshold, 5);
+        assert_eq!(cfg.max_candidates_per_cycle, 25);
+        assert_eq!(cfg.embedding_budget_monthly_tokens, 100_000);
+        assert_eq!(cfg.embedding_budget_soft_cap_pct, 0.05);
+        assert_eq!(cfg.embedding_budget_hard_breaker_pct, 0.10);
+        assert!(cfg.auto_archive_enabled);
+        assert_eq!(cfg.project_id, "proj-x");
+    }
+
+    #[test]
+    fn curator_config_strict_parsing_rejects_invalid_boolean() {
+        let lookup = lookup_from(HashMap::from([("SH_CURATOR_ENABLED", "yes")]));
+        let error = load_curator_config_from_lookup(&lookup).expect_err("should reject");
+        assert!(error.contains("SH_CURATOR_ENABLED"));
+    }
+
+    #[test]
+    fn curator_config_strict_parsing_rejects_invalid_caps() {
+        let lookup = lookup_from(HashMap::from([
+            ("SH_CURATOR_ENABLED", "1"),
+            ("SH_CURATOR_EMBEDDING_SOFT_CAP_PCT", "0.2"),
+            ("SH_CURATOR_EMBEDDING_HARD_BREAKER_PCT", "0.1"),
+        ]));
+        let error = load_curator_config_from_lookup(&lookup).expect_err("should reject");
+        assert!(error.contains("HARD_BREAKER"));
+        assert!(error.contains("SOFT_CAP"));
+    }
+
+    #[test]
+    fn curator_l2_flags_are_strict_boolean() {
+        let lookup = lookup_from(HashMap::from([("SH_CURATOR_L2_ENFORCE_KNOWLEDGE", "nope")]));
+        let result = env_bool_or_default(&lookup, "SH_CURATOR_L2_ENFORCE_KNOWLEDGE", true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn embedding_budget_zero_baseline_fallback_is_absolute_cap() {
+        let budget = EmbeddingBudget {
+            monthly_embedding_tokens: 50_000,
+            soft_cap_pct: 0.08,
+            hard_breaker_pct: 0.12,
+        };
+        assert!(!budget.soft_cap_exceeded(49_999, 0));
+        assert!(budget.soft_cap_exceeded(50_000, 0));
+        assert!(!budget.breaker_open(49_999, 0));
+        assert!(budget.breaker_open(50_000, 0));
     }
 }
