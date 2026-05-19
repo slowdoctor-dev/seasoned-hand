@@ -222,7 +222,7 @@ impl<S: SandboxJanitor + 'static> WorkspaceTtlCron<S> {
         self.db
             .with_conn(move |conn| -> rusqlite::Result<Vec<Candidate>> {
                 let mut stmt = conn.prepare(
-                    "SELECT id, status, updated_at FROM tasks \
+                    "SELECT id FROM tasks \
                       WHERE (status = 'completed' AND updated_at < ?) \
                          OR (status IN ('failed', 'cancelled') AND updated_at < ?) \
                          OR (status IN ('drafted', 'briefed') AND updated_at < ?)",
@@ -232,8 +232,6 @@ impl<S: SandboxJanitor + 'static> WorkspaceTtlCron<S> {
                     |row| {
                         Ok(Candidate {
                             task_id: row.get::<_, String>(0)?,
-                            status_raw: row.get::<_, String>(1)?,
-                            updated_at: row.get::<_, i64>(2)?,
                         })
                     },
                 )?;
@@ -402,10 +400,6 @@ impl<S: SandboxJanitor + 'static> WorkspaceTtlCron<S> {
 #[derive(Debug, Clone)]
 struct Candidate {
     task_id: String,
-    #[allow(dead_code)] // kept for tracing context; status is re-read in clean_one
-    status_raw: String,
-    #[allow(dead_code)]
-    updated_at: i64,
 }
 
 enum CleanupOutcome {

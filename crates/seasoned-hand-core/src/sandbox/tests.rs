@@ -98,8 +98,8 @@ fn is_safe_session_id_accepts_and_rejects() {
 fn require_safe_session_id_returns_invalid_workspace() {
     // The sandbox-layer guard returns the same error variant as the
     // path-normalizer so callers can pattern-match consistently.
-    let err = require_safe_session_id("../etc")
-        .expect_err("path-traversal session id must be rejected");
+    let err =
+        require_safe_session_id("../etc").expect_err("path-traversal session id must be rejected");
     assert!(
         matches!(err, SandboxError::InvalidWorkspace(_)),
         "wrong variant: {err:?}",

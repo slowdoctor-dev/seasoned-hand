@@ -4,7 +4,7 @@
 //! ever overwritten — operators editing `config/notify.toml` won't have
 //! their settings clobbered.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
@@ -49,24 +49,4 @@ fn resolve_home() -> Result<PathBuf> {
         return Ok(PathBuf::from(profile));
     }
     anyhow::bail!("could not resolve home directory (HOME / USERPROFILE both unset)")
-}
-
-#[allow(dead_code)]
-pub(crate) fn workspace_root() -> Result<PathBuf> {
-    resolve_home().map(|h| h.join(".seasoned-hand"))
-}
-
-#[allow(dead_code)]
-pub(crate) fn deliverables_dir() -> Result<PathBuf> {
-    workspace_root().map(|r| r.join("deliverables"))
-}
-
-#[allow(dead_code)]
-pub(crate) fn config_dir() -> Result<PathBuf> {
-    workspace_root().map(|r| r.join("config"))
-}
-
-#[allow(dead_code)]
-pub(crate) fn exists(path: &Path) -> bool {
-    path.exists()
 }

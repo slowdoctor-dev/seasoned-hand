@@ -54,7 +54,6 @@ use seasoned_hand_core::pubsub::RedisPool;
 use seasoned_hand_core::router::{SlotName, SlotRouter};
 use seasoned_hand_core::sandbox::SandboxClient;
 use seasoned_hand_core::search::SearchClient;
-use seasoned_hand_core::skill::{PlaybookStore, SkillStore};
 use seasoned_hand_core::tools::builtin::all_with_task_deliver;
 use seasoned_hand_core::verifier::{
     VerificationStore,
@@ -133,12 +132,6 @@ pub struct AppState {
     /// Story 2.3: V008 `notifications_sent` persistence handle.
     /// Consumed by the NotifyWorker (story 2.5).
     pub notifications_sent: Arc<NotificationsSentStore>,
-    /// Story 2.3 / DEBT #6: V009 `skills` reservation handle. Phase 2
-    /// never writes; Phase 3 Curator populates.
-    pub skills: Arc<SkillStore>,
-    /// Story 2.3 / DEBT #6: V009 `playbooks` reservation handle.
-    /// Phase 2 never writes; Phase 3 Curator populates.
-    pub playbooks: Arc<PlaybookStore>,
     /// Story 2.4 / 2.10: registered channels (intake / delivery /
     /// notify roles). Built with the always-on chat baseline by
     /// `AppState::new`; main.rs adds further channels at boot via
@@ -372,8 +365,6 @@ impl AppState {
         let intake_events = Arc::new(IntakeEventStore::new(db.clone()));
         let delivery_events = Arc::new(DeliveryEventStore::new(db.clone()));
         let notifications_sent = Arc::new(NotificationsSentStore::new(db.clone()));
-        let skills = Arc::new(SkillStore::new(db.clone()));
-        let playbooks = Arc::new(PlaybookStore::new(db.clone()));
         let renderer = Arc::new(RendererDispatcher::new(sandbox.clone()));
         // Story 2.15: provenance builder needs the verifier + checkpoint
         // stores. Lifted ahead of `task_deliver_deps` so it can hand the
@@ -520,8 +511,6 @@ impl AppState {
             intake_events,
             delivery_events,
             notifications_sent,
-            skills,
-            playbooks,
             channels,
             intake_router,
             delivery_router,
