@@ -1,6 +1,6 @@
 # Story 4.22 — Phase 4 acceptance gate + close-out
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 4.2-4.21
 > **Phase**: 4

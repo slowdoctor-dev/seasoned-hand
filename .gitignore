@@ -49,6 +49,7 @@ tmp/
 
 # Personal overrides
 .claude/CLAUDE.local.md
+.claude/scheduled_tasks.lock
 .codex/AGENTS.local.md
 .codex/config.toml
 config/slots.yaml

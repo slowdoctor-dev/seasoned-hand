@@ -348,3 +348,91 @@ accountability, not speculative implementation details.
     (`validate_decision_scope`, `consolidation_apply_rejects_cross_project_revision_scope`,
     `conflict_detector_rejects_cross_project_pairs_without_writes`,
     `review_queue_transitions_are_scoped_to_target_queue_project_rows`)
+
+## Story 4.16-4.23 close-out (2026-05-19, solo)
+
+Stories 4.16 (NFR-4.7 false-positive audit harness), 4.17 (revision-chain integrity
+regression), 4.18 (FTS maintenance-trigger regression), 4.19 (review queue
+state-machine + suppression TTL), 4.20 (embedding cost circuit-breaker regression),
+4.21 (`phase4_warm_full_loop_benchmark`), and 4.23 (Curator telemetry retention)
+were executed by Claude solo while Codex was rate-limited.
+
+- `#87` CLOSED by story 4.21:
+  - `phase4_warm_full_loop_benchmark` runs cold→curate→warm replay over a 270-artifact
+    deterministic fixture corpus; cold precision@3=1.0, warm stale-ratio reduction
+    78%, elapsed ~184 ms (well inside the 45-min CI budget).
+  - evidence: `crates/seasoned-hand-core/src/curator/mod.rs`
+    (`phase4_warm_full_loop_benchmark`, `seed_warm_loop_corpus`,
+    `count_active_playbooks`, `count_stale_active`).
+- `#101` CLOSED by story 4.21:
+  - benchmark setup is now concrete: deterministic stub LLM, fixed UUID sequencing
+    via test helpers, operator-approved ArchiveApply subset to model the warm path.
+  - evidence: same as #87.
+- `#76` PARTIAL by story 4.18:
+  - FTS5 maintenance-trigger correctness now has regression coverage for insert,
+    delete, and update paths on `curator_search_index_a{i,d,u}` plus a multi-row
+    snapshot/round-trip assertion. Full retune of structural-vs-semantic blend
+    weights remains deferred per requirements §6.
+  - evidence: `crates/seasoned-hand-core/src/curator/mod.rs`
+    (`curator_search_fts_*` tests).
+- `#90` REINFORCED CLOSED by story 4.16:
+  - NFR-4.7 false-positive audit harness provides explicit regression coverage of
+    the auto-archive/auto-merge safety bounds beyond the policy-engine close from
+    story 4.13.
+  - evidence: `crates/seasoned-hand-core/src/curator/mod.rs`
+    (`false_positive_audit_harness_nfr_4_7`).
+- NFR-4.4 CLOSED by story 4.23:
+  - new `CuratorRetentionJob` + V012 `curator_decisions_summary` enforce the 90-day
+    hot window with per-week histogram compaction, 60-day accelerated window on
+    cap exceedance, and `curator_storage_cap_warning` telemetry.
+  - evidence: `crates/seasoned-hand-core/src/curator/retention.rs`,
+    `migrations/V012__phase4_curator_retention.sql`.
+
+## F-4.26 close-out matrix (story 4.22)
+
+This matrix consolidates every inherited Phase 3 DEBT entry in scope plus the
+Phase 4 architect-seed and REVIEW iter-1 additions, with closure state, the
+story that did the work, and pointers to the evidence already recorded above.
+
+### Inherited from Phase 3
+
+| Debt | State | Story | Evidence |
+|---|---|---|---|
+| #72 Embedding rerank over FTS5 | CLOSED | 4.4 | story 4.4 close-out (line 216) |
+| #73 Knowledge/Datasource writers + L2 enforcement | CLOSED | 4.10 | story 4.10 close-out (line 248) |
+| #75 Summarizer hardening / refusal | CLOSED | 4.7 | story 4.7 close-out (line 43) |
+| #76 FTS5 weighting retune | PARTIAL | 4.18 | story 4.18 close-out (above); full retune deferred per §6 |
+| #77 `source_project_id` denormalization | CLOSED | 4.2 | story 4.2 close-out (line 206) |
+| #87 Warm benchmark with full learning loop | CLOSED | 4.21 | solo close-out (above) |
+| #88 Event-kind taxonomy reconciliation | CLOSED | 4.12 | story 4.12 close-out (line 302) |
+| #89 LLM refusal prompt specificity | CLOSED | 4.7 + 4.11 | story 4.11 close-out (line 281) |
+| #90 Dedup/false-positive bounds | CLOSED | 4.13 + 4.16 | story 4.13 close-out (line 262), 4.16 reinforcement |
+| #91 Config/env parsing strictness | CLOSED (curator); PARTIAL (global) | 4.14 | story 4.14 close-out (line 318); global harmonization deferred to Phase 5 per §6 |
+
+### Phase 4 architect-seed + REVIEW iter-1
+
+| Debt | State | Story | Evidence |
+|---|---|---|---|
+| #92 Adaptive auto-archive thresholds (H3) | PARTIAL (static landed; adaptive deferred to Phase 5) | 4.13 | story 4.13 close-out (line 262) |
+| #93 Optional fork-promotion governance (H3) | DEFERRED to Phase 5 | — | architect note (line 97) |
+| #94 Retrospective tiered model policy (H3) | DEFERRED to Phase 5 | — | architect note (line 106) |
+| #95 Cross-project read-only analytics pilot (H3) | CLOSED (isolation enforced; pilot still deferred) | 4.15 | story 4.15 close-out (line 340) |
+| #96 Curator rationale schema evolution tooling (H3) | DEFERRED to Phase 5 | — | architect note (line 124) |
+| #97 Per-crate justification for new deps (H3) | DEFERRED (documentation H3) | — | REVIEW iter-1 (line 135) |
+| #98 Split embedding budget cap field | CLOSED | 4.14 | story 4.14 close-out (line 329) |
+| #99 §7 cycle budget amortization arithmetic | CLOSED | 4.4 | story 4.4 close-out (line 226) |
+| #100 F-4.22 OOM handling | CLOSED | 4.11 | story 4.11 close-out (line 292) |
+| #101 `phase4_warm_full_loop_benchmark` concrete setup | CLOSED | 4.21 | solo close-out (above) |
+| #102 `playbook_revisions` parent FK | CLOSED | 4.2 | story 4.2 close-out (line 212) |
+
+### Net residual into Phase 5
+
+- **#76** (FTS5 weight retune): partial; rerank + hybrid candidate blend are
+  evidenced, full structural-vs-semantic weight retune awaits dogfood data.
+- **#91** (config/env strict-parse): curator scope is fully closed; global
+  config harmonization across non-curator subsystems is the residual.
+- **#92, #93, #94, #96, #97**: H3 items deferred to Phase 5 by architect note;
+  none are blocking and all have explicit successor pointers.
+
+All other inherited and architect-seed items required by F-4.26 close as
+CLOSED with evidence pointers. Phase 5 BMAD Analyst will inherit this matrix.

@@ -88,6 +88,22 @@ check "tool catalog stability + Phase 3 spec hook" \
    && grep -q 'playbook list / show / delete' specs/phase-3/architecture.md \
    && grep -q 'session search <query>' specs/phase-3/architecture.md"
 
+# Check 8: Phase 4 close-out hook (story 4.22 — Curator schema V011/V012,
+# retention module, architecture v1.3 reconciliation).
+check "Phase 4 curator + retention spec hook" \
+  "[ -f migrations/V011__phase4_curator.sql ] \
+   && [ -f migrations/V012__phase4_curator_retention.sql ] \
+   && grep -q 'CREATE TABLE curator_decisions' migrations/V011__phase4_curator.sql \
+   && grep -q 'CREATE TABLE curator_review_queue' migrations/V011__phase4_curator.sql \
+   && grep -q 'CREATE VIRTUAL TABLE curator_search_fts' migrations/V011__phase4_curator.sql \
+   && grep -q 'CREATE TABLE curator_decisions_summary' migrations/V012__phase4_curator_retention.sql \
+   && [ -f crates/seasoned-hand-core/src/curator/mod.rs ] \
+   && [ -f crates/seasoned-hand-core/src/curator/retention.rs ] \
+   && grep -q 'pub struct CuratorRetentionJob' crates/seasoned-hand-core/src/curator/retention.rs \
+   && grep -Eq 'v1\\.3' specs/01-architecture/ARCHITECTURE.md \
+   && [ -f specs/phase-4/architecture.md ] \
+   && [ -f specs/phase-4/requirements.md ]"
+
 echo ""
 echo "=== Results ==="
 echo "Pass: $PASS"

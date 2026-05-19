@@ -182,11 +182,11 @@ This mirrors how Seasoned Hand itself works (recursive principle).
 
 ## 13. Current state
 
-- **Phase**: 3 complete → Phase 4 starting
+- **Phase**: 4 complete → Phase 5 starting
 - **Branch**: main
-- **Next milestone**: Phase 3 architecture pass (BMAD Architect on
-  `/specs/phase-3/architecture.md`) → story breakdown → learning
-  system
+- **Next milestone**: Phase 5 architecture pass (BMAD Architect on
+  `/specs/phase-5/architecture.md`) → multi-user + organization
+  surface; flip `tenant_id` NULL → NOT NULL default.
 
 Check status: `just status` (or `git log --oneline` + `CHANGELOG.md`)
 

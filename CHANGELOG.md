@@ -17,6 +17,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.0] — 2026-05-19
+
+Phase 4 release: Curator + self-improvement loop. 22 stories shipped (4.2-4.23).
+Spec references: `/specs/phase-4/requirements.md`, `/specs/phase-4/architecture.md`,
+ADR-013 (V011 schema reconciliation).
+
+### Added
+- Curator runtime: `CuratorWorker`, `SqliteCandidateBuilder`, `LlmSemanticAdjudicator`,
+  `SqliteConsolidationEngine`, `SqliteConflictDetector`, `SqliteRetrospectiveGenerator`,
+  `SqliteWorkPatternExtractor`, `SqliteOperatorReviewQueue`,
+  `SqliteKnowledgeDatasourceWriter`, `EmbeddingBudget`, and
+  `CuratorRetentionJob` (story 4.23 / NFR-4.4 close).
+- Phase 4 schema migrations: V011 lands the curator ledger
+  (`playbook_revisions`, `playbook_revision_outcomes`, `curator_decisions`,
+  `curator_review_queue`, `sop_conflicts`, `knowledge_items`, `datasource_items`,
+  `weekly_retrospectives`, `retrospective_citations`, `curator_search_index` +
+  FTS5 virtual table + AI/AD/AU maintenance triggers); V012 adds
+  `curator_decisions_summary` for the retention/compaction tail.
+- Event taxonomy v1.3: `Skill{kind:"curation_decision"}` + `Misc` curator
+  families (`curator_cycle_*`, `curator_decision_quarantined`,
+  `curator_budget_circuit_open`, `curator_retrospective_refused`,
+  `curator_storage_cap_warning`, `curator_retention_cycle_completed`,
+  `playbook_extraction_*`).
+- Phase 4 acceptance benchmark `phase4_warm_full_loop_benchmark` (story 4.21):
+  cold→curate→warm replay over 270 verified artifacts; precision@3 = 1.0,
+  78% stale-playbook ratio reduction, elapsed ~184 ms.
+
+### Changed
+- Architecture document advanced to v1.3 with ADR-012 + ADR-013 reconciliation
+  notes for §2.5 event schema and §3.2 curator surface.
+- Phase baseline status advanced to `Phase 4 complete → Phase 5 starting` in
+  `BASELINE.md` and `AGENTS.md` §13.
+- `scripts/spec-check.sh` now checks Phase 4 curator + retention spec hooks
+  (V011/V012, `CuratorRetentionJob`, ARCHITECTURE.md v1.3 reconciliation).
+
+### Fixed
+- Closed Phase 3 DEBT inherited per F-4.26 closure matrix (see
+  `/specs/phase-4/DEBT.md`). Residual partial: #76 (full FTS weight retune
+  deferred per §6), #91 (global strict-parse harmonization deferred to
+  Phase 5 per §6).
+
+---
+
 ## [0.3.0] — 2026-05-18
 
 Phase 3 release: learning loop foundations and production extraction wiring.
