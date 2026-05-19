@@ -912,8 +912,24 @@ Chosen option: **B (tiered retention raw -> summarized)**.
 Rationale:
 - Needed to satisfy 90-day retention and storage cap simultaneously.
 
+Implementation landed in story 4.23 + close-out hardening iter-1:
+- `V012__phase4_curator_retention.sql` adds `curator_decisions_summary`
+  (per-week per-decision-type histogram + mean confidence, UNIQUE bucket
+  for UPSERT idempotency).
+- `crates/seasoned-hand-core/src/curator/retention.rs` ships the
+  `CuratorRetentionJob` (90-day hot window, 60-day accelerated window when
+  the SQLite footprint exceeds the 300 MB cap, atomic per-batch commit
+  per NFR-4.3) and the `RetentionScheduler` daily-tick wrapper that
+  `main.rs` spawns alongside the curator worker.
+
 Deferred debt:
 - Per-project retention classes (option C) later.
+- Cron-expression scheduling (story 4.23 PM iter-1 wording was relaxed
+  to `SH_CURATOR_RETENTION_INTERVAL_SEC` in close-out reconciliation;
+  cron grammar can land in Phase 5 if ops demands non-uniform cadence).
+- Cap-exceeded push trigger from other Curator components: deferred per
+  REVIEW iter-2 — the daily-tick self-detect is already cap-correcting,
+  external push is a precision optimization.
 
 ### 12.13 Q13 Embedding warm-up policy
 

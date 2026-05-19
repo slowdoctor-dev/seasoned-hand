@@ -28,9 +28,14 @@ mark NFR-4.4 satisfied.
 - [ ] A `CuratorRetentionJob` (or similarly-named) production component lives under
       `crates/seasoned-hand-core/src/curator/retention.rs` (or under a `curator/`
       module structure consistent with story 4.3's CuratorWorker layout).
-- [ ] The job runs on a configurable interval (default: daily at 02:00 UTC project-local,
-      configurable via `SH_CURATOR_RETENTION_CRON`) AND on storage-cap-exceeded triggers
-      emitted by other Curator components.
+- [ ] The job runs on a configurable interval (default: 24h, configurable via
+      `SH_CURATOR_RETENTION_INTERVAL_SEC` parsed by the story 4.14 strict u64 parser).
+      Cap-exceeded handling is implemented as a self-detect in every tick rather than
+      as a separate push trigger from other Curator components — `run_cycle` reads the
+      SQLite footprint before pruning and routes to the accelerated 60-day window when
+      the project DB is over the 300 MB cap. A separate cap-exceeded push surface from
+      other Curator components (Phase 4 PM iter-1 wording) is deferred to Phase 5 as
+      a precision optimization; functionally the daily tick is self-correcting.
 - [ ] **Hot retention window** = 90 days as pinned by NFR-4.4. Data older than 90 days
       transitions from "raw" to "summarized" tier:
       - `curator_decisions` rows ≥90 days old: collapsed into per-week
@@ -71,8 +76,10 @@ mark NFR-4.4 satisfied.
 3. Implement the daily cron tick + cap-exceeded trigger handling.
 4. Implement the per-table pruning queries with explicit transactional commit.
 5. Wire the storage-cap-warning event emit + accelerated compaction path.
-6. Wire `SH_CURATOR_RETENTION_CRON` env parsing via story 4.14's strict-parser
-   (default daily 02:00 UTC).
+6. Wire `SH_CURATOR_RETENTION_INTERVAL_SEC` env parsing via the story 4.14
+   strict u64 parser (default 86400 = 24h). Cron-expression parsing is deferred
+   per the Phase 4 close-out reconciliation in REVIEW iter-2; interval-seconds
+   is sufficient for the production cadence the daily scheduler requires.
 7. Integration test: seed >300 MB of synthetic decisions, trigger compaction, assert
    size drops + summary rows appear + raw rows pruned + idempotent re-run is no-op.
 8. Unit tests: cron-parse correctness, transaction rollback on injected failure,

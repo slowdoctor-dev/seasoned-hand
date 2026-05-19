@@ -577,3 +577,129 @@ This avoids repeating Phase 3's post-execution structural-gap recovery pattern.
 
 Saturation verdict: PM hardening is complete; proceed to GSD execute-story dispatch starting with
 story 4.2 (V011 atomic slice).
+
+---
+
+## REVIEW iter-1 (Claude, 2026-05-20) — Phase 4 close-out post-execution hardening
+
+> Date: 2026-05-20
+> Reviewer: Claude solo (Codex on 5-day rate-limit recovery)
+> Scope: everything shipped after the Phase 4 close-out commit `008b6e7`,
+> targeting tech-debt reduction.
+
+### Findings summary
+
+| # | Severity | Category | Title |
+|---|---|---|---|
+| P4-CLOSE-IT1-F1 | **M** | structural gap | `CuratorRetentionJob` had no production caller — `main.rs` never spawned it |
+| P4-CLOSE-IT1-F2 | L | test coverage | V012 migration had no regression test |
+
+### F1 (M, FIXED) — retention runtime not wired into server boot
+
+**Evidence** — `grep -n "CuratorRetentionJob" crates/seasoned-hand-server/src/main.rs` returned
+zero hits after story 4.23 landed. The job shipped with unit tests but no daily-tick driver, so
+NFR-4.4 was a paper-only close in production. This is exactly the structural-gap pattern Phase 3
+hit with story 3.17 (production extraction handler) — meaningful-not-minimal feedback applies.
+
+**Fix applied** — commit `cac131d`:
+- Added `RetentionScheduler` to `curator::retention` (24h default tick, paused-time-friendly
+  cancellation, error-absorbing loop, mirrors `WorkspaceTtlCron::run` shape).
+- `main.rs` spawns the scheduler next to `ProductionCuratorWorker`, sharing the
+  `curator_shutdown` token; gated on the curator-enabled flag so it never wakes on
+  pure-server installs.
+- New test `scheduler_runs_one_cycle_then_honours_cancellation` proves the spawned task fires
+  one cycle, prunes aged rows, emits `curator_retention_cycle_completed`, and exits cleanly on
+  cancel.
+
+### F2 (L, FIXED) — V012 migration regression coverage
+
+**Evidence** — `crates/seasoned-hand-core/src/db/tests.rs` had `migration_v011_*` coverage but
+nothing for V012. The UNIQUE bucket constraint that makes the retention UPSERT idempotent was
+unverified at the migration boundary.
+
+**Fix applied** — same commit `cac131d`:
+- New `migration_v012_creates_curator_decisions_summary` test asserts table existence,
+  project-week index existence, and the UNIQUE(project_id, week_start, week_end, decision_type)
+  constraint by attempting a duplicate insert that must fail.
+
+### Iter-1 conclusion
+
+Both findings were structural gaps from the close-out commits, fixed inline in commit `cac131d`.
+No new DEBT seeded — these were paper-close → actual-close fixes, not deferred work.
+
+---
+
+## REVIEW iter-2 (Claude, 2026-05-20) — Phase 4 close-out post-execution hardening
+
+> Date: 2026-05-20
+> Reviewer: Claude solo (Codex still on rate-limit recovery)
+> Scope: spec/code reconciliation after iter-1 wiring landed.
+
+### Findings summary
+
+| # | Severity | Category | Title |
+|---|---|---|---|
+| P4-CLOSE-IT2-F1 | L | spec/code drift | story 4.23 referenced `SH_CURATOR_RETENTION_CRON`; impl uses `_INTERVAL_SEC` |
+| P4-CLOSE-IT2-F2 | L | spec/code drift | story 4.23 mentioned external "cap-exceeded push" trigger; impl is self-detect-per-tick |
+| P4-CLOSE-IT2-F3 | L | cross-ref hygiene | architecture §12.12 didn't cross-ref V012 / `CuratorRetentionJob` |
+
+### F1 (L, FIXED) — env-var naming reconciled
+
+**Fix applied** — story 4.23 acceptance criteria and implementation steps now name
+`SH_CURATOR_RETENTION_INTERVAL_SEC` (matches `main.rs` and the iter-1 scheduler). Cron-expression
+parsing recorded as deferred to Phase 5 in §12.12 deferred-debt list rather than carried as a
+hidden divergence.
+
+### F2 (L, FIXED) — cap-trigger language reconciled
+
+**Fix applied** — story 4.23 + architecture §12.12 now describe the cap-exceeded behavior as
+"daily-tick self-detect routes to 60-day accelerated window when SQLite footprint exceeds the
+300 MB cap" instead of "external push trigger emitted by other Curator components". External
+push surface deferred to Phase 5 as a precision optimization; the daily tick is already
+cap-correcting.
+
+### F3 (L, FIXED) — architecture §12.12 cross-ref to V012
+
+**Fix applied** — §12.12 now points at `V012__phase4_curator_retention.sql` and
+`crates/seasoned-hand-core/src/curator/retention.rs` for the concrete artifacts that close the
+"chosen option B" decision.
+
+### Iter-2 conclusion
+
+All three findings were spec-doc cleanups. No code changes. No new DEBT.
+
+---
+
+## REVIEW iter-3 (Claude, 2026-05-20) — Phase 4 close-out post-execution hardening
+
+> Date: 2026-05-20
+> Reviewer: Claude solo
+> Scope: saturation check after iter-1 wiring + iter-2 spec reconciliation.
+
+### Audit performed
+
+1. `grep -rn "CuratorRetentionJob\|RetentionScheduler\|RetentionConfig" crates/seasoned-hand-server/src/main.rs`
+   → all three appear with concrete spawn site (lines 11, 636, 639, 641). No paper-only close.
+2. `scripts/spec-check.sh` → 8/8 PASS including the Phase 4 curator + retention spec hook
+   that asserts V012 schema, `pub struct CuratorRetentionJob`, and v1.3 reconciliation.
+3. Cross-phase docs (`BASELINE.md`, `AGENTS.md` §13, `CHANGELOG.md` 0.4.0) consistent
+   with `git log` head (`cac131d`) and `specs/phase-4/DEBT.md` F-4.26 close-out matrix.
+4. Residual debt (#76, #91 PARTIAL; #92/#93/#94/#96/#97 DEFERRED) all carry an explicit
+   successor pointer to Phase 5 or H3 capacity-allows scheduling per the close-out matrix.
+5. No other Phase 4 component has tests-only callers (audit: all `pub struct` in
+   `curator/retention.rs` and `curator/mod.rs` have production reachability via
+   `main.rs`).
+
+### Findings summary
+
+None.
+
+### Iter-3 conclusion
+
+Post-execution hardening saturates at iter-3 with zero findings. Phase 4 is now both
+spec-true and production-wired. Iter-1 closed a real M-severity structural gap
+(`CuratorRetentionJob` had no caller); iter-2 cleaned three L-severity spec/code
+drifts; iter-3 confirms saturation.
+
+Codex review of this hardening trail can land once the 5-day rate-limit recovers,
+but the loop is closed from Claude's side.
