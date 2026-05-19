@@ -75,6 +75,17 @@ pub struct CuratorCycleResult {
     pub failures: u32,
     pub elapsed_ms: u64,
     pub quarantines: Vec<CuratorQuarantineRecord>,
+    pub budget_circuit_open: bool,
+    pub budget_month_tokens: u64,
+    pub budget_pct_of_total: f32,
+    pub retrospective_refused_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EmbeddingTelemetry {
+    pub breaker_open: bool,
+    pub embedding_tokens_used: u64,
+    pub total_tokens_used: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,6 +272,10 @@ pub trait EmbeddingReranker: Send + Sync {
         project_id: &str,
         candidates: Vec<DuplicateCandidate>,
     ) -> Result<Vec<RerankedCandidate>, CuratorWorkerError>;
+
+    async fn telemetry_snapshot(&self) -> Option<EmbeddingTelemetry> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1612,6 +1627,17 @@ impl EmbeddingReranker for ProductionEmbeddingReranker {
         });
         Ok(out)
     }
+
+    async fn telemetry_snapshot(&self) -> Option<EmbeddingTelemetry> {
+        let (embedding_tokens_used, total_tokens_used) = *self.usage.lock().await;
+        Some(EmbeddingTelemetry {
+            breaker_open: self
+                .budget
+                .breaker_open(embedding_tokens_used, total_tokens_used),
+            embedding_tokens_used,
+            total_tokens_used,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -1876,6 +1902,7 @@ impl CuratorCycleExecutor for ProductionCuratorCycleExecutor {
             }
         };
 
+        let mut retrospective_refused_reason: Option<String> = None;
         let retrospective = match self
             .retrospective_generator
             .generate_if_due(project_id, _trigger, _backlog_count, self.backlog_threshold)
@@ -1885,6 +1912,8 @@ impl CuratorCycleExecutor for ProductionCuratorCycleExecutor {
                 if let Some(r) = row.as_ref()
                     && r.generation_status == "refused"
                 {
+                    retrospective_refused_reason =
+                        Some("insufficient_citation_coverage".to_string());
                     failures = failures.saturating_add(1);
                     let error =
                         CuratorWorkerError::Executor("llm_refusal: retrospective_refused".into());
@@ -1913,6 +1942,14 @@ impl CuratorCycleExecutor for ProductionCuratorCycleExecutor {
             }
         };
 
+        let embedding_telemetry = self.reranker.telemetry_snapshot().await.unwrap_or_default();
+        let budget_pct_of_total = if embedding_telemetry.total_tokens_used == 0 {
+            0.0
+        } else {
+            embedding_telemetry.embedding_tokens_used as f32
+                / embedding_telemetry.total_tokens_used as f32
+        };
+
         Ok(CuratorCycleResult {
             cycle_id,
             project_id: project_id.to_string(),
@@ -1926,6 +1963,10 @@ impl CuratorCycleExecutor for ProductionCuratorCycleExecutor {
             failures: failures.saturating_add(apply_result.failures),
             elapsed_ms: started.elapsed().as_millis() as u64,
             quarantines,
+            budget_circuit_open: embedding_telemetry.breaker_open,
+            budget_month_tokens: embedding_telemetry.embedding_tokens_used,
+            budget_pct_of_total,
+            retrospective_refused_reason,
         })
     }
 }
@@ -2431,6 +2472,10 @@ impl CuratorCycleExecutor for NoopCycleExecutor {
             failures: 0,
             elapsed_ms: 0,
             quarantines: Vec::new(),
+            budget_circuit_open: false,
+            budget_month_tokens: 0,
+            budget_pct_of_total: 0.0,
+            retrospective_refused_reason: None,
         })
     }
 }
@@ -2523,6 +2568,8 @@ impl ProductionCuratorWorker {
             .executor
             .execute(&self.config.project_id, trigger, backlog_count)
             .await?;
+        self.emit_curation_skill_events(&session_id, &result)
+            .await?;
         for quarantine in &result.quarantines {
             self.events
                 .append(NewEvent {
@@ -2537,6 +2584,36 @@ impl ProductionCuratorWorker {
                         "failure_category": quarantine.failure_category.as_str(),
                         "retry_count": quarantine.retry_count,
                         "detail": quarantine.detail
+                    }),
+                })
+                .await?;
+        }
+        if result.budget_circuit_open {
+            self.events
+                .append(NewEvent {
+                    session_id: session_id.clone(),
+                    event_type: EventType::Misc,
+                    source: "curator".to_string(),
+                    data: json!({
+                        "kind": "curator_budget_circuit_open",
+                        "project_id": result.project_id,
+                        "budget_kind": "embedding_hard_breaker",
+                        "month_tokens": result.budget_month_tokens,
+                        "pct_of_total": result.budget_pct_of_total
+                    }),
+                })
+                .await?;
+        }
+        if let Some(reason) = result.retrospective_refused_reason.as_deref() {
+            self.events
+                .append(NewEvent {
+                    session_id: session_id.clone(),
+                    event_type: EventType::Misc,
+                    source: "curator".to_string(),
+                    data: json!({
+                        "kind": "curator_retrospective_refused",
+                        "project_id": result.project_id,
+                        "reason": reason
                     }),
                 })
                 .await?;
@@ -2559,6 +2636,56 @@ impl ProductionCuratorWorker {
             })
             .await?;
         Ok(result)
+    }
+
+    async fn emit_curation_skill_events(
+        &self,
+        session_id: &str,
+        result: &CuratorCycleResult,
+    ) -> Result<(), CuratorWorkerError> {
+        let cycle_id = result.cycle_id.clone();
+        let decisions = self
+            .db
+            .with_conn(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT decision_type, subject_id, confidence, status
+                     FROM curator_decisions
+                     WHERE cycle_id = ?1
+                     ORDER BY created_at ASC, id ASC",
+                )?;
+                let mut rows = stmt.query([cycle_id])?;
+                let mut out = Vec::new();
+                while let Some(row) = rows.next()? {
+                    let confidence: Option<f32> = row.get(2)?;
+                    out.push((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        confidence.unwrap_or(0.0),
+                        row.get::<_, String>(3)?,
+                    ));
+                }
+                Ok::<_, CuratorWorkerError>(out)
+            })
+            .await?;
+        for (decision_type, subject_id, confidence, status) in decisions {
+            self.events
+                .append(NewEvent {
+                    session_id: session_id.to_string(),
+                    event_type: EventType::Skill,
+                    source: "curator".to_string(),
+                    data: json!({
+                        "kind":"curation_decision",
+                        "project_id": result.project_id,
+                        "cycle_id": result.cycle_id,
+                        "decision_type": decision_type,
+                        "subject_id": subject_id,
+                        "confidence": confidence,
+                        "review_state": status
+                    }),
+                })
+                .await?;
+        }
+        Ok(())
     }
 
     async fn ensure_session(&self, session_id: &str) -> Result<(), CuratorWorkerError> {
@@ -3438,6 +3565,10 @@ mod tests {
                 failures: 7,
                 elapsed_ms: 10,
                 quarantines,
+                budget_circuit_open: false,
+                budget_month_tokens: 0,
+                budget_pct_of_total: 0.0,
+                retrospective_refused_reason: None,
             })
         }
     }
@@ -4065,5 +4196,82 @@ mod tests {
         let boosted = compose_confidence_with_bounds(0.20, 1.0, 0.45);
         assert!(boosted < 0.75);
         assert!(boosted <= 0.65);
+    }
+
+    #[tokio::test]
+    async fn emits_curation_decision_skill_and_curator_misc_taxonomy_events() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_revision_pair(&db, "proj-taxonomy").await;
+        let events = Arc::new(SqliteEventStore::new(db.clone()));
+        let executor = Arc::new(ProductionCuratorCycleExecutor::new(
+            CuratorRuntimeDeps {
+                candidate_builder: Arc::new(StubCandidateBuilder),
+                reranker: Arc::new(StubMergeKeepReranker),
+                consolidation_engine: Arc::new(SqliteConsolidationEngine::new(db.clone())),
+                conflict_detector: Arc::new(StubNoopConflictDetector),
+                retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
+                work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
+                operator_review_queue: Arc::new(StubNoopOperatorReviewQueue),
+                knowledge_datasource_writer: Arc::new(StubNoopKnowledgeDatasourceWriter),
+            },
+            50,
+            10,
+        ));
+        let worker = ProductionCuratorWorker::new(
+            CuratorConfig {
+                enabled: true,
+                interval_seconds: 1,
+                backlog_threshold: 10,
+                max_candidates_per_cycle: 50,
+                embedding_budget_monthly_tokens: 50_000,
+                embedding_budget_soft_cap_pct: 0.08,
+                embedding_budget_hard_breaker_pct: 0.12,
+                embedding_model: "text-embedding-3-small".to_string(),
+                project_id: "proj-taxonomy".to_string(),
+            },
+            db.clone(),
+            events.clone(),
+            Arc::new(StubBacklogProbe),
+            executor,
+        );
+        worker
+            .run_once(CuratorTrigger::Manual, 12)
+            .await
+            .expect("run cycle");
+
+        let all = events
+            .query("curator:proj-taxonomy", EventQuery::default())
+            .await
+            .expect("query");
+        assert!(all.iter().any(|e| {
+            e.event_type == EventType::Skill
+                && e.data.get("kind").and_then(serde_json::Value::as_str)
+                    == Some("curation_decision")
+        }));
+        assert!(all.iter().any(|e| {
+            e.event_type == EventType::Misc
+                && e.data.get("kind").and_then(serde_json::Value::as_str)
+                    == Some("curator_cycle_started")
+        }));
+        assert!(all.iter().any(|e| {
+            e.event_type == EventType::Misc
+                && e.data.get("kind").and_then(serde_json::Value::as_str)
+                    == Some("curator_cycle_completed")
+        }));
+
+        db.with_conn(|conn| {
+            let indexed: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM session_search_index
+                     WHERE session_id='curator:proj-taxonomy'
+                       AND event_type='Skill'
+                       AND searchable_text LIKE '%curation_decision%'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("search index count");
+            assert!(indexed >= 1);
+        })
+        .await;
     }
 }

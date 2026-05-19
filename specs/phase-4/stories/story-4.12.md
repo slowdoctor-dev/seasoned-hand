@@ -1,6 +1,6 @@
 # Story 4.12 — Curator telemetry schema + event taxonomy reconciliation
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 4.2, 4.3, 4.5, 4.6, 4.7, 4.8
 > **Phase**: 4

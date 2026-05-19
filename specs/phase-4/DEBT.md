@@ -280,3 +280,19 @@ accountability, not speculative implementation details.
   - evidence:
     `crates/seasoned-hand-core/src/curator/mod.rs` (`apply_with_busy_backoff`,
     batch split guard in `ProductionCuratorCycleExecutor::execute`)
+
+## Story 4.12 close-out (2026-05-19)
+
+- `#88` CLOSED by story 4.12:
+  - Curator emits taxonomy-aligned telemetry events:
+    - `Misc.kind=curator_cycle_started`
+    - `Misc.kind=curator_cycle_completed`
+    - `Misc.kind=curator_decision_quarantined`
+    - `Misc.kind=curator_budget_circuit_open`
+    - `Misc.kind=curator_retrospective_refused`
+  - Curator now emits `Skill.kind=curation_decision` events from cycle decision ledger rows with
+    canonical payload fields (`decision_type`, `subject_id`, `confidence`, `review_state`)
+  - Session-search indexing is regression-tested for `curation_decision` discoverability
+  - evidence:
+    `crates/seasoned-hand-core/src/curator/mod.rs`,
+    `curator::tests::emits_curation_decision_skill_and_curator_misc_taxonomy_events`
