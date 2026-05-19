@@ -104,6 +104,26 @@ impl LlmClient {
         let parsed: ModelList = serde_json::from_slice(&bytes)?;
         Ok(parsed.data)
     }
+
+    pub async fn embedding(&self, req: EmbeddingRequest) -> Result<EmbeddingResponse, LlmError> {
+        let url = format!("{}/embeddings", self.base_url.trim_end_matches('/'));
+        let mut builder = self.http.post(&url).json(&req);
+        if let Some(key) = &self.api_key {
+            builder = builder.bearer_auth(key);
+        }
+        let resp = builder.send().await?;
+        let status = resp.status();
+        let bytes = resp.bytes().await?;
+        if !status.is_success() {
+            let body = String::from_utf8_lossy(&bytes).into_owned();
+            return Err(LlmError::Status {
+                code: status.as_u16(),
+                body,
+            });
+        }
+        let parsed: EmbeddingResponse = serde_json::from_slice(&bytes)?;
+        Ok(parsed)
+    }
 }
 
 #[cfg(test)]

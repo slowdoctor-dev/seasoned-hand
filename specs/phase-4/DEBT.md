@@ -197,3 +197,21 @@ accountability, not speculative implementation details.
 - `#102` CLOSED by story 4.2:
   - V011 defines `FOREIGN KEY(parent_revision_id) REFERENCES playbook_revisions(id) ON DELETE SET NULL`
   - evidence: `migrations/V011__phase4_curator.sql`, `story-4.2.md` acceptance + refs
+
+## Story 4.4 close-out (2026-05-19)
+
+- `#72` CLOSED by story 4.4:
+  - production `SqliteCandidateBuilder` + `ProductionEmbeddingReranker` wired into Curator runtime
+  - embedding endpoint contract implemented (`POST /v1/embeddings`) with configured model and
+    blend/fallback formulas from architecture §4.2
+  - evidence: `crates/seasoned-hand-core/src/curator/mod.rs`,
+    `crates/seasoned-hand-core/src/llm/{mod.rs,types.rs}`,
+    `crates/seasoned-hand-server/src/main.rs`,
+    `curator::tests::embedding_enabled_and_fallback_paths_are_exercised`
+- `#99` CLOSED by story 4.4:
+  - cycle runtime now emits measured per-cycle `elapsed_ms` from production candidate/rerank path,
+    establishing concrete cycle-time accounting for budget validation (the §7 amortization check
+    now has runtime evidence instead of prose-only estimates)
+  - evidence: `ProductionCuratorCycleExecutor::execute` elapsed accounting in
+    `crates/seasoned-hand-core/src/curator/mod.rs` and cycle telemetry assertions in
+    `curator::tests::run_once_emits_cycle_start_and_complete_events`

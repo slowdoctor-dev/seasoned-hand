@@ -239,7 +239,7 @@ Owner: BMAD Analyst pass
 | 4.1 | Phase 4 scaffolds (retroactive doc baseline) | 0.5h | — | done |
 | 4.2 | Atomic slice: V011 + ADR-013 + ARCH v1.3 + taxonomy/FTS/backfill | 3.0h | 4.1 | done |
 | 4.3 | CuratorWorker production runtime + main.rs wiring | 3.0h | 4.2 | done |
-| 4.4 | CandidateBuilder + EmbeddingReranker production wiring | 3.0h | 4.2, 4.3 | ready |
+| 4.4 | CandidateBuilder + EmbeddingReranker production wiring | 3.0h | 4.2, 4.3 | done |
 | 4.5 | ConsolidationEngine with revision-chain writes | 3.0h | 4.2, 4.4 | ready |
 | 4.6 | ConflictDetector production implementation | 2.5h | 4.2, 4.4 | ready |
 | 4.7 | RetrospectiveGenerator weekly cadence + citation validator | 3.0h | 4.2, 4.3, 4.6 | ready |

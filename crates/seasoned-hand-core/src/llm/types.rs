@@ -20,6 +20,12 @@ pub struct ChatCompletionRequest {
     pub top_p: Option<f32>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct EmbeddingRequest {
+    pub model: String,
+    pub input: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
@@ -169,6 +175,27 @@ pub struct Usage {
     pub prompt_tokens: u32,
     #[serde(default)]
     pub completion_tokens: u32,
+    #[serde(default)]
+    pub total_tokens: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmbeddingResponse {
+    pub data: Vec<EmbeddingData>,
+    pub model: String,
+    pub usage: EmbeddingUsage,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmbeddingData {
+    pub index: usize,
+    pub embedding: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmbeddingUsage {
+    #[serde(default)]
+    pub prompt_tokens: u32,
     #[serde(default)]
     pub total_tokens: u32,
 }

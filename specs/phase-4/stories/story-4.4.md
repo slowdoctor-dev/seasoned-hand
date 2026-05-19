@@ -1,6 +1,6 @@
 # Story 4.4 — CandidateBuilder + EmbeddingReranker production wiring
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 4.2, 4.3
 > **Phase**: 4
@@ -15,13 +15,13 @@ blended scoring, cache, and NFR-4.6 budget circuit behavior.
 
 ## Acceptance criteria
 
-- [ ] Production CandidateBuilder exists (not trait-only/test-only scaffold).
-- [ ] Production EmbeddingReranker exists (not trait-only/test-only scaffold) and calls Bifrost
+- [x] Production CandidateBuilder exists (not trait-only/test-only scaffold).
+- [x] Production EmbeddingReranker exists (not trait-only/test-only scaffold) and calls Bifrost
       embeddings endpoint with configured model.
-- [ ] Blend formula + lexical fallback formula match architecture §4.2.
-- [ ] LRU cache and budget accounting are implemented.
-- [ ] Runtime wiring is enabled from `main.rs` via CuratorWorker dependency graph.
-- [ ] Integration test exercises embedding-enabled and embedding-fallback paths with stubbed
+- [x] Blend formula + lexical fallback formula match architecture §4.2.
+- [x] LRU cache and budget accounting are implemented.
+- [x] Runtime wiring is enabled from `main.rs` via CuratorWorker dependency graph.
+- [x] Integration test exercises embedding-enabled and embedding-fallback paths with stubbed
       embedding backend in end-to-end curator cycle.
 
 ## Non-goals

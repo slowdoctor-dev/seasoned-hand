@@ -8,7 +8,8 @@ use seasoned_hand_core::capability::{
     CapabilityProbe, assert_main_supports_tool_calling, warn_implied_slot_capability_mismatches,
 };
 use seasoned_hand_core::curator::{
-    CuratorConfig, NoopCycleExecutor, ProductionCuratorWorker, SqliteBacklogProbe,
+    CuratorConfig, EmbeddingBudget, ProductionCuratorCycleExecutor, ProductionCuratorWorker,
+    ProductionEmbeddingReranker, SqliteBacklogProbe, SqliteCandidateBuilder,
 };
 use seasoned_hand_core::llm::LlmClient;
 use seasoned_hand_core::router::{SlotName, SlotRouter};
@@ -399,15 +400,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(10),
+            max_candidates_per_cycle: std::env::var("SH_CURATOR_MAX_CANDIDATES_PER_CYCLE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(50),
+            embedding_budget_monthly_tokens: std::env::var(
+                "SH_CURATOR_EMBEDDING_BUDGET_MONTHLY_TOKENS",
+            )
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50_000),
+            embedding_budget_soft_cap_pct: std::env::var("SH_CURATOR_EMBEDDING_SOFT_CAP_PCT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.08),
+            embedding_budget_hard_breaker_pct: std::env::var(
+                "SH_CURATOR_EMBEDDING_HARD_BREAKER_PCT",
+            )
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.12),
+            embedding_model: std::env::var("SH_EMBEDDING_MODEL")
+                .unwrap_or_else(|_| "text-embedding-3-small".to_string()),
             project_id: std::env::var("SH_CURATOR_PROJECT_ID")
                 .unwrap_or_else(|_| "default".to_string()),
         };
+        let embedding_slot = state.router.resolve(SlotName::Embedding);
+        let embedding_llm = LlmClient::new(
+            embedding_slot.base_url.clone(),
+            embedding_slot.api_key.clone(),
+        );
+        let candidate_builder = std::sync::Arc::new(SqliteCandidateBuilder::new(state.db.clone()));
+        let reranker = std::sync::Arc::new(ProductionEmbeddingReranker::new(
+            embedding_llm,
+            config.embedding_model.clone(),
+            EmbeddingBudget {
+                monthly_embedding_tokens: config.embedding_budget_monthly_tokens,
+                soft_cap_pct: config.embedding_budget_soft_cap_pct,
+                hard_breaker_pct: config.embedding_budget_hard_breaker_pct,
+            },
+        ));
+        let executor = std::sync::Arc::new(ProductionCuratorCycleExecutor::new(
+            candidate_builder,
+            reranker,
+            config.max_candidates_per_cycle,
+        ));
         let worker = ProductionCuratorWorker::new(
             config.clone(),
             state.db.clone(),
             state.events.clone(),
             std::sync::Arc::new(SqliteBacklogProbe::new(state.db.clone())),
-            std::sync::Arc::new(NoopCycleExecutor),
+            executor,
         );
         let token = curator_shutdown.clone();
         Some(tokio::spawn(async move {
