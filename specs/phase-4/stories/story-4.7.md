@@ -1,6 +1,6 @@
 # Story 4.7 — RetrospectiveGenerator weekly cadence + citation validator
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 4.2, 4.3, 4.6
 > **Phase**: 4
@@ -48,4 +48,4 @@ bash scripts/spec-check.sh
 
 - requirements: F-4.17, F-4.18, NFR-4.8
 - architecture: §2.6, §3.2, §4.4, §11.3, §12.6, §12.7, §12.16
-- debt closed: #75 (partial), #89 (partial), #94 (close)
+- debt closed: #75 (partial), #89 (partial)

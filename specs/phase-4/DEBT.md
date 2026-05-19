@@ -40,6 +40,14 @@ explicitly partially close with evidence.
     prefilter + severity triage writes to `sop_conflicts`.
   - Remaining closure scope stays with story 4.7 retrospective refusal-hardening.
 
+### Story 4.7 execution note
+
+- `#75` **partially closed** by story 4.7 (RetrospectiveGenerator):
+  - Added production retrospective generation with citation coverage validation and refusal on
+    weak evidence (`coverage < 0.95`).
+- `#89` **partially closed** by story 4.7:
+  - Added retrospective-specific refusal prompt/validator path (`[[CIT:<kind>:<id>]]` policy).
+
 ## Categories quick-reference
 
 Phase 4 uses a finer-grained 4-tier scheme. Phase 0-3 used H/M/L. Cross-phase

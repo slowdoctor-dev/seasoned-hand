@@ -11,6 +11,7 @@ use seasoned_hand_core::curator::{
     CuratorConfig, EmbeddingBudget, LlmSemanticAdjudicator, ProductionCuratorCycleExecutor,
     ProductionCuratorWorker, ProductionEmbeddingReranker, SqliteBacklogProbe,
     SqliteCandidateBuilder, SqliteConflictDetector, SqliteConsolidationEngine,
+    SqliteRetrospectiveGenerator,
 };
 use seasoned_hand_core::llm::LlmClient;
 use seasoned_hand_core::router::{SlotName, SlotRouter};
@@ -439,12 +440,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             conflict_slot.base_url.clone(),
             conflict_slot.api_key.clone(),
         );
+        let retrospective_llm = LlmClient::new(
+            conflict_slot.base_url.clone(),
+            conflict_slot.api_key.clone(),
+        );
         let conflict_detector = std::sync::Arc::new(SqliteConflictDetector::new(
             state.db.clone(),
             std::sync::Arc::new(LlmSemanticAdjudicator::new(
                 conflict_llm,
                 conflict_slot.model.clone(),
             )),
+        ));
+        let retrospective_generator = std::sync::Arc::new(SqliteRetrospectiveGenerator::new(
+            state.db.clone(),
+            retrospective_llm,
+            conflict_slot.model.clone(),
         ));
         let reranker = std::sync::Arc::new(ProductionEmbeddingReranker::new(
             embedding_llm,
@@ -460,7 +470,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             reranker,
             consolidation_engine,
             conflict_detector,
+            retrospective_generator,
             config.max_candidates_per_cycle,
+            config.backlog_threshold,
         ));
         let worker = ProductionCuratorWorker::new(
             config.clone(),

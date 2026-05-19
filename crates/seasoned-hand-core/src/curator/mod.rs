@@ -125,6 +125,18 @@ pub struct ConflictFinding {
     pub evidence_json: serde_json::Value,
 }
 
+#[derive(Debug, Clone)]
+pub struct WeeklyRetrospective {
+    pub retrospective_id: String,
+    pub project_id: String,
+    pub week_start: i64,
+    pub week_end: i64,
+    pub content: String,
+    pub citation_coverage: f32,
+    pub generation_status: String,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Error)]
 pub enum CuratorWorkerError {
     #[error("event: {0}")]
@@ -250,6 +262,17 @@ pub trait SemanticAdjudicator: Send + Sync {
         left_text: &str,
         right_text: &str,
     ) -> Result<f32, CuratorWorkerError>;
+}
+
+#[async_trait]
+pub trait RetrospectiveGenerator: Send + Sync {
+    async fn generate_if_due(
+        &self,
+        project_id: &str,
+        trigger: CuratorTrigger,
+        backlog_count: u32,
+        backlog_threshold: u32,
+    ) -> Result<Option<WeeklyRetrospective>, CuratorWorkerError>;
 }
 
 #[derive(Clone)]
@@ -446,6 +469,110 @@ pub struct SqliteConflictDetector {
 impl SqliteConflictDetector {
     pub fn new(db: DbPool, adjudicator: Arc<dyn SemanticAdjudicator>) -> Self {
         Self { db, adjudicator }
+    }
+}
+
+#[derive(Clone)]
+pub struct SqliteRetrospectiveGenerator {
+    db: DbPool,
+    llm: LlmClient,
+    model: String,
+}
+
+impl SqliteRetrospectiveGenerator {
+    pub fn new(db: DbPool, llm: LlmClient, model: String) -> Self {
+        Self { db, llm, model }
+    }
+}
+
+#[async_trait]
+impl RetrospectiveGenerator for SqliteRetrospectiveGenerator {
+    async fn generate_if_due(
+        &self,
+        project_id: &str,
+        trigger: CuratorTrigger,
+        backlog_count: u32,
+        backlog_threshold: u32,
+    ) -> Result<Option<WeeklyRetrospective>, CuratorWorkerError> {
+        let now = now_micros()?;
+        let (week_start, week_end) = current_week_window(now);
+        let last = load_latest_retrospective(&self.db, project_id).await?;
+        let due = retrospective_due(
+            last.as_ref(),
+            trigger,
+            backlog_count,
+            backlog_threshold,
+            now,
+        );
+        if !due {
+            return Ok(None);
+        }
+
+        let summary = build_retrospective_input(&self.db, project_id, week_start, week_end).await?;
+        let content = self.generate_text(&summary).await?;
+        let (coverage, citations) = compute_citation_coverage(&content);
+        let generation_status = if coverage >= 0.95 {
+            "success"
+        } else {
+            "refused"
+        };
+        let persisted = persist_retrospective(
+            &self.db,
+            RetrospectivePersistInput {
+                project_id: project_id.to_string(),
+                week_start,
+                week_end,
+                content,
+                citation_coverage: coverage,
+                generation_status: generation_status.to_string(),
+                citations,
+                created_at: now,
+            },
+        )
+        .await?;
+        Ok(Some(persisted))
+    }
+}
+
+impl SqliteRetrospectiveGenerator {
+    async fn generate_text(&self, summary: &str) -> Result<String, CuratorWorkerError> {
+        let req = ChatCompletionRequest {
+            model: self.model.clone(),
+            messages: vec![
+                Message {
+                    role: Role::System,
+                    content: Some(
+                        "Create a weekly retrospective with claims that include citation tags \
+                         exactly as [[CIT:<kind>:<id>]] where kind is one of event|decision|conflict|task. \
+                         Refuse by returning the word REFUSE if evidence is insufficient."
+                            .to_string(),
+                    ),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::User,
+                    content: Some(summary.to_string()),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            ],
+            tools: None,
+            tool_choice: None,
+            temperature: Some(0.0),
+            max_tokens: Some(700),
+            top_p: None,
+        };
+        let response = self.llm.chat_completion(req).await?;
+        let content = response
+            .choices
+            .first()
+            .and_then(|choice| choice.message.content.as_ref())
+            .cloned()
+            .unwrap_or_else(|| "REFUSE".to_string());
+        Ok(content)
     }
 }
 
@@ -848,7 +975,9 @@ pub struct ProductionCuratorCycleExecutor {
     reranker: Arc<dyn EmbeddingReranker>,
     consolidation_engine: Arc<dyn ConsolidationEngine>,
     conflict_detector: Arc<dyn ConflictDetector>,
+    retrospective_generator: Arc<dyn RetrospectiveGenerator>,
     max_candidates_per_cycle: u32,
+    backlog_threshold: u32,
 }
 
 impl ProductionCuratorCycleExecutor {
@@ -857,14 +986,18 @@ impl ProductionCuratorCycleExecutor {
         reranker: Arc<dyn EmbeddingReranker>,
         consolidation_engine: Arc<dyn ConsolidationEngine>,
         conflict_detector: Arc<dyn ConflictDetector>,
+        retrospective_generator: Arc<dyn RetrospectiveGenerator>,
         max_candidates_per_cycle: u32,
+        backlog_threshold: u32,
     ) -> Self {
         Self {
             candidate_builder,
             reranker,
             consolidation_engine,
             conflict_detector,
+            retrospective_generator,
             max_candidates_per_cycle,
+            backlog_threshold,
         }
     }
 }
@@ -893,16 +1026,256 @@ impl CuratorCycleExecutor for ProductionCuratorCycleExecutor {
             .consolidation_engine
             .apply(project_id, &cycle_id, &decisions)
             .await?;
+        let retrospective = self
+            .retrospective_generator
+            .generate_if_due(project_id, _trigger, _backlog_count, self.backlog_threshold)
+            .await?;
 
         Ok(CuratorCycleResult {
             cycle_id,
             project_id: project_id.to_string(),
-            decisions_total: decisions.len() as u32 + conflicts.len() as u32,
+            decisions_total: decisions.len() as u32
+                + conflicts.len() as u32
+                + u32::from(retrospective.is_some()),
             queued_for_review: apply_result.queued_for_review,
             failures: apply_result.failures,
             elapsed_ms: started.elapsed().as_millis() as u64,
         })
     }
+}
+
+fn current_week_window(now_micros: i64) -> (i64, i64) {
+    let day = 86_400_000_000_i64;
+    let week = 7 * day;
+    let week_start = now_micros - (now_micros.rem_euclid(week));
+    (week_start, week_start + week - 1)
+}
+
+fn retrospective_due(
+    last: Option<&WeeklyRetrospective>,
+    trigger: CuratorTrigger,
+    backlog_count: u32,
+    backlog_threshold: u32,
+    now_micros: i64,
+) -> bool {
+    match last {
+        None => true,
+        Some(last) => {
+            let retry_due = matches!(last.generation_status.as_str(), "error" | "refused")
+                && now_micros.saturating_sub(last.created_at) >= 6 * 3_600_000_000;
+            if retry_due {
+                return true;
+            }
+            let (_, current_week_end) = current_week_window(now_micros);
+            let weekly_due = last.week_end < current_week_end;
+            if weekly_due {
+                return true;
+            }
+            !matches!(trigger, CuratorTrigger::IntervalTick)
+                && backlog_count > backlog_threshold
+                && now_micros.saturating_sub(last.created_at) >= 24 * 3_600_000_000
+        }
+    }
+}
+
+fn citation_kind_valid(kind: &str) -> bool {
+    matches!(kind, "event" | "decision" | "conflict" | "task")
+}
+
+fn compute_citation_coverage(content: &str) -> (f32, Vec<(usize, String, String)>) {
+    if content.trim().eq_ignore_ascii_case("REFUSE") {
+        return (0.0, Vec::new());
+    }
+    let claims: Vec<&str> = content
+        .split('.')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if claims.is_empty() {
+        return (0.0, Vec::new());
+    }
+    let mut cited_claims = 0_u32;
+    let mut citations = Vec::new();
+    for (idx, claim) in claims.iter().enumerate() {
+        let mut has_valid = false;
+        let bytes = claim.as_bytes();
+        let mut i = 0_usize;
+        while i + 7 < bytes.len() {
+            if claim[i..].starts_with("[[CIT:") {
+                let rest = &claim[i + 6..];
+                if let Some(end) = rest.find("]]") {
+                    let body = &rest[..end];
+                    if let Some((kind, id)) = body.split_once(':')
+                        && citation_kind_valid(kind)
+                        && !id.trim().is_empty()
+                    {
+                        has_valid = true;
+                        citations.push((idx, kind.to_string(), id.trim().to_string()));
+                    }
+                    i += 6 + end + 2;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        if has_valid {
+            cited_claims += 1;
+        }
+    }
+    let coverage = cited_claims as f32 / claims.len() as f32;
+    (coverage, citations)
+}
+
+async fn load_latest_retrospective(
+    db: &DbPool,
+    project_id: &str,
+) -> Result<Option<WeeklyRetrospective>, CuratorWorkerError> {
+    let project_id = project_id.to_string();
+    db.with_conn(move |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, project_id, week_start, week_end, content, citation_coverage, generation_status, created_at
+             FROM weekly_retrospectives
+             WHERE project_id = ?
+             ORDER BY created_at DESC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query([project_id])?;
+        if let Some(row) = rows.next()? {
+            return Ok(Some(WeeklyRetrospective {
+                retrospective_id: row.get(0)?,
+                project_id: row.get(1)?,
+                week_start: row.get(2)?,
+                week_end: row.get(3)?,
+                content: row.get(4)?,
+                citation_coverage: row.get(5)?,
+                generation_status: row.get(6)?,
+                created_at: row.get(7)?,
+            }));
+        }
+        Ok(None)
+    })
+    .await
+}
+
+async fn build_retrospective_input(
+    db: &DbPool,
+    project_id: &str,
+    week_start: i64,
+    week_end: i64,
+) -> Result<String, CuratorWorkerError> {
+    let project_id = project_id.to_string();
+    db.with_conn(move |conn| {
+        let decision_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM curator_decisions WHERE project_id = ?1 AND created_at BETWEEN ?2 AND ?3",
+            rusqlite::params![project_id, week_start, week_end],
+            |row| row.get(0),
+        )?;
+        let conflict_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sop_conflicts WHERE project_id = ?1 AND created_at BETWEEN ?2 AND ?3",
+            rusqlite::params![project_id, week_start, week_end],
+            |row| row.get(0),
+        )?;
+        let event_rows: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM session_search_index WHERE session_id LIKE (?1 || '%') AND created_at BETWEEN ?2 AND ?3",
+            rusqlite::params![format!("curator:{project_id}"), week_start, week_end],
+            |row| row.get(0),
+        )?;
+        Ok::<_, CuratorWorkerError>(format!(
+            "Project: {project_id}\nWeek: {week_start}..{week_end}\nDecisions: {decision_count}\nConflicts: {conflict_count}\nEvents: {event_rows}\nCompose factual retrospective claims with citations."
+        ))
+    })
+    .await
+}
+
+async fn persist_retrospective(
+    db: &DbPool,
+    input: RetrospectivePersistInput,
+) -> Result<WeeklyRetrospective, CuratorWorkerError> {
+    let project_id = input.project_id;
+    let week_start = input.week_start;
+    let week_end = input.week_end;
+    let content = input.content;
+    let citation_coverage = input.citation_coverage;
+    let generation_status = input.generation_status;
+    let citations = input.citations;
+    let created_at = input.created_at;
+    db.with_conn(move |conn| {
+        conn.execute_batch("BEGIN IMMEDIATE;")?;
+        let old_id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM weekly_retrospectives WHERE project_id=?1 AND week_start=?2 AND week_end=?3",
+                rusqlite::params![project_id, week_start, week_end],
+                |row| row.get(0),
+            )
+            .ok();
+        if let Some(old_id) = old_id {
+            conn.execute(
+                "DELETE FROM retrospective_citations WHERE retrospective_id = ?1",
+                [old_id],
+            )?;
+        }
+        let retrospective_id = format!("retro-{}", uuid::Uuid::new_v4());
+        conn.execute(
+            "INSERT INTO weekly_retrospectives (
+                id, tenant_id, project_id, week_start, week_end, content,
+                citation_coverage, generation_status, created_at
+            ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT(project_id, week_start, week_end) DO UPDATE SET
+                id = excluded.id,
+                content = excluded.content,
+                citation_coverage = excluded.citation_coverage,
+                generation_status = excluded.generation_status,
+                created_at = excluded.created_at",
+            rusqlite::params![
+                retrospective_id,
+                project_id,
+                week_start,
+                week_end,
+                content,
+                citation_coverage,
+                generation_status,
+                created_at
+            ],
+        )?;
+
+        for (claim_index, kind, citation_ref) in citations {
+            conn.execute(
+                "INSERT INTO retrospective_citations (
+                    id, tenant_id, retrospective_id, claim_index, citation_kind, citation_ref, snippet
+                ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, NULL)",
+                rusqlite::params![
+                    format!("rc-{}", uuid::Uuid::new_v4()),
+                    retrospective_id,
+                    i64::try_from(claim_index).unwrap_or(0),
+                    kind,
+                    citation_ref
+                ],
+            )?;
+        }
+        conn.execute_batch("COMMIT;")?;
+        Ok::<_, CuratorWorkerError>(WeeklyRetrospective {
+            retrospective_id,
+            project_id,
+            week_start,
+            week_end,
+            content,
+            citation_coverage,
+            generation_status,
+            created_at,
+        })
+    })
+    .await
+}
+
+struct RetrospectivePersistInput {
+    project_id: String,
+    week_start: i64,
+    week_end: i64,
+    content: String,
+    citation_coverage: f32,
+    generation_status: String,
+    citations: Vec<(usize, String, String)>,
+    created_at: i64,
 }
 
 async fn persist_conflict(
@@ -1399,7 +1772,9 @@ mod tests {
             reranker,
             consolidation,
             Arc::new(StubNoopConflictDetector),
+            Arc::new(StubNoopRetrospectiveGenerator),
             50,
+            10,
         ));
 
         let worker = ProductionCuratorWorker::new(
@@ -1532,7 +1907,9 @@ mod tests {
             reranker,
             consolidation,
             Arc::new(StubNoopConflictDetector),
+            Arc::new(StubNoopRetrospectiveGenerator),
             50,
+            10,
         ));
         let worker = ProductionCuratorWorker::new(
             CuratorConfig {
@@ -1718,6 +2095,62 @@ mod tests {
         }
     }
 
+    struct StubNoopRetrospectiveGenerator;
+
+    #[async_trait]
+    impl RetrospectiveGenerator for StubNoopRetrospectiveGenerator {
+        async fn generate_if_due(
+            &self,
+            _project_id: &str,
+            _trigger: CuratorTrigger,
+            _backlog_count: u32,
+            _backlog_threshold: u32,
+        ) -> Result<Option<WeeklyRetrospective>, CuratorWorkerError> {
+            Ok(None)
+        }
+    }
+
+    struct StubRetrospectiveGenerator {
+        mode: &'static str,
+    }
+
+    #[async_trait]
+    impl RetrospectiveGenerator for StubRetrospectiveGenerator {
+        async fn generate_if_due(
+            &self,
+            project_id: &str,
+            _trigger: CuratorTrigger,
+            _backlog_count: u32,
+            _backlog_threshold: u32,
+        ) -> Result<Option<WeeklyRetrospective>, CuratorWorkerError> {
+            let now = now_micros()?;
+            let (week_start, week_end) = current_week_window(now);
+            let (content, coverage, status) = match self.mode {
+                "success" => (
+                    "Claim A [[CIT:event:e1]]. Claim B [[CIT:decision:d1]].".to_string(),
+                    1.0,
+                    "success".to_string(),
+                ),
+                "refused" => ("REFUSE".to_string(), 0.0, "refused".to_string()),
+                _ => (
+                    "Claim X [[CIT:event:e9]].".to_string(),
+                    1.0,
+                    "success".to_string(),
+                ),
+            };
+            Ok(Some(WeeklyRetrospective {
+                retrospective_id: format!("retro-{}", uuid::Uuid::new_v4()),
+                project_id: project_id.to_string(),
+                week_start,
+                week_end,
+                content,
+                citation_coverage: coverage,
+                generation_status: status,
+                created_at: now,
+            }))
+        }
+    }
+
     #[tokio::test]
     async fn e2e_cycle_conflict_detector_covers_conflict_and_non_conflict_paths() {
         let db = db::open(":memory:").await.expect("db");
@@ -1753,7 +2186,9 @@ mod tests {
             reranker,
             consolidation,
             conflict_detector,
+            Arc::new(StubNoopRetrospectiveGenerator),
             50,
+            10,
         ));
         let worker = ProductionCuratorWorker::new(
             CuratorConfig {
@@ -1822,7 +2257,9 @@ mod tests {
             reranker2,
             consolidation2,
             conflict_detector2,
+            Arc::new(StubNoopRetrospectiveGenerator),
             50,
+            10,
         ));
         let worker2 = ProductionCuratorWorker::new(
             CuratorConfig {
@@ -1857,5 +2294,118 @@ mod tests {
             assert_eq!(count, 0);
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn e2e_cycle_retrospective_success_refusal_and_retry_paths() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_revision_pair(&db, "proj-retro").await;
+
+        let build_worker = |mode: &'static str, project_id: &str, db: DbPool| {
+            let events = Arc::new(SqliteEventStore::new(db.clone()));
+            let builder = Arc::new(SqliteCandidateBuilder::new(db.clone()));
+            let reranker = Arc::new(TestReranker::new(true));
+            let consolidation = Arc::new(SqliteConsolidationEngine::new(db.clone()));
+            let conflict_detector = Arc::new(StubNoopConflictDetector);
+            let retrospective = Arc::new(StubRetrospectiveGenerator { mode });
+            let executor = Arc::new(ProductionCuratorCycleExecutor::new(
+                builder,
+                reranker,
+                consolidation,
+                conflict_detector,
+                retrospective,
+                50,
+                10,
+            ));
+            ProductionCuratorWorker::new(
+                CuratorConfig {
+                    enabled: true,
+                    interval_seconds: 1,
+                    backlog_threshold: 10,
+                    max_candidates_per_cycle: 50,
+                    embedding_budget_monthly_tokens: 50_000,
+                    embedding_budget_soft_cap_pct: 0.08,
+                    embedding_budget_hard_breaker_pct: 0.12,
+                    embedding_model: "text-embedding-3-small".to_string(),
+                    project_id: project_id.to_string(),
+                },
+                db.clone(),
+                events,
+                Arc::new(StubBacklogProbe),
+                executor,
+            )
+        };
+        let worker_success = build_worker("success", "proj-retro", db.clone());
+        let success = worker_success
+            .run_once(CuratorTrigger::Manual, 12)
+            .await
+            .expect("success run");
+        assert!(success.decisions_total >= 2);
+
+        let worker_refused = build_worker("refused", "proj-retro", db.clone());
+        let refused = worker_refused
+            .run_once(CuratorTrigger::Manual, 12)
+            .await
+            .expect("refused run");
+        assert!(refused.decisions_total >= 2);
+
+        let worker_noop = ProductionCuratorWorker::new(
+            CuratorConfig {
+                enabled: true,
+                interval_seconds: 1,
+                backlog_threshold: 10,
+                max_candidates_per_cycle: 50,
+                embedding_budget_monthly_tokens: 50_000,
+                embedding_budget_soft_cap_pct: 0.08,
+                embedding_budget_hard_breaker_pct: 0.12,
+                embedding_model: "text-embedding-3-small".to_string(),
+                project_id: "proj-retro".to_string(),
+            },
+            db.clone(),
+            Arc::new(SqliteEventStore::new(db.clone())),
+            Arc::new(StubBacklogProbe),
+            Arc::new(ProductionCuratorCycleExecutor::new(
+                Arc::new(SqliteCandidateBuilder::new(db.clone())),
+                Arc::new(TestReranker::new(true)),
+                Arc::new(SqliteConsolidationEngine::new(db.clone())),
+                Arc::new(StubNoopConflictDetector),
+                Arc::new(StubNoopRetrospectiveGenerator),
+                50,
+                10,
+            )),
+        );
+
+        let no_retro = worker_noop
+            .run_once(CuratorTrigger::Manual, 12)
+            .await
+            .expect("no retrospective run");
+        assert!(no_retro.decisions_total >= 1);
+
+        let (coverage_refused, _) = compute_citation_coverage("No citation claim.");
+        assert!(coverage_refused < 0.95);
+        let (coverage_success, citations) =
+            compute_citation_coverage("Claim [[CIT:event:e1]]. Claim [[CIT:decision:d1]].");
+        assert!(coverage_success >= 0.95);
+        assert_eq!(citations.len(), 2);
+
+        let now = now_micros().expect("now");
+        let one_hour = 3_600_000_000_i64;
+        let stale = WeeklyRetrospective {
+            retrospective_id: "retro-stale".to_string(),
+            project_id: "proj-retro".to_string(),
+            week_start: current_week_window(now).0,
+            week_end: current_week_window(now).1,
+            content: "REFUSE".to_string(),
+            citation_coverage: 0.0,
+            generation_status: "refused".to_string(),
+            created_at: now - (7 * one_hour),
+        };
+        assert!(retrospective_due(
+            Some(&stale),
+            CuratorTrigger::IntervalTick,
+            0,
+            10,
+            now
+        ));
     }
 }
