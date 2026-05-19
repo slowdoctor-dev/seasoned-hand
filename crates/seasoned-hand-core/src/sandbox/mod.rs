@@ -592,7 +592,7 @@ impl SandboxClient {
 ///
 /// We also reject null bytes (Rust `Path` would silently accept them
 /// but the underlying OS calls truncate at them).
-fn normalize_workspace_relative_path(path: &str) -> Result<&str, SandboxError> {
+pub(crate) fn normalize_workspace_relative_path(path: &str) -> Result<&str, SandboxError> {
     if path.contains('\0') {
         return Err(SandboxError::InvalidWorkspace(format!(
             "null byte in path: {path:?}"

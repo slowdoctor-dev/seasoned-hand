@@ -203,7 +203,14 @@ async fn ensure_dir(
         .get(session_id)
         .await
         .ok_or_else(|| SandboxError::NotFound(session_id.to_string()))?;
-    let path = handle.workspace_host_path.join(relative);
+    // Phase 4 security hardening iter-1 F1: defense-in-depth. Today all
+    // call sites pass the hardcoded `DELIVERABLES_DIR` / `SOURCE_SUBDIR`
+    // constants, so the join is safe — but the function shape invites a
+    // future regression. Routing through the same per-component `..`
+    // rejector that `read_workspace_file` / `write_workspace_file` use
+    // makes this an actively safe primitive instead of a future footgun.
+    let safe_relative = crate::sandbox::normalize_workspace_relative_path(relative)?;
+    let path = handle.workspace_host_path.join(safe_relative);
     tokio::fs::create_dir_all(&path).await?;
     Ok(())
 }

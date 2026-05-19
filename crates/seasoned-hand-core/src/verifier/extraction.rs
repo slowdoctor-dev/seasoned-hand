@@ -27,8 +27,40 @@ static PHONE_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static IPV4_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").expect("valid regex"));
+// Phase 4 security hardening iter-1 F3: the original pattern required at
+// least two `xxxx:` groups before the elision, which silently missed the
+// common short forms `::1`, `fe80::1`, and `::ffff:192.0.2.1`. The
+// alternation here catches three shapes the redactor was previously
+// blind to:
+//   1. full forms with >=2 leading groups (the original case)
+//   2. `::`-prefixed elision forms (`::1`, `::ffff:...`)
+//   3. `xxxx::yyy` short forms with elision after the first group
+//      (`fe80::1`, `2001:db8::1` is already covered by branch 1)
 static IPV6_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:[0-9A-Fa-f]{1,4}:){2,}[0-9A-Fa-f:]{1,4}\b").expect("valid regex")
+    Regex::new(
+        r"(?x)
+        (?:
+            \b(?:[0-9A-Fa-f]{1,4}:){2,}[0-9A-Fa-f:]{1,4}\b
+          | ::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?(?:\.\d{1,3}(?:\.\d{1,3}){2})?
+          | \b[0-9A-Fa-f]{1,4}::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?\b
+        )
+        ",
+    )
+    .expect("valid regex")
+});
+// Phase 4 security hardening iter-1 F2: PEM-encoded private key blocks
+// were not caught — the BEGIN/END markers were preserved verbatim and
+// only the embedded base64 body chunks would be partially caught by
+// TOKEN_SHAPE_RE (and only when each chunk exceeded the 32-char floor
+// AND used the unpadded url-safe alphabet). A leaked OPENSSH / RSA /
+// EC / DSA / PGP private key in an extracted playbook would be a
+// catastrophic credential leak. `(?s)` lets `.` cross newlines so the
+// full PEM block (header + body + footer) is replaced as one unit.
+static PRIVATE_KEY_PEM_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY[A-Z0-9 ]*-----.*?-----END [A-Z0-9 ]*PRIVATE KEY[A-Z0-9 ]*-----",
+    )
+    .expect("valid regex")
 });
 // Phase 3 REVIEW iter-1 F5: expand beyond Authorization:Bearer + X-Api-Key
 // to cover the other commonly-leaked secret-bearing header shapes.
@@ -138,13 +170,23 @@ pub fn redact_pii(text: &str) -> (String, Option<RedactionReport>) {
     let mut rewritten = text.to_string();
     let mut categories = BTreeSet::new();
     let mut count = 0usize;
+    // Order matters: redact PEM private key blocks first so the long
+    // base64 body inside doesn't get partially rewritten by TOKEN_SHAPE_RE
+    // before the whole block is recognized. Auth headers run before
+    // TOKEN_SHAPE_RE for the same reason — they carry the named-secret
+    // metadata that the generic token pattern would erase.
     for (category, pattern, replacement) in [
+        (
+            "private_key",
+            &*PRIVATE_KEY_PEM_RE,
+            "[REDACTED_PRIVATE_KEY]",
+        ),
+        ("api_key", &*AUTH_HEADER_RE, "[REDACTED_AUTH_HEADER]"),
         ("token", &*TOKEN_SHAPE_RE, "[REDACTED_TOKEN]"),
         ("email", &*EMAIL_RE, "[REDACTED_EMAIL]"),
         ("phone", &*PHONE_RE, "[REDACTED_PHONE]"),
         ("ip", &*IPV4_RE, "[REDACTED_IP]"),
         ("ip", &*IPV6_RE, "[REDACTED_IP]"),
-        ("api_key", &*AUTH_HEADER_RE, "[REDACTED_AUTH_HEADER]"),
     ] {
         let matches = pattern.find_iter(&rewritten).count();
         if matches > 0 {
@@ -244,6 +286,60 @@ mod tests {
             detect_adversarial("QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo9PT09PT09PT0="),
             Some("base64_blob".to_string())
         );
+    }
+
+    #[test]
+    fn pii_redaction_catches_pem_private_keys() {
+        // Phase 4 security hardening iter-1 F2: before this fix, the BEGIN/END
+        // markers were preserved verbatim and only the long base64 chunks
+        // inside might have been partially caught by TOKEN_SHAPE_RE.
+        let pem = "config:\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXkt\nQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUd\n-----END OPENSSH PRIVATE KEY-----\nuser=admin";
+        let (redacted, report) = redact_pii(pem);
+        let report = report.expect("expected redaction report");
+        assert!(
+            redacted.contains("[REDACTED_PRIVATE_KEY]"),
+            "PEM block must be redacted as a whole; got {redacted:?}"
+        );
+        assert!(
+            !redacted.contains("BEGIN OPENSSH"),
+            "marker must not leak into extracted playbooks"
+        );
+        assert!(report.categories.iter().any(|c| c == "private_key"));
+
+        // Also confirm RSA/EC variants are caught (markers in {BEGIN,END}
+        // PRIVATE KEY style).
+        for marker in &["RSA", "EC", "DSA", "ENCRYPTED"] {
+            let body = format!(
+                "-----BEGIN {marker} PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9\n-----END {marker} PRIVATE KEY-----"
+            );
+            let (out, rep) = redact_pii(&body);
+            assert!(
+                out.contains("[REDACTED_PRIVATE_KEY]"),
+                "marker {marker} not redacted; got {out:?}"
+            );
+            assert!(rep.is_some());
+        }
+    }
+
+    #[test]
+    fn pii_redaction_catches_ipv6_short_forms() {
+        // Phase 4 security hardening iter-1 F3: before this fix, the IPv6
+        // regex required >=2 `xxxx:` groups before the elision, so the
+        // most common short forms slipped through silently.
+        for sample in &[
+            "ping ::1 for localhost",
+            "host fe80::1 is link-local",
+            "mapped ::ffff:192.0.2.1 form",
+            "expanded 2001:db8::1 form",
+        ] {
+            let (redacted, report) = redact_pii(sample);
+            let report = report.unwrap_or_else(|| panic!("no redaction on '{sample}'"));
+            assert!(
+                redacted.contains("[REDACTED_IP]"),
+                "ipv6 not redacted in '{sample}'; got {redacted:?}"
+            );
+            assert!(report.categories.iter().any(|c| c == "ip"));
+        }
     }
 
     #[test]
