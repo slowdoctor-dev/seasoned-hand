@@ -4922,4 +4922,262 @@ mod tests {
              ({archive_fp}/{archive_decisions})"
         );
     }
+
+    // Story 4.17 — Revision-chain integrity regression.
+    //
+    // Pins F-4.7 / DEBT #102 closure behavior:
+    //   1. playbook_revisions.parent_revision_id FK is enforced (orphan rejected).
+    //   2. ON DELETE SET NULL drops the parent pointer when the parent is removed.
+    //   3. playbook_revision_outcomes keys on revision_id, not playbook_id; outcomes
+    //      survive parent/child revisions independently.
+    //   4. Consolidation applied merges record target_revision_id consistently in
+    //      curator_decisions and the target revision actually exists.
+    //   5. Lineage traversal walks parent_revision_id back to a NULL root.
+    #[tokio::test]
+    async fn revision_chain_integrity_rejects_orphan_parent() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_revision_pair(&db, "proj-rev-int").await;
+
+        // Insert a revision whose parent_revision_id does not exist.
+        let outcome = db
+            .with_conn(|conn| -> Result<(), rusqlite::Error> {
+                conn.execute(
+                    "INSERT INTO playbook_revisions (
+                        id, tenant_id, playbook_id, revision_no, parent_revision_id,
+                        title, trigger_keywords, content, source_task_id, source_project_id,
+                        author_type, change_kind, confidence, created_at, superseded_at
+                     ) VALUES (
+                        'rev-orphan', NULL, 'pb-l', 2, 'rev-DOES-NOT-EXIST',
+                        'Orphan', '[]', 'orphan content', NULL, 'proj-rev-int',
+                        'curator', 'improve', 0.9, 1, NULL
+                     )",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await;
+
+        assert!(
+            outcome.is_err(),
+            "FK constraint must reject parent_revision_id pointing to non-existent revision"
+        );
+    }
+
+    #[tokio::test]
+    async fn revision_chain_integrity_parent_set_null_on_delete() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_revision_pair(&db, "proj-rev-cascade").await;
+
+        // Insert rev-l-2 as a child of rev-l-1.
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO playbook_revisions (
+                    id, tenant_id, playbook_id, revision_no, parent_revision_id,
+                    title, trigger_keywords, content, source_task_id, source_project_id,
+                    author_type, change_kind, confidence, created_at, superseded_at
+                 ) VALUES (
+                    'rev-l-2', NULL, 'pb-l', 2, 'rev-l-1',
+                    'Left v2', '[\"refund\"]', 'Updated content for left', NULL, 'proj-rev-cascade',
+                    'curator', 'improve', 0.85, 2, NULL
+                 )",
+                [],
+            )
+            .expect("insert child revision");
+        })
+        .await;
+
+        // Delete the parent rev-l-1.
+        db.with_conn(|conn| {
+            conn.execute("DELETE FROM playbook_revisions WHERE id = 'rev-l-1'", [])
+                .expect("delete parent revision");
+        })
+        .await;
+
+        // rev-l-2.parent_revision_id should now be NULL per ON DELETE SET NULL.
+        db.with_conn(|conn| {
+            let parent: Option<String> = conn
+                .query_row(
+                    "SELECT parent_revision_id FROM playbook_revisions WHERE id = 'rev-l-2'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("query child after parent delete");
+            assert!(
+                parent.is_none(),
+                "ON DELETE SET NULL must drop parent_revision_id pointer; got {parent:?}"
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn revision_chain_outcomes_key_on_revision_id() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_revision_pair(&db, "proj-rev-outcome").await;
+
+        // Insert one outcome row per revision; they survive independently even when
+        // they share the same playbook_id parent.
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO playbook_revision_outcomes (revision_id, tenant_id,
+                    success_count, failure_count, decayed_success, decayed_failure,
+                    last_outcome_at)
+                 VALUES ('rev-l-1', NULL, 5, 1, 4.5, 0.9, 100)",
+                [],
+            )
+            .expect("insert left outcome");
+            conn.execute(
+                "INSERT INTO playbook_revision_outcomes (revision_id, tenant_id,
+                    success_count, failure_count, decayed_success, decayed_failure,
+                    last_outcome_at)
+                 VALUES ('rev-r-1', NULL, 8, 3, 7.2, 2.8, 200)",
+                [],
+            )
+            .expect("insert right outcome");
+
+            // PRIMARY KEY(revision_id) — second insert for same revision_id must fail.
+            let dup = conn.execute(
+                "INSERT INTO playbook_revision_outcomes (revision_id, tenant_id,
+                    success_count, failure_count, decayed_success, decayed_failure,
+                    last_outcome_at)
+                 VALUES ('rev-l-1', NULL, 99, 99, 0.0, 0.0, 999)",
+                [],
+            );
+            assert!(
+                dup.is_err(),
+                "PRIMARY KEY(revision_id) must reject duplicate outcome inserts"
+            );
+
+            // Confirm the original rows survived the dup-insert attempt.
+            let (left_s, left_f): (i64, i64) = conn
+                .query_row(
+                    "SELECT success_count, failure_count
+                     FROM playbook_revision_outcomes WHERE revision_id = 'rev-l-1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("left outcome preserved");
+            assert_eq!(left_s, 5);
+            assert_eq!(left_f, 1);
+
+            let (right_s, right_f): (i64, i64) = conn
+                .query_row(
+                    "SELECT success_count, failure_count
+                     FROM playbook_revision_outcomes WHERE revision_id = 'rev-r-1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("right outcome preserved");
+            assert_eq!(right_s, 8);
+            assert_eq!(right_f, 3);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn revision_chain_consolidation_target_consistency() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_revision_pair(&db, "proj-rev-target").await;
+
+        let engine =
+            SqliteConsolidationEngine::new(db.clone()).with_archive_policy(false, 0.40, 0.55);
+        let decision = ConsolidationDecision {
+            decision_id: "cd-target-consistency".to_string(),
+            kind: ConsolidationDecisionKind::Merge,
+            subject_revision_ids: vec!["rev-l-1".to_string(), "rev-r-1".to_string()],
+            target_revision_id: Some("rev-l-1".to_string()),
+            confidence: 0.92,
+            rationale_json: json!({"policy":"story_4_17_target_consistency"}),
+            requires_review: false,
+        };
+        let result = engine
+            .apply("proj-rev-target", "cycle-target-test", &[decision])
+            .await
+            .expect("apply merge");
+        assert_eq!(result.applied, 1);
+
+        // curator_decisions row records the target revision; that revision must
+        // still exist in playbook_revisions (consolidation cannot orphan its target).
+        db.with_conn(|conn| {
+            let target: String = conn
+                .query_row(
+                    "SELECT subject_id FROM curator_decisions
+                     WHERE id = 'cd-target-consistency'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("subject_id recorded");
+            assert_eq!(target, "rev-l-1");
+
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM playbook_revisions WHERE id = ?",
+                    [target.as_str()],
+                    |row| row.get(0),
+                )
+                .expect("target lookup");
+            assert_eq!(
+                exists, 1,
+                "F-4.6 target_revision_id must reference a live revision row"
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn revision_chain_lineage_traversal_walks_to_null_root() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_revision_pair(&db, "proj-rev-lineage").await;
+
+        // Build a 3-revision chain on pb-l: rev-l-1 (NULL root) -> rev-l-2 -> rev-l-3.
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO playbook_revisions (
+                    id, tenant_id, playbook_id, revision_no, parent_revision_id,
+                    title, trigger_keywords, content, source_task_id, source_project_id,
+                    author_type, change_kind, confidence, created_at, superseded_at
+                 ) VALUES (
+                    'rev-l-2', NULL, 'pb-l', 2, 'rev-l-1',
+                    'Left v2', '[\"refund\"]', 'Updated', NULL, 'proj-rev-lineage',
+                    'curator', 'improve', 0.85, 2, NULL
+                 )",
+                [],
+            )
+            .expect("rev-l-2 insert");
+            conn.execute(
+                "INSERT INTO playbook_revisions (
+                    id, tenant_id, playbook_id, revision_no, parent_revision_id,
+                    title, trigger_keywords, content, source_task_id, source_project_id,
+                    author_type, change_kind, confidence, created_at, superseded_at
+                 ) VALUES (
+                    'rev-l-3', NULL, 'pb-l', 3, 'rev-l-2',
+                    'Left v3', '[\"refund\"]', 'Updated again', NULL, 'proj-rev-lineage',
+                    'curator', 'improve', 0.91, 3, NULL
+                 )",
+                [],
+            )
+            .expect("rev-l-3 insert");
+        })
+        .await;
+
+        // Walk lineage from rev-l-3 backwards; expect 3 hops ending at NULL.
+        let lineage: Vec<String> = db
+            .with_conn(|conn| -> Result<Vec<String>, rusqlite::Error> {
+                let mut chain = Vec::new();
+                let mut current: Option<String> = Some("rev-l-3".to_string());
+                while let Some(id) = current {
+                    chain.push(id.clone());
+                    current = conn.query_row(
+                        "SELECT parent_revision_id FROM playbook_revisions WHERE id = ?",
+                        [id.as_str()],
+                        |row| row.get::<_, Option<String>>(0),
+                    )?;
+                }
+                Ok(chain)
+            })
+            .await
+            .expect("lineage walk");
+
+        assert_eq!(lineage, vec!["rev-l-3", "rev-l-2", "rev-l-1"]);
+    }
 }

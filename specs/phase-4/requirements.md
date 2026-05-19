@@ -251,8 +251,8 @@ Owner: BMAD Analyst pass
 | 4.13 | Auto-archive policy engine + reversibility | 2.5h | 4.5, 4.9, 4.12 | done |
 | 4.14 | Strict SH_CURATOR_* config parsing + feature flags | 2.0h | 4.3 | done |
 | 4.15 | Project-scope isolation enforcement regression | 1.5h | 4.2, 4.3, 4.5, 4.10 | done |
-| 4.16 | NFR-4.7 false-positive audit harness | 2.5h | 4.5, 4.13 | ready |
-| 4.17 | Revision-chain integrity regression | 2.0h | 4.2, 4.5 | ready |
+| 4.16 | NFR-4.7 false-positive audit harness | 2.5h | 4.5, 4.13 | done |
+| 4.17 | Revision-chain integrity regression | 2.0h | 4.2, 4.5 | done |
 | 4.18 | curator_search_fts maintenance-trigger correctness regression | 1.5h | 4.2 | ready |
 | 4.19 | Review queue state-machine regression + suppression TTL | 1.5h | 4.9 | ready |
 | 4.20 | Embedding cost circuit-breaker regression | 2.0h | 4.4, 4.14 | ready |

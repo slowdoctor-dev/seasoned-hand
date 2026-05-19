@@ -1,6 +1,6 @@
 # Story 4.17 — Revision-chain integrity regression
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 4.2, 4.5
 > **Phase**: 4
