@@ -253,7 +253,7 @@ Owner: BMAD Analyst pass
 | 4.15 | Project-scope isolation enforcement regression | 1.5h | 4.2, 4.3, 4.5, 4.10 | done |
 | 4.16 | NFR-4.7 false-positive audit harness | 2.5h | 4.5, 4.13 | done |
 | 4.17 | Revision-chain integrity regression | 2.0h | 4.2, 4.5 | done |
-| 4.18 | curator_search_fts maintenance-trigger correctness regression | 1.5h | 4.2 | ready |
+| 4.18 | curator_search_fts maintenance-trigger correctness regression | 1.5h | 4.2 | done |
 | 4.19 | Review queue state-machine regression + suppression TTL | 1.5h | 4.9 | ready |
 | 4.20 | Embedding cost circuit-breaker regression | 2.0h | 4.4, 4.14 | ready |
 | 4.21 | phase4_warm_full_loop_benchmark | 3.0h | 4.3, 4.4, 4.5, 4.7, 4.8, 4.10, 4.12, 4.13 | ready |

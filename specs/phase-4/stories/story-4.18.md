@@ -1,6 +1,6 @@
 # Story 4.18 — curator_search_fts maintenance-trigger correctness regression
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 1.5 hours
 > **Dependencies**: 4.2
 > **Phase**: 4

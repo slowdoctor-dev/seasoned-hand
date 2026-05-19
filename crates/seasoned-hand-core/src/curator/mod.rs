@@ -5180,4 +5180,224 @@ mod tests {
 
         assert_eq!(lineage, vec!["rev-l-3", "rev-l-2", "rev-l-1"]);
     }
+
+    // Story 4.18 — curator_search_fts maintenance-trigger correctness regression.
+    //
+    // V011's curator_search_index is an external-content FTS5 surface (content =
+    // 'curator_search_index') so writes are only mirrored into curator_search_fts
+    // via the ai/ad/au triggers. If those triggers regress, operator search
+    // silently misses curator decisions / reviews / patterns. Mirror of Phase 3
+    // story 3.14's playbooks_fts trigger-correctness pattern.
+    //
+    // Helpers below count FTS matches via the standard match query shape
+    // operators will use (MATCH 'token').
+
+    async fn count_curator_fts_matches(db: &DbPool, query: &str) -> i64 {
+        let query = query.to_string();
+        db.with_conn(move |conn| -> Result<i64, rusqlite::Error> {
+            conn.query_row(
+                "SELECT COUNT(*) FROM curator_search_fts WHERE curator_search_fts MATCH ?",
+                [query.as_str()],
+                |row| row.get(0),
+            )
+        })
+        .await
+        .expect("fts count")
+    }
+
+    async fn insert_curator_search_row(
+        db: &DbPool,
+        row_id: i64,
+        project_id: &str,
+        source_type: &str,
+        source_id: &str,
+        text: &str,
+        created_at: i64,
+    ) {
+        let project_id = project_id.to_string();
+        let source_type = source_type.to_string();
+        let source_id = source_id.to_string();
+        let text = text.to_string();
+        db.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO curator_search_index (
+                    row_id, tenant_id, project_id, source_type, source_id, searchable_text, created_at
+                 ) VALUES (?, NULL, ?, ?, ?, ?, ?)",
+                rusqlite::params![row_id, project_id, source_type, source_id, text, created_at],
+            )
+            .expect("insert curator_search_index row");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn curator_search_fts_ai_trigger_makes_inserted_text_searchable() {
+        let db = db::open(":memory:").await.expect("db");
+        insert_curator_search_row(
+            &db,
+            1,
+            "proj-fts-ai",
+            "decision",
+            "cd-1",
+            "stripe refund consolidation merge",
+            1_000_000,
+        )
+        .await;
+
+        assert_eq!(count_curator_fts_matches(&db, "stripe").await, 1);
+        assert_eq!(count_curator_fts_matches(&db, "consolidation").await, 1);
+        assert_eq!(count_curator_fts_matches(&db, "nonexistent").await, 0);
+    }
+
+    #[tokio::test]
+    async fn curator_search_fts_au_trigger_updates_visible_text() {
+        let db = db::open(":memory:").await.expect("db");
+        insert_curator_search_row(
+            &db,
+            10,
+            "proj-fts-au",
+            "decision",
+            "cd-10",
+            "initial alpha keyword content",
+            2_000_000,
+        )
+        .await;
+
+        assert_eq!(count_curator_fts_matches(&db, "alpha").await, 1);
+        assert_eq!(count_curator_fts_matches(&db, "omega").await, 0);
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE curator_search_index SET searchable_text = 'updated omega keyword content' WHERE row_id = 10",
+                [],
+            )
+            .expect("update curator_search_index row");
+        })
+        .await;
+
+        assert_eq!(
+            count_curator_fts_matches(&db, "alpha").await,
+            0,
+            "au trigger must remove old text from FTS"
+        );
+        assert_eq!(
+            count_curator_fts_matches(&db, "omega").await,
+            1,
+            "au trigger must insert new text into FTS"
+        );
+    }
+
+    #[tokio::test]
+    async fn curator_search_fts_ad_trigger_removes_deleted_text() {
+        let db = db::open(":memory:").await.expect("db");
+        insert_curator_search_row(
+            &db,
+            20,
+            "proj-fts-ad",
+            "decision",
+            "cd-20",
+            "delta archive recommendation candidate",
+            3_000_000,
+        )
+        .await;
+
+        assert_eq!(count_curator_fts_matches(&db, "delta").await, 1);
+
+        db.with_conn(|conn| {
+            conn.execute("DELETE FROM curator_search_index WHERE row_id = 20", [])
+                .expect("delete curator_search_index row");
+        })
+        .await;
+
+        assert_eq!(
+            count_curator_fts_matches(&db, "delta").await,
+            0,
+            "ad trigger must remove deleted row from FTS"
+        );
+    }
+
+    #[tokio::test]
+    async fn curator_search_fts_rebuild_matches_trigger_maintained_state() {
+        let db = db::open(":memory:").await.expect("db");
+
+        // Seed 4 rows via the trigger path.
+        for (i, (st, sid, text, ts)) in [
+            ("decision", "cd-a", "alpha bravo decision", 10_000_000),
+            ("decision", "cd-b", "charlie delta decision", 11_000_000),
+            ("review", "rq-c", "echo foxtrot review", 12_000_000),
+            ("pattern", "pat-d", "golf hotel pattern", 13_000_000),
+        ]
+        .iter()
+        .enumerate()
+        {
+            insert_curator_search_row(
+                &db,
+                (i as i64) + 100,
+                "proj-fts-rebuild",
+                st,
+                sid,
+                text,
+                *ts,
+            )
+            .await;
+        }
+
+        let trigger_state: Vec<(String,)> = db
+            .with_conn(|conn| -> Result<Vec<(String,)>, rusqlite::Error> {
+                let mut stmt = conn.prepare(
+                    "SELECT i.searchable_text
+                     FROM curator_search_fts f
+                     JOIN curator_search_index i ON i.row_id = f.rowid
+                     WHERE curator_search_fts MATCH ?
+                     ORDER BY i.row_id ASC",
+                )?;
+                let rows = stmt.query_map(["decision"], |row| Ok((row.get::<_, String>(0)?,)))?;
+                let mut out = Vec::new();
+                for r in rows {
+                    out.push(r?);
+                }
+                Ok(out)
+            })
+            .await
+            .expect("trigger-maintained match set");
+        assert_eq!(
+            trigger_state.len(),
+            2,
+            "trigger-maintained FTS must surface both decision rows"
+        );
+
+        // Rebuild from external content; assert same match set.
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO curator_search_fts(curator_search_fts) VALUES('rebuild')",
+                [],
+            )
+            .expect("fts rebuild");
+        })
+        .await;
+
+        let rebuild_state: Vec<(String,)> = db
+            .with_conn(|conn| -> Result<Vec<(String,)>, rusqlite::Error> {
+                let mut stmt = conn.prepare(
+                    "SELECT i.searchable_text
+                     FROM curator_search_fts f
+                     JOIN curator_search_index i ON i.row_id = f.rowid
+                     WHERE curator_search_fts MATCH ?
+                     ORDER BY i.row_id ASC",
+                )?;
+                let rows = stmt.query_map(["decision"], |row| Ok((row.get::<_, String>(0)?,)))?;
+                let mut out = Vec::new();
+                for r in rows {
+                    out.push(r?);
+                }
+                Ok(out)
+            })
+            .await
+            .expect("post-rebuild match set");
+
+        assert_eq!(
+            trigger_state, rebuild_state,
+            "FTS rebuild must produce identical match set to trigger-maintained state"
+        );
+    }
 }
