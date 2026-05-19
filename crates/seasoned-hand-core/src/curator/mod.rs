@@ -74,6 +74,40 @@ pub struct CuratorCycleResult {
     pub queued_for_review: u32,
     pub failures: u32,
     pub elapsed_ms: u64,
+    pub quarantines: Vec<CuratorQuarantineRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CuratorFailureCategory {
+    Panic,
+    LlmRefusal,
+    MalformedPayload,
+    Timeout,
+    OutOfMemory,
+    SqliteBusy,
+    SlotUnavailable,
+}
+
+impl CuratorFailureCategory {
+    fn as_str(self) -> &'static str {
+        match self {
+            CuratorFailureCategory::Panic => "panic_propagated_error",
+            CuratorFailureCategory::LlmRefusal => "llm_refusal",
+            CuratorFailureCategory::MalformedPayload => "malformed_payload",
+            CuratorFailureCategory::Timeout => "timeout",
+            CuratorFailureCategory::OutOfMemory => "out_of_memory",
+            CuratorFailureCategory::SqliteBusy => "sqlite_busy",
+            CuratorFailureCategory::SlotUnavailable => "slot_unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CuratorQuarantineRecord {
+    pub decision_id: String,
+    pub failure_category: CuratorFailureCategory,
+    pub retry_count: u32,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +128,8 @@ pub struct RerankedCandidate {
     pub blended_score: f32,
     pub embedding_cosine: f32,
     pub fts_norm: f32,
+    pub deterministic_floor: f32,
+    pub llm_contribution: f32,
     pub embedding_used: bool,
 }
 
@@ -1253,7 +1289,7 @@ impl ConsolidationEngine for SqliteConsolidationEngine {
         for candidate in reranked {
             let confidence = candidate.blended_score.clamp(0.0, 1.0);
             let floor = candidate.fts_norm.max(0.0);
-            let kind = if floor < 0.30 {
+            let kind = if candidate.deterministic_floor < 0.30 || floor < 0.30 {
                 ConsolidationDecisionKind::Quarantine
             } else if confidence >= 0.82 {
                 ConsolidationDecisionKind::Merge
@@ -1284,6 +1320,8 @@ impl ConsolidationEngine for SqliteConsolidationEngine {
                     "fts_norm": candidate.fts_norm,
                     "embedding_cosine": candidate.embedding_cosine,
                     "embedding_used": candidate.embedding_used,
+                    "deterministic_floor": candidate.deterministic_floor,
+                    "llm_contribution": candidate.llm_contribution,
                     "policy": "q12.2_hybrid_q12.3_revision_chain_q12.19_confidence_band"
                 }),
                 requires_review,
@@ -1539,12 +1577,20 @@ impl EmbeddingReranker for ProductionEmbeddingReranker {
                 }
             };
 
-            // architecture §4.2 blend + fallback formulas
-            let blended_score = if embedding_used {
-                0.45 * fts_norm + 0.40 * embedding_cosine + 0.15 * structural_overlap
+            // architecture §9.1 confidence composition:
+            // deterministic floor + bounded LLM contribution (max +0.45).
+            let deterministic_floor = if embedding_used {
+                (0.45 * fts_norm) + (0.10 * structural_overlap)
             } else {
-                0.75 * fts_norm + 0.25 * structural_overlap
+                (0.75 * fts_norm) + (0.25 * structural_overlap)
             };
+            let llm_contribution = if embedding_used {
+                (0.35 * embedding_cosine) + (0.05 * structural_overlap)
+            } else {
+                0.0
+            };
+            let blended_score =
+                compose_confidence_with_bounds(deterministic_floor, llm_contribution, 0.45);
 
             out.push(RerankedCandidate {
                 left_revision_id: candidate.left_revision_id,
@@ -1552,6 +1598,8 @@ impl EmbeddingReranker for ProductionEmbeddingReranker {
                 blended_score,
                 embedding_cosine,
                 fts_norm,
+                deterministic_floor,
+                llm_contribution,
                 embedding_used,
             });
         }
@@ -1621,38 +1669,249 @@ impl CuratorCycleExecutor for ProductionCuratorCycleExecutor {
         _backlog_count: u32,
     ) -> Result<CuratorCycleResult, CuratorWorkerError> {
         let started = std::time::Instant::now();
-        let _ = self
+        let cycle_id = format!("cycle-{}", uuid::Uuid::new_v4());
+        let mut quarantines = Vec::new();
+        let mut failures = 0_u32;
+
+        if let Err(error) = self
             .operator_review_queue
             .reconcile_suppression_expiry()
-            .await?;
-        let candidates = self
+            .await
+        {
+            failures = failures.saturating_add(1);
+            handle_failure_quarantine(
+                project_id,
+                &cycle_id,
+                "review_queue_reconcile",
+                &error,
+                0,
+                &mut quarantines,
+            );
+        }
+
+        let mut candidates = match self
             .candidate_builder
             .build_duplicate_candidates(project_id, self.max_candidates_per_cycle)
-            .await?;
-        let reranked = self.reranker.rerank(project_id, candidates).await?;
-        let conflicts = self.conflict_detector.detect(project_id, &reranked).await?;
-        let decisions = self
-            .consolidation_engine
-            .decide(project_id, reranked)
-            .await?;
-        let cycle_id = format!("cycle-{}", uuid::Uuid::new_v4());
-        let apply_result = self
-            .consolidation_engine
-            .apply(project_id, &cycle_id, &decisions)
-            .await?;
-        let patterns = self.work_pattern_extractor.extract(project_id).await?;
-        let recommendations = self
+            .await
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                failures = failures.saturating_add(1);
+                handle_failure_quarantine(
+                    project_id,
+                    &cycle_id,
+                    "candidate_builder",
+                    &error,
+                    0,
+                    &mut quarantines,
+                );
+                Vec::new()
+            }
+        };
+
+        // Batch-scope OOM containment: halve once, then continue with reduced set.
+        let estimated_bytes: usize = candidates
+            .iter()
+            .map(|c| c.left_text.len() + c.right_text.len())
+            .sum();
+        if estimated_bytes > 1_000_000 && candidates.len() > 1 {
+            failures = failures.saturating_add(1);
+            let keep = (candidates.len() / 2).max(1);
+            candidates.truncate(keep);
+            let error = CuratorWorkerError::Executor(
+                "batch_oom_predicted: candidate payload too large".to_string(),
+            );
+            handle_failure_quarantine(
+                project_id,
+                &cycle_id,
+                "candidate_batch_split",
+                &error,
+                1,
+                &mut quarantines,
+            );
+        }
+
+        let reranked = match tokio::time::timeout(
+            Duration::from_millis(2_000),
+            self.reranker.rerank(project_id, candidates),
+        )
+        .await
+        {
+            Ok(Ok(rows)) => rows,
+            Ok(Err(error)) => {
+                failures = failures.saturating_add(1);
+                handle_failure_quarantine(
+                    project_id,
+                    &cycle_id,
+                    "embedding_rerank",
+                    &error,
+                    0,
+                    &mut quarantines,
+                );
+                Vec::new()
+            }
+            Err(_elapsed) => {
+                failures = failures.saturating_add(1);
+                let error = CuratorWorkerError::Executor("timeout: embedding_rerank".to_string());
+                handle_failure_quarantine(
+                    project_id,
+                    &cycle_id,
+                    "embedding_rerank",
+                    &error,
+                    1,
+                    &mut quarantines,
+                );
+                Vec::new()
+            }
+        };
+
+        let conflicts = match self.conflict_detector.detect(project_id, &reranked).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                failures = failures.saturating_add(1);
+                handle_failure_quarantine(
+                    project_id,
+                    &cycle_id,
+                    "conflict_detector",
+                    &error,
+                    0,
+                    &mut quarantines,
+                );
+                Vec::new()
+            }
+        };
+
+        let decisions = match self.consolidation_engine.decide(project_id, reranked).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                failures = failures.saturating_add(1);
+                handle_failure_quarantine(
+                    project_id,
+                    &cycle_id,
+                    "consolidation_decide",
+                    &error,
+                    0,
+                    &mut quarantines,
+                );
+                Vec::new()
+            }
+        };
+
+        let apply_result = match apply_with_busy_backoff(
+            &*self.consolidation_engine,
+            project_id,
+            &cycle_id,
+            &decisions,
+        )
+        .await
+        {
+            Ok(applied) => applied,
+            Err((error, retry_count)) => {
+                failures = failures.saturating_add(1);
+                handle_failure_quarantine(
+                    project_id,
+                    &cycle_id,
+                    "consolidation_apply",
+                    &error,
+                    retry_count,
+                    &mut quarantines,
+                );
+                ConsolidationApplyResult::default()
+            }
+        };
+
+        let patterns = match self.work_pattern_extractor.extract(project_id).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                failures = failures.saturating_add(1);
+                handle_failure_quarantine(
+                    project_id,
+                    &cycle_id,
+                    "pattern_extract",
+                    &error,
+                    0,
+                    &mut quarantines,
+                );
+                Vec::new()
+            }
+        };
+
+        let recommendations = match self
             .work_pattern_extractor
             .recommend(project_id, &cycle_id, &patterns)
-            .await?;
-        let write_result = self
+            .await
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                failures = failures.saturating_add(1);
+                handle_failure_quarantine(
+                    project_id,
+                    &cycle_id,
+                    "pattern_recommend",
+                    &error,
+                    0,
+                    &mut quarantines,
+                );
+                Vec::new()
+            }
+        };
+
+        let write_result = match self
             .knowledge_datasource_writer
             .emit_and_promote(project_id, &cycle_id)
-            .await?;
-        let retrospective = self
+            .await
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                failures = failures.saturating_add(1);
+                handle_failure_quarantine(
+                    project_id,
+                    &cycle_id,
+                    "knowledge_datasource_write",
+                    &error,
+                    0,
+                    &mut quarantines,
+                );
+                KnowledgeDatasourceWriteResult::default()
+            }
+        };
+
+        let retrospective = match self
             .retrospective_generator
             .generate_if_due(project_id, _trigger, _backlog_count, self.backlog_threshold)
-            .await?;
+            .await
+        {
+            Ok(row) => {
+                if let Some(r) = row.as_ref()
+                    && r.generation_status == "refused"
+                {
+                    failures = failures.saturating_add(1);
+                    let error =
+                        CuratorWorkerError::Executor("llm_refusal: retrospective_refused".into());
+                    handle_failure_quarantine(
+                        project_id,
+                        &cycle_id,
+                        "retrospective_generate",
+                        &error,
+                        0,
+                        &mut quarantines,
+                    );
+                }
+                row
+            }
+            Err(error) => {
+                failures = failures.saturating_add(1);
+                handle_failure_quarantine(
+                    project_id,
+                    &cycle_id,
+                    "retrospective_generate",
+                    &error,
+                    0,
+                    &mut quarantines,
+                );
+                None
+            }
+        };
 
         Ok(CuratorCycleResult {
             cycle_id,
@@ -1664,8 +1923,9 @@ impl CuratorCycleExecutor for ProductionCuratorCycleExecutor {
                 + write_result.raw_datasource
                 + u32::from(retrospective.is_some()),
             queued_for_review: apply_result.queued_for_review,
-            failures: apply_result.failures,
+            failures: failures.saturating_add(apply_result.failures),
             elapsed_ms: started.elapsed().as_millis() as u64,
+            quarantines,
         })
     }
 }
@@ -2170,6 +2430,7 @@ impl CuratorCycleExecutor for NoopCycleExecutor {
             queued_for_review: 0,
             failures: 0,
             elapsed_ms: 0,
+            quarantines: Vec::new(),
         })
     }
 }
@@ -2262,6 +2523,24 @@ impl ProductionCuratorWorker {
             .executor
             .execute(&self.config.project_id, trigger, backlog_count)
             .await?;
+        for quarantine in &result.quarantines {
+            self.events
+                .append(NewEvent {
+                    session_id: session_id.clone(),
+                    event_type: EventType::Misc,
+                    source: "curator".to_string(),
+                    data: json!({
+                        "kind": "curator_decision_quarantined",
+                        "project_id": result.project_id,
+                        "cycle_id": result.cycle_id,
+                        "decision_id": quarantine.decision_id,
+                        "failure_category": quarantine.failure_category.as_str(),
+                        "retry_count": quarantine.retry_count,
+                        "detail": quarantine.detail
+                    }),
+                })
+                .await?;
+        }
         self.events
             .append(NewEvent {
                 session_id,
@@ -2341,6 +2620,103 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     } else {
         dot / (an.sqrt() * bn.sqrt())
     }
+}
+
+fn classify_failure_category(error: &CuratorWorkerError) -> CuratorFailureCategory {
+    let msg = error.to_string().to_ascii_lowercase();
+    if msg.contains("slot") && msg.contains("unavailable") {
+        return CuratorFailureCategory::SlotUnavailable;
+    }
+    if msg.contains("refus") {
+        return CuratorFailureCategory::LlmRefusal;
+    }
+    if msg.contains("malformed") || msg.contains("invalid json") || msg.contains("parse") {
+        return CuratorFailureCategory::MalformedPayload;
+    }
+    if msg.contains("timeout") {
+        return CuratorFailureCategory::Timeout;
+    }
+    if msg.contains("oom") || msg.contains("out of memory") {
+        return CuratorFailureCategory::OutOfMemory;
+    }
+    if msg.contains("busy") || msg.contains("database is locked") {
+        return CuratorFailureCategory::SqliteBusy;
+    }
+    CuratorFailureCategory::Panic
+}
+
+fn is_sqlite_busy(error: &CuratorWorkerError) -> bool {
+    match error {
+        CuratorWorkerError::Sqlite(db_error) => {
+            matches!(db_error, rusqlite::Error::SqliteFailure(_, _))
+                && db_error.to_string().to_ascii_lowercase().contains("busy")
+        }
+        _ => error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("database is locked"),
+    }
+}
+
+async fn apply_with_busy_backoff(
+    engine: &dyn ConsolidationEngine,
+    project_id: &str,
+    cycle_id: &str,
+    decisions: &[ConsolidationDecision],
+) -> Result<ConsolidationApplyResult, (CuratorWorkerError, u32)> {
+    let mut retry = 0_u32;
+    let delays = [50_u64, 100, 200, 400];
+    loop {
+        match engine.apply(project_id, cycle_id, decisions).await {
+            Ok(v) => return Ok(v),
+            Err(error) => {
+                if is_sqlite_busy(&error)
+                    && usize::try_from(retry).unwrap_or(usize::MAX) < delays.len()
+                {
+                    let idx = usize::try_from(retry).unwrap_or(0);
+                    tokio::time::sleep(Duration::from_millis(delays[idx])).await;
+                    retry = retry.saturating_add(1);
+                    continue;
+                }
+                return Err((error, retry));
+            }
+        }
+    }
+}
+
+fn handle_failure_quarantine(
+    project_id: &str,
+    cycle_id: &str,
+    decision_scope: &str,
+    error: &CuratorWorkerError,
+    retry_count: u32,
+    quarantines: &mut Vec<CuratorQuarantineRecord>,
+) {
+    let category = classify_failure_category(error);
+    let decision_id = format!(
+        "q-{}-{}",
+        decision_scope,
+        stable_u64_hex(&format!(
+            "{project_id}:{cycle_id}:{decision_scope}:{retry_count}"
+        ))
+    );
+    quarantines.push(CuratorQuarantineRecord {
+        decision_id,
+        failure_category: category,
+        retry_count,
+        detail: error.to_string(),
+    });
+}
+
+fn compose_confidence_with_bounds(
+    deterministic_floor: f32,
+    llm_signal: f32,
+    llm_weight_cap: f32,
+) -> f32 {
+    let floor = deterministic_floor.clamp(0.0, 1.0);
+    let llm = llm_signal.clamp(0.0, 1.0);
+    let cap = llm_weight_cap.clamp(0.0, 1.0);
+    (floor + (llm * cap)).clamp(0.0, 1.0)
 }
 
 fn source_type_from_ref(source_ref: &str) -> &'static str {
@@ -2769,6 +3145,8 @@ mod tests {
                     blended_score: c.fts_score,
                     embedding_cosine: if self.embedding_used { 0.9 } else { 0.0 },
                     fts_norm: c.fts_score,
+                    deterministic_floor: c.fts_score,
+                    llm_contribution: if self.embedding_used { 0.4 } else { 0.0 },
                     embedding_used: self.embedding_used,
                 })
                 .collect())
@@ -2832,6 +3210,8 @@ mod tests {
                     blended_score: 0.90, // merge branch
                     embedding_cosine: 0.88,
                     fts_norm: 0.92,
+                    deterministic_floor: 0.82,
+                    llm_contribution: 0.18,
                     embedding_used: true,
                 },
                 RerankedCandidate {
@@ -2840,6 +3220,8 @@ mod tests {
                     blended_score: 0.70, // keep branch
                     embedding_cosine: 0.42,
                     fts_norm: 0.71,
+                    deterministic_floor: 0.58,
+                    llm_contribution: 0.12,
                     embedding_used: true,
                 },
             ])
@@ -2870,6 +3252,8 @@ mod tests {
                 blended_score: 0.50,
                 embedding_cosine: 0.25,
                 fts_norm: 0.50,
+                deterministic_floor: 0.40,
+                llm_contribution: 0.10,
                 embedding_used: true,
             }])
         }
@@ -3016,6 +3400,45 @@ mod tests {
             _cycle_id: &str,
         ) -> Result<KnowledgeDatasourceWriteResult, CuratorWorkerError> {
             Ok(KnowledgeDatasourceWriteResult::default())
+        }
+    }
+
+    struct StubQuarantineExecutor;
+
+    #[async_trait]
+    impl CuratorCycleExecutor for StubQuarantineExecutor {
+        async fn execute(
+            &self,
+            project_id: &str,
+            _trigger: CuratorTrigger,
+            _backlog_count: u32,
+        ) -> Result<CuratorCycleResult, CuratorWorkerError> {
+            let mut quarantines = Vec::new();
+            for category in [
+                CuratorFailureCategory::Panic,
+                CuratorFailureCategory::LlmRefusal,
+                CuratorFailureCategory::MalformedPayload,
+                CuratorFailureCategory::Timeout,
+                CuratorFailureCategory::OutOfMemory,
+                CuratorFailureCategory::SqliteBusy,
+                CuratorFailureCategory::SlotUnavailable,
+            ] {
+                quarantines.push(CuratorQuarantineRecord {
+                    decision_id: format!("q-{}", category.as_str()),
+                    failure_category: category,
+                    retry_count: 1,
+                    detail: "simulated".to_string(),
+                });
+            }
+            Ok(CuratorCycleResult {
+                cycle_id: "cycle-test".to_string(),
+                project_id: project_id.to_string(),
+                decisions_total: 1,
+                queued_for_review: 0,
+                failures: 7,
+                elapsed_ms: 10,
+                quarantines,
+            })
         }
     }
 
@@ -3593,5 +4016,54 @@ mod tests {
             .await
             .expect("list suppressed");
         assert_eq!(suppressed_rows.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn run_once_emits_quarantine_events_for_all_failure_categories() {
+        let db = db::open(":memory:").await.expect("db");
+        let events = Arc::new(SqliteEventStore::new(db.clone()));
+        let worker = ProductionCuratorWorker::new(
+            CuratorConfig {
+                enabled: true,
+                interval_seconds: 1,
+                backlog_threshold: 10,
+                max_candidates_per_cycle: 50,
+                embedding_budget_monthly_tokens: 50_000,
+                embedding_budget_soft_cap_pct: 0.08,
+                embedding_budget_hard_breaker_pct: 0.12,
+                embedding_model: "text-embedding-3-small".to_string(),
+                project_id: "proj-quarantine".to_string(),
+            },
+            db,
+            events.clone(),
+            Arc::new(StubBacklogProbe),
+            Arc::new(StubQuarantineExecutor),
+        );
+        worker
+            .run_once(CuratorTrigger::Manual, 12)
+            .await
+            .expect("run_once");
+        let got = events
+            .query(
+                "curator:proj-quarantine",
+                EventQuery {
+                    event_type: Some(EventType::Misc),
+                    ..EventQuery::default()
+                },
+            )
+            .await
+            .expect("query");
+        let quarantines = got
+            .iter()
+            .filter(|event| event.data["kind"] == "curator_decision_quarantined")
+            .count();
+        assert_eq!(quarantines, 7);
+    }
+
+    #[test]
+    fn adversarial_confidence_bounds_enforce_deterministic_floor() {
+        let boosted = compose_confidence_with_bounds(0.20, 1.0, 0.45);
+        assert!(boosted < 0.75);
+        assert!(boosted <= 0.65);
     }
 }

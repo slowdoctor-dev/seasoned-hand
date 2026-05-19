@@ -1,6 +1,6 @@
 # Story 4.11 — Curator failure containment + adversarial confidence bounds
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 4.3, 4.4, 4.5, 4.6
 > **Phase**: 4

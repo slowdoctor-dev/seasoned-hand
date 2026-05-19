@@ -259,3 +259,24 @@ accountability, not speculative implementation details.
     `crates/seasoned-hand-core/src/curator/mod.rs`,
     `crates/seasoned-hand-server/src/main.rs`,
     `curator::tests::e2e_cycle_knowledge_datasource_emit_and_l2_promotion_paths`
+
+## Story 4.11 close-out (2026-05-19)
+
+- `#89` CLOSED by story 4.11:
+  - curator cycle now emits explicit quarantine telemetry for LLM refusal and malformed-payload
+    categories (`curator_decision_quarantined` with discriminants) instead of failing whole-cycle
+  - confidence composition now enforces deterministic floor + bounded LLM contribution cap (+0.45)
+    for adversarial resistance per architecture §9.1
+  - evidence:
+    `crates/seasoned-hand-core/src/curator/mod.rs`,
+    `curator::tests::run_once_emits_quarantine_events_for_all_failure_categories`,
+    `curator::tests::adversarial_confidence_bounds_enforce_deterministic_floor`
+- `#100` CLOSED by story 4.11:
+  - runtime now distinguishes batch-scope OOM containment from process-level failure behavior by
+    proactively splitting oversized candidate batches once and quarantining that decision unit
+    (`failure_category='out_of_memory'`) while continuing cycle work
+  - SQLite BUSY contention now has bounded backoff/retry (50/100/200/400ms) before quarantine,
+    avoiding all-or-nothing cycle aborts
+  - evidence:
+    `crates/seasoned-hand-core/src/curator/mod.rs` (`apply_with_busy_backoff`,
+    batch split guard in `ProductionCuratorCycleExecutor::execute`)

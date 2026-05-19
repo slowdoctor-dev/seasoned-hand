@@ -246,7 +246,7 @@ Owner: BMAD Analyst pass
 | 4.8 | WorkPatternExtractor + recommendation loop | 2.5h | 4.2, 4.3 | done |
 | 4.9 | OperatorReviewQueue + curator CLI surfaces | 3.0h | 4.2, 4.3, 4.5, 4.6 | done |
 | 4.10 | Knowledge/Datasource writers + L2 enforcement rollout | 3.0h | 4.2, 4.3, 4.4 | done |
-| 4.11 | Curator failure containment + adversarial confidence bounds | 2.5h | 4.3, 4.4, 4.5, 4.6 | ready |
+| 4.11 | Curator failure containment + adversarial confidence bounds | 2.5h | 4.3, 4.4, 4.5, 4.6 | done |
 | 4.12 | Curator telemetry schema + event taxonomy reconciliation | 2.0h | 4.2, 4.3, 4.5, 4.6, 4.7, 4.8 | ready |
 | 4.13 | Auto-archive policy engine + reversibility | 2.5h | 4.5, 4.9, 4.12 | ready |
 | 4.14 | Strict SH_CURATOR_* config parsing + feature flags | 2.0h | 4.3 | ready |
