@@ -5400,4 +5400,289 @@ mod tests {
             "FTS rebuild must produce identical match set to trigger-maintained state"
         );
     }
+
+    // Story 4.19 — review queue state-machine regression + suppression TTL.
+    //
+    // F-4.25 governance gate requires the operator review queue to be a strict
+    // pending->{approved,rejected,suppressed} state machine. Once resolved, a
+    // row may not transition again (until reconcile_suppression_expiry brings
+    // an expired suppression back to pending). These tests cover:
+    //   - all 3 valid pending -> resolved transitions
+    //   - rejected transitions from a non-pending source state
+    //   - suppression-TTL reopen when suppress_until has passed
+    //   - suppression-TTL NO-op when suppress_until is still in the future
+    //
+    // Each test seeds a curator_decisions + curator_review_queue row pair
+    // directly (bypassing the consolidation path that would normally create
+    // them) so the queue state machine can be exercised in isolation.
+
+    async fn seed_review_queue_item(
+        db: &DbPool,
+        decision_id: &str,
+        queue_id: &str,
+        project_id: &str,
+        state: &str,
+        created_at: i64,
+        reviewer_note: Option<&str>,
+    ) {
+        let decision_id = decision_id.to_string();
+        let queue_id = queue_id.to_string();
+        let project_id = project_id.to_string();
+        let state = state.to_string();
+        let reviewer_note = reviewer_note.map(ToString::to_string);
+        db.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO curator_decisions (
+                    id, tenant_id, project_id, cycle_id, decision_type, subject_kind,
+                    subject_id, confidence, rationale_json, evidence_json, status,
+                    failure_category, created_at
+                 ) VALUES (?, NULL, ?, 'cycle-rq-test', 'merge', 'revision',
+                    'rev-dummy', 0.5, '{}', '{}', 'queued_review', NULL, ?)",
+                rusqlite::params![decision_id, project_id, created_at],
+            )
+            .expect("seed curator_decisions row");
+            conn.execute(
+                "INSERT INTO curator_review_queue (
+                    id, tenant_id, decision_id, project_id, queue_reason, severity,
+                    state, reviewer, reviewer_note, resolved_at, created_at
+                 ) VALUES (?, NULL, ?, ?, 'low_confidence_0.50', 'medium', ?, NULL, ?, NULL, ?)",
+                rusqlite::params![
+                    queue_id,
+                    decision_id,
+                    project_id,
+                    state,
+                    reviewer_note,
+                    created_at
+                ],
+            )
+            .expect("seed curator_review_queue row");
+        })
+        .await;
+    }
+
+    async fn queue_row_state(db: &DbPool, queue_id: &str) -> String {
+        let queue_id = queue_id.to_string();
+        db.with_conn(move |conn| -> Result<String, rusqlite::Error> {
+            conn.query_row(
+                "SELECT state FROM curator_review_queue WHERE id = ?",
+                [queue_id.as_str()],
+                |row| row.get(0),
+            )
+        })
+        .await
+        .expect("queue row state lookup")
+    }
+
+    async fn decision_status(db: &DbPool, decision_id: &str) -> String {
+        let decision_id = decision_id.to_string();
+        db.with_conn(move |conn| -> Result<String, rusqlite::Error> {
+            conn.query_row(
+                "SELECT status FROM curator_decisions WHERE id = ?",
+                [decision_id.as_str()],
+                |row| row.get(0),
+            )
+        })
+        .await
+        .expect("decision status lookup")
+    }
+
+    #[tokio::test]
+    async fn review_queue_pending_to_approved_applies_decision() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_review_queue_item(
+            &db,
+            "cd-approve",
+            "rq-approve",
+            "proj-rq",
+            "pending",
+            1_000,
+            None,
+        )
+        .await;
+
+        let q = SqliteOperatorReviewQueue::new(db.clone());
+        let did_transition = q
+            .transition(
+                "rq-approve",
+                ReviewQueueAction::Approve,
+                Some("ops"),
+                Some("LGTM"),
+                None,
+            )
+            .await
+            .expect("transition");
+
+        assert!(did_transition);
+        assert_eq!(queue_row_state(&db, "rq-approve").await, "approved");
+        assert_eq!(decision_status(&db, "cd-approve").await, "applied");
+    }
+
+    #[tokio::test]
+    async fn review_queue_pending_to_rejected_marks_decision_rejected() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_review_queue_item(
+            &db,
+            "cd-reject",
+            "rq-reject",
+            "proj-rq",
+            "pending",
+            2_000,
+            None,
+        )
+        .await;
+
+        let q = SqliteOperatorReviewQueue::new(db.clone());
+        let did_transition = q
+            .transition(
+                "rq-reject",
+                ReviewQueueAction::Reject,
+                Some("ops"),
+                Some("policy_mismatch"),
+                None,
+            )
+            .await
+            .expect("transition");
+
+        assert!(did_transition);
+        assert_eq!(queue_row_state(&db, "rq-reject").await, "rejected");
+        assert_eq!(decision_status(&db, "cd-reject").await, "rejected");
+    }
+
+    #[tokio::test]
+    async fn review_queue_pending_to_suppressed_writes_ttl_marker() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_review_queue_item(
+            &db,
+            "cd-suppress",
+            "rq-suppress",
+            "proj-rq",
+            "pending",
+            3_000,
+            None,
+        )
+        .await;
+
+        let q = SqliteOperatorReviewQueue::new(db.clone());
+        let did_transition = q
+            .transition(
+                "rq-suppress",
+                ReviewQueueAction::Suppress,
+                Some("ops"),
+                Some("muted_for_iteration"),
+                Some(7),
+            )
+            .await
+            .expect("transition");
+
+        assert!(did_transition);
+        assert_eq!(queue_row_state(&db, "rq-suppress").await, "suppressed");
+        assert_eq!(decision_status(&db, "cd-suppress").await, "suppressed");
+
+        // Note carries suppress_until=<ts>;<op-note> marker the reconcile path uses.
+        let note: Option<String> = db
+            .with_conn(|conn| -> Result<Option<String>, rusqlite::Error> {
+                conn.query_row(
+                    "SELECT reviewer_note FROM curator_review_queue WHERE id='rq-suppress'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .await
+            .expect("note read");
+        let note = note.expect("note set");
+        assert!(
+            note.starts_with("suppress_until="),
+            "suppress note must carry TTL marker; got {note}"
+        );
+        assert!(
+            note.contains("muted_for_iteration"),
+            "operator note must be preserved after the TTL marker; got {note}"
+        );
+    }
+
+    #[tokio::test]
+    async fn review_queue_rejects_transition_from_resolved_state() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_review_queue_item(
+            &db,
+            "cd-already-approved",
+            "rq-already-approved",
+            "proj-rq",
+            "approved", // already resolved
+            4_000,
+            Some("prior_approval"),
+        )
+        .await;
+
+        let q = SqliteOperatorReviewQueue::new(db.clone());
+        let did_transition = q
+            .transition(
+                "rq-already-approved",
+                ReviewQueueAction::Reject,
+                Some("ops"),
+                Some("late_reject_attempt"),
+                None,
+            )
+            .await
+            .expect("transition");
+
+        assert!(
+            !did_transition,
+            "transition must return false when row is not pending"
+        );
+        assert_eq!(
+            queue_row_state(&db, "rq-already-approved").await,
+            "approved",
+            "row state must remain unchanged on rejected transition"
+        );
+    }
+
+    #[tokio::test]
+    async fn review_queue_suppression_ttl_reopens_expired_rows() {
+        let db = db::open(":memory:").await.expect("db");
+
+        // Suppress one row with a past suppress_until and one with future.
+        let now = now_micros().expect("now");
+        let past = now - 1_000_000;
+        let future = now + 86_400_000_000_i64; // 1 day ahead
+        seed_review_queue_item(
+            &db,
+            "cd-expired",
+            "rq-expired",
+            "proj-rq",
+            "suppressed",
+            5_000,
+            Some(&format!("suppress_until={past};op_note")),
+        )
+        .await;
+        seed_review_queue_item(
+            &db,
+            "cd-fresh-suppress",
+            "rq-fresh-suppress",
+            "proj-rq",
+            "suppressed",
+            6_000,
+            Some(&format!("suppress_until={future};op_note")),
+        )
+        .await;
+
+        let q = SqliteOperatorReviewQueue::new(db.clone());
+        let reopened = q
+            .reconcile_suppression_expiry()
+            .await
+            .expect("reconcile suppression");
+        assert_eq!(
+            reopened, 1,
+            "exactly one suppressed row must reopen when only its TTL has elapsed"
+        );
+
+        assert_eq!(queue_row_state(&db, "rq-expired").await, "pending");
+        assert_eq!(decision_status(&db, "cd-expired").await, "queued_review");
+
+        // Fresh suppression remains in place.
+        assert_eq!(
+            queue_row_state(&db, "rq-fresh-suppress").await,
+            "suppressed"
+        );
+    }
 }

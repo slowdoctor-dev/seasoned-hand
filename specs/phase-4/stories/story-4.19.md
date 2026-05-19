@@ -1,6 +1,6 @@
 # Story 4.19 — Review queue state-machine regression + suppression TTL
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 1.5 hours
 > **Dependencies**: 4.9
 > **Phase**: 4
