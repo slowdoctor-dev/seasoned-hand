@@ -70,7 +70,7 @@ fewer tool calls**.
 | File | Current state | Phase 3 work |
 |---|---|---|
 | `crates/seasoned-hand-core/src/tools/builtin.rs` `SopRead` / `PlaybookSearch` / `GlossaryLookup` | Stubs returning `{ok:false, error:"not_implemented", message:"deferred to phase 3"}` | Replace with real implementations against V010+ schema |
-| `crates/seasoned-hand-core/src/skill/mod.rs` | `SkillStore` exists with reserved schema | Phase 3 first writer |
+| ~~`crates/seasoned-hand-core/src/skill/mod.rs`~~ | ~~`SkillStore` exists with reserved schema~~ — **module deleted in Phase 4 manageability hardening iter-1 (`e004b2d`)**; the V009 `skills` table schema is still present but Phase 3 + 4 wrote through `crate::playbooks::*` directly, never through the now-removed wrapper. | ~~Phase 3 first writer~~ (closed by direct-DbPool write path; no SkillStore needed) |
 | `crates/seasoned-hand-core/src/events/mod.rs` `EventType::{Knowledge, Datasource, Skill}` | Enum variants exist + V002 CHECK accepts them; zero production emitters | Wire emit sites |
 | `crates/seasoned-hand-core/src/agent/init/mod.rs` Initializer | Authors Brief; no playbook-injection step | Inject matched playbooks at task start |
 | `crates/seasoned-hand-core/src/verifier/worker.rs` | Posts `verifier_verdict` Misc on **any parsed verdict** (both `pass` and `fail`); payload shape includes `verification_id` + `verdict` + `evidence_event_ids` (see `worker.rs:499-527`) | Extraction trigger reads the Misc but must filter `verdict == "pass"` per ADR-007 criterion 1. The event payload shape is the input contract for extraction. |

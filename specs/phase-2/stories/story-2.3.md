@@ -1,6 +1,6 @@
 # Story 2.3 — V007 + V008 + V009 migrations + remaining stores
 
-> **Status**: ready
+> **Status**: done (with iter-N revisions — see "Phase 4 manageability hardening" note below)
 > **Estimated**: 3 hours
 > **Dependencies**: 2.2
 > **Phase**: 2
@@ -171,3 +171,24 @@ All schema is in place. 2.4 introduces the Channel framework (three
 role traits + ChannelRegistration builder + ChannelRegistry).
 IntakeEvent + DeliveryTarget types from 2.3's `intake::events` module
 get re-used.
+
+## Phase 4 manageability hardening (post-execution amendment, commit `e004b2d`)
+
+Phase 4 iter-1 manageability hardening removed two pieces of the
+original 2.3 scope that turned out to be over-built:
+
+- `SkillStore` + `PlaybookStore` (Rust types) deleted. The V009 schema
+  tables (`skills`, `playbooks`) are still present and in active use,
+  but the empty wrapper structs were never written through —
+  Phase 3 + 4 used `crate::playbooks::*` and direct `DbPool` access
+  instead. The reservation handles were pure scaffolding.
+- `AppState::skills` + `AppState::playbooks` fields dropped along
+  with the constructor calls. No public API broke (verified by grep
+  across all crates: zero external consumers ever read either field).
+
+The spec items listed under "Acceptance criteria" remain accurate
+for the 2.3 commit (`2c36eae`) — this amendment is purely historical:
+the over-built pieces were removed once Phase 4 made it clear they
+were never going to be used.
+
+Reference: `/specs/phase-2/architecture.md` §2.12 (closure note).

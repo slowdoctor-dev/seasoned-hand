@@ -38,8 +38,10 @@ verdicts for injected playbooks, while preserving Phase 4 curator boundaries.
 ## Verification
 
 ```bash
-cargo test -p seasoned-hand-core skill::outcome_counter_updates
-cargo test -p seasoned-hand-core skill::non_terminal_verdict_noop
+# Phase 4 manageability hardening (commit e004b2d) deleted the empty
+# `crate::skill` module; these tests live under `verifier::gate::tests`:
+cargo test -p seasoned-hand-core verifier::gate::tests::outcome_counter_updates
+cargo test -p seasoned-hand-core verifier::gate::tests::non_terminal_verdict_noop
 ```
 
 ---

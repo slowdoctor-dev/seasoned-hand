@@ -890,8 +890,13 @@ simplicity pass.
    the worker that consumes the `notify_request` Redis stream and
    dispatches to registered `NotifySink`s.
 - `seasoned_hand_core::provenance::{ProvenanceManifest, build_manifest}`
-- `seasoned_hand_core::skill::{SkillStore, PlaybookStore}` (empty
-   Phase 2 — schemas only)
+- ~~`seasoned_hand_core::skill::{SkillStore, PlaybookStore}` (empty
+   Phase 2 — schemas only)~~ — **removed in Phase 4 manageability
+   hardening iter-1 (commit `e004b2d`)**. Phase 3 + 4 ended up writing
+   through `crate::playbooks::*` and direct `DbPool` access, so the
+   reservation handles were never used; deleting them sheds 49 LOC + 2
+   `AppState` fields. The V009 `skills` / `playbooks` schema tables
+   remain — only the empty Rust wrapper types went away.
 - `seasoned_hand_core::agent::init::Initializer::run_with_confirmation(...)`
 
 ### CLI surface
@@ -987,7 +992,9 @@ Phase 2 story. Templates gain entries for `task_deliver`,
 Gains:
 - `Arc<ProjectStore>`, `Arc<TaskStore>`, `Arc<DeliverableStore>`,
   `Arc<NotificationsSentStore>`, `Arc<IntakeEventStore>`,
-  `Arc<DeliveryEventStore>`, `Arc<SkillStore>`, `Arc<PlaybookStore>`
+  `Arc<DeliveryEventStore>` (Phase 4 manageability iter-1 removed the
+  no-longer-needed `Arc<SkillStore>` + `Arc<PlaybookStore>` fields —
+  see §2.12 for the closure note)
 - Channel registry: `Arc<ChannelRegistry>` (one registry; introspects
   each registered channel's role traits to populate Intake / Delivery /
   Notify routing tables internally)
