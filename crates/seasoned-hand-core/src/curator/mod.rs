@@ -15,7 +15,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::db::DbPool;
 use crate::events::{EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
-use crate::llm::{LlmClient, LlmError, types::EmbeddingRequest};
+use crate::llm::{
+    LlmClient, LlmError,
+    types::{ChatCompletionRequest, EmbeddingRequest, Message, Role},
+};
 
 #[derive(Debug, Clone)]
 pub struct CuratorConfig {
@@ -92,6 +95,34 @@ pub struct RerankedCandidate {
     pub embedding_cosine: f32,
     pub fts_norm: f32,
     pub embedding_used: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictSeverity {
+    Low,
+    Medium,
+    High,
+}
+
+impl ConflictSeverity {
+    fn as_str(self) -> &'static str {
+        match self {
+            ConflictSeverity::Low => "low",
+            ConflictSeverity::Medium => "medium",
+            ConflictSeverity::High => "high",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ConflictFinding {
+    pub conflict_id: String,
+    pub left_revision_id: String,
+    pub right_revision_id: String,
+    pub severity: ConflictSeverity,
+    pub structural_score: f32,
+    pub semantic_score: f32,
+    pub evidence_json: serde_json::Value,
 }
 
 #[derive(Debug, Error)]
@@ -201,6 +232,24 @@ pub trait ConsolidationEngine: Send + Sync {
         cycle_id: &str,
         decisions: &[ConsolidationDecision],
     ) -> Result<ConsolidationApplyResult, CuratorWorkerError>;
+}
+
+#[async_trait]
+pub trait ConflictDetector: Send + Sync {
+    async fn detect(
+        &self,
+        project_id: &str,
+        reranked: &[RerankedCandidate],
+    ) -> Result<Vec<ConflictFinding>, CuratorWorkerError>;
+}
+
+#[async_trait]
+pub trait SemanticAdjudicator: Send + Sync {
+    async fn contradiction_score(
+        &self,
+        left_text: &str,
+        right_text: &str,
+    ) -> Result<f32, CuratorWorkerError>;
 }
 
 #[derive(Clone)]
@@ -319,6 +368,148 @@ impl CandidateBuilder for SqliteCandidateBuilder {
 #[derive(Clone)]
 pub struct SqliteConsolidationEngine {
     db: DbPool,
+}
+
+#[derive(Clone)]
+pub struct LlmSemanticAdjudicator {
+    llm: LlmClient,
+    model: String,
+}
+
+impl LlmSemanticAdjudicator {
+    pub fn new(llm: LlmClient, model: String) -> Self {
+        Self { llm, model }
+    }
+}
+
+#[async_trait]
+impl SemanticAdjudicator for LlmSemanticAdjudicator {
+    async fn contradiction_score(
+        &self,
+        left_text: &str,
+        right_text: &str,
+    ) -> Result<f32, CuratorWorkerError> {
+        let req = ChatCompletionRequest {
+            model: self.model.clone(),
+            messages: vec![
+                Message {
+                    role: Role::System,
+                    content: Some(
+                        "Score contradiction from 0.0 to 1.0. Output only JSON \
+                         {\"contradiction_score\": <number>}."
+                            .to_string(),
+                    ),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                Message {
+                    role: Role::User,
+                    content: Some(format!(
+                        "Left procedure:\n{}\n\nRight procedure:\n{}\n\nReturn contradiction score.",
+                        left_text, right_text
+                    )),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            ],
+            tools: None,
+            tool_choice: None,
+            temperature: Some(0.0),
+            max_tokens: Some(120),
+            top_p: None,
+        };
+        let response = self.llm.chat_completion(req).await?;
+        let content = response
+            .choices
+            .first()
+            .and_then(|choice| choice.message.content.as_ref())
+            .map(String::as_str)
+            .unwrap_or("{}");
+        let parsed = serde_json::from_str::<serde_json::Value>(content).ok();
+        let score = parsed
+            .as_ref()
+            .and_then(|v| v.get("contradiction_score"))
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0) as f32;
+        Ok(score.clamp(0.0, 1.0))
+    }
+}
+
+#[derive(Clone)]
+pub struct SqliteConflictDetector {
+    db: DbPool,
+    adjudicator: Arc<dyn SemanticAdjudicator>,
+}
+
+impl SqliteConflictDetector {
+    pub fn new(db: DbPool, adjudicator: Arc<dyn SemanticAdjudicator>) -> Self {
+        Self { db, adjudicator }
+    }
+}
+
+#[async_trait]
+impl ConflictDetector for SqliteConflictDetector {
+    async fn detect(
+        &self,
+        project_id: &str,
+        reranked: &[RerankedCandidate],
+    ) -> Result<Vec<ConflictFinding>, CuratorWorkerError> {
+        let mut findings = Vec::new();
+        for pair in reranked {
+            let left_revision_id = pair.left_revision_id.clone();
+            let right_revision_id = pair.right_revision_id.clone();
+            let project = project_id.to_string();
+            let (left_content, right_content) = self
+                .db
+                .with_conn(move |conn| {
+                    let left: String = conn.query_row(
+                        "SELECT content FROM playbook_revisions
+                         WHERE id = ?1 AND source_project_id = ?2",
+                        rusqlite::params![left_revision_id, project],
+                        |row| row.get(0),
+                    )?;
+                    let right: String = conn.query_row(
+                        "SELECT content FROM playbook_revisions
+                         WHERE id = ?1 AND source_project_id = ?2",
+                        rusqlite::params![right_revision_id, project],
+                        |row| row.get(0),
+                    )?;
+                    Ok::<_, CuratorWorkerError>((left, right))
+                })
+                .await?;
+
+            let structural = structural_conflict_score(&left_content, &right_content);
+            if structural < 0.35 {
+                continue;
+            }
+
+            let semantic = self
+                .adjudicator
+                .contradiction_score(&left_content, &right_content)
+                .await?;
+            let severity = classify_conflict_severity(structural, semantic);
+            let conflict_id = format!("sc-{}", uuid::Uuid::new_v4());
+            let finding = ConflictFinding {
+                conflict_id: conflict_id.clone(),
+                left_revision_id: pair.left_revision_id.clone(),
+                right_revision_id: pair.right_revision_id.clone(),
+                severity,
+                structural_score: structural,
+                semantic_score: semantic,
+                evidence_json: json!({
+                    "policy":"f4_10_rule_first_semantic_adjudication",
+                    "prefilter_threshold":0.35,
+                    "left_revision_id":pair.left_revision_id,
+                    "right_revision_id":pair.right_revision_id
+                }),
+            };
+            persist_conflict(&self.db, project_id, &finding).await?;
+            findings.push(finding);
+        }
+        Ok(findings)
+    }
 }
 
 impl SqliteConsolidationEngine {
@@ -656,6 +847,7 @@ pub struct ProductionCuratorCycleExecutor {
     candidate_builder: Arc<dyn CandidateBuilder>,
     reranker: Arc<dyn EmbeddingReranker>,
     consolidation_engine: Arc<dyn ConsolidationEngine>,
+    conflict_detector: Arc<dyn ConflictDetector>,
     max_candidates_per_cycle: u32,
 }
 
@@ -664,12 +856,14 @@ impl ProductionCuratorCycleExecutor {
         candidate_builder: Arc<dyn CandidateBuilder>,
         reranker: Arc<dyn EmbeddingReranker>,
         consolidation_engine: Arc<dyn ConsolidationEngine>,
+        conflict_detector: Arc<dyn ConflictDetector>,
         max_candidates_per_cycle: u32,
     ) -> Self {
         Self {
             candidate_builder,
             reranker,
             consolidation_engine,
+            conflict_detector,
             max_candidates_per_cycle,
         }
     }
@@ -689,6 +883,7 @@ impl CuratorCycleExecutor for ProductionCuratorCycleExecutor {
             .build_duplicate_candidates(project_id, self.max_candidates_per_cycle)
             .await?;
         let reranked = self.reranker.rerank(project_id, candidates).await?;
+        let conflicts = self.conflict_detector.detect(project_id, &reranked).await?;
         let decisions = self
             .consolidation_engine
             .decide(project_id, reranked)
@@ -702,12 +897,102 @@ impl CuratorCycleExecutor for ProductionCuratorCycleExecutor {
         Ok(CuratorCycleResult {
             cycle_id,
             project_id: project_id.to_string(),
-            decisions_total: decisions.len() as u32,
+            decisions_total: decisions.len() as u32 + conflicts.len() as u32,
             queued_for_review: apply_result.queued_for_review,
             failures: apply_result.failures,
             elapsed_ms: started.elapsed().as_millis() as u64,
         })
     }
+}
+
+async fn persist_conflict(
+    db: &DbPool,
+    project_id: &str,
+    finding: &ConflictFinding,
+) -> Result<(), CuratorWorkerError> {
+    let project_id = project_id.to_string();
+    let finding = finding.clone();
+    db.with_conn(move |conn| {
+        let now = now_micros()?;
+        conn.execute(
+            "INSERT INTO sop_conflicts (
+                id, tenant_id, project_id, left_revision_id, right_revision_id,
+                structural_score, semantic_score, severity, status, evidence_json, created_at
+             ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, 'open', ?8, ?9)",
+            rusqlite::params![
+                finding.conflict_id,
+                project_id,
+                finding.left_revision_id,
+                finding.right_revision_id,
+                finding.structural_score,
+                finding.semantic_score,
+                finding.severity.as_str(),
+                finding.evidence_json.to_string(),
+                now
+            ],
+        )?;
+        Ok::<_, CuratorWorkerError>(())
+    })
+    .await
+}
+
+fn classify_conflict_severity(structural_score: f32, semantic_score: f32) -> ConflictSeverity {
+    if structural_score >= 0.70 && semantic_score >= 0.75 {
+        return ConflictSeverity::High;
+    }
+    if structural_score >= 0.50 && semantic_score >= 0.55 {
+        return ConflictSeverity::Medium;
+    }
+    ConflictSeverity::Low
+}
+
+fn structural_conflict_score(left_content: &str, right_content: &str) -> f32 {
+    let left_steps = procedure_steps(left_content);
+    let right_steps = procedure_steps(right_content);
+    if left_steps.is_empty() || right_steps.is_empty() {
+        return 0.0;
+    }
+    let overlap = lexical_overlap(&left_steps.join(" "), &right_steps.join(" "));
+    if overlap < 0.20 {
+        return 0.0;
+    }
+    let mut divergent = 0_u32;
+    let mut compared = 0_u32;
+    let min_len = left_steps.len().min(right_steps.len());
+    for i in 0..min_len {
+        compared += 1;
+        let sim = lexical_overlap(&left_steps[i], &right_steps[i]);
+        if sim < 0.45 {
+            divergent += 1;
+        }
+    }
+    if compared == 0 {
+        return 0.0;
+    }
+    let divergence = divergent as f32 / compared as f32;
+    (0.6 * overlap + 0.4 * divergence).clamp(0.0, 1.0)
+}
+
+fn procedure_steps(content: &str) -> Vec<String> {
+    let mut in_proc = false;
+    let mut out = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("## ") {
+            in_proc = trimmed.eq_ignore_ascii_case("## Procedure");
+            continue;
+        }
+        if !in_proc {
+            continue;
+        }
+        let step = trimmed
+            .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '-' || c == '*')
+            .trim();
+        if !step.is_empty() {
+            out.push(step.to_ascii_lowercase());
+        }
+    }
+    out
 }
 
 fn review_required(
@@ -1113,6 +1398,7 @@ mod tests {
             builder,
             reranker,
             consolidation,
+            Arc::new(StubNoopConflictDetector),
             50,
         ));
 
@@ -1245,6 +1531,7 @@ mod tests {
             builder,
             reranker,
             consolidation,
+            Arc::new(StubNoopConflictDetector),
             50,
         ));
         let worker = ProductionCuratorWorker::new(
@@ -1401,5 +1688,174 @@ mod tests {
                 },
             ])
         }
+    }
+
+    struct StubNoopConflictDetector;
+
+    #[async_trait]
+    impl ConflictDetector for StubNoopConflictDetector {
+        async fn detect(
+            &self,
+            _project_id: &str,
+            _reranked: &[RerankedCandidate],
+        ) -> Result<Vec<ConflictFinding>, CuratorWorkerError> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct StubSemanticAdjudicator {
+        score: f32,
+    }
+
+    #[async_trait]
+    impl SemanticAdjudicator for StubSemanticAdjudicator {
+        async fn contradiction_score(
+            &self,
+            _left_text: &str,
+            _right_text: &str,
+        ) -> Result<f32, CuratorWorkerError> {
+            Ok(self.score)
+        }
+    }
+
+    #[tokio::test]
+    async fn e2e_cycle_conflict_detector_covers_conflict_and_non_conflict_paths() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_revision_pair(&db, "proj-conflict").await;
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE playbook_revisions
+                 SET content = '## Procedure\n1. Verify payment source\n2. Issue immediate full refund\n3. Notify customer'
+                 WHERE id = 'rev-l-1'",
+                [],
+            )
+            .expect("update left");
+            conn.execute(
+                "UPDATE playbook_revisions
+                 SET content = '## Procedure\n1. Verify payment source\n2. Escalate and deny immediate refund\n3. Notify customer'
+                 WHERE id = 'rev-r-1'",
+                [],
+            )
+            .expect("update right");
+        })
+        .await;
+
+        let events = Arc::new(SqliteEventStore::new(db.clone()));
+        let builder = Arc::new(SqliteCandidateBuilder::new(db.clone()));
+        let reranker = Arc::new(TestReranker::new(true));
+        let conflict_detector = Arc::new(SqliteConflictDetector::new(
+            db.clone(),
+            Arc::new(StubSemanticAdjudicator { score: 0.90 }),
+        ));
+        let consolidation = Arc::new(SqliteConsolidationEngine::new(db.clone()));
+        let executor = Arc::new(ProductionCuratorCycleExecutor::new(
+            builder,
+            reranker,
+            consolidation,
+            conflict_detector,
+            50,
+        ));
+        let worker = ProductionCuratorWorker::new(
+            CuratorConfig {
+                enabled: true,
+                interval_seconds: 1,
+                backlog_threshold: 10,
+                max_candidates_per_cycle: 50,
+                embedding_budget_monthly_tokens: 50_000,
+                embedding_budget_soft_cap_pct: 0.08,
+                embedding_budget_hard_breaker_pct: 0.12,
+                embedding_model: "text-embedding-3-small".to_string(),
+                project_id: "proj-conflict".to_string(),
+            },
+            db.clone(),
+            events,
+            Arc::new(StubBacklogProbe),
+            executor,
+        );
+        worker
+            .run_once(CuratorTrigger::Manual, 1)
+            .await
+            .expect("run conflict path");
+
+        db.with_conn(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sop_conflicts WHERE project_id='proj-conflict' AND status='open'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("count conflicts");
+            assert!(count >= 1);
+        })
+        .await;
+
+        let db2 = db::open(":memory:").await.expect("db2");
+        seed_revision_pair(&db2, "proj-no-conflict").await;
+        db2.with_conn(|conn| {
+            conn.execute(
+                "UPDATE playbook_revisions
+                 SET content = '## Procedure\n1. Check docs\n2. Publish release notes'
+                 WHERE id = 'rev-l-1'",
+                [],
+            )
+            .expect("update left");
+            conn.execute(
+                "UPDATE playbook_revisions
+                 SET content = '## Procedure\n1. Plan sprint\n2. Groom backlog'
+                 WHERE id = 'rev-r-1'",
+                [],
+            )
+            .expect("update right");
+        })
+        .await;
+
+        let events2 = Arc::new(SqliteEventStore::new(db2.clone()));
+        let builder2 = Arc::new(SqliteCandidateBuilder::new(db2.clone()));
+        let reranker2 = Arc::new(TestReranker::new(true));
+        let conflict_detector2 = Arc::new(SqliteConflictDetector::new(
+            db2.clone(),
+            Arc::new(StubSemanticAdjudicator { score: 0.10 }),
+        ));
+        let consolidation2 = Arc::new(SqliteConsolidationEngine::new(db2.clone()));
+        let executor2 = Arc::new(ProductionCuratorCycleExecutor::new(
+            builder2,
+            reranker2,
+            consolidation2,
+            conflict_detector2,
+            50,
+        ));
+        let worker2 = ProductionCuratorWorker::new(
+            CuratorConfig {
+                enabled: true,
+                interval_seconds: 1,
+                backlog_threshold: 10,
+                max_candidates_per_cycle: 50,
+                embedding_budget_monthly_tokens: 50_000,
+                embedding_budget_soft_cap_pct: 0.08,
+                embedding_budget_hard_breaker_pct: 0.12,
+                embedding_model: "text-embedding-3-small".to_string(),
+                project_id: "proj-no-conflict".to_string(),
+            },
+            db2.clone(),
+            events2,
+            Arc::new(StubBacklogProbe),
+            executor2,
+        );
+        worker2
+            .run_once(CuratorTrigger::Manual, 1)
+            .await
+            .expect("run non-conflict path");
+
+        db2.with_conn(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sop_conflicts WHERE project_id='proj-no-conflict'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("count conflicts");
+            assert_eq!(count, 0);
+        })
+        .await;
     }
 }

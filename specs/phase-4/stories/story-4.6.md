@@ -1,6 +1,6 @@
 # Story 4.6 — ConflictDetector production implementation
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 4.2, 4.4
 > **Phase**: 4

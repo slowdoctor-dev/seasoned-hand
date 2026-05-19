@@ -8,9 +8,9 @@ use seasoned_hand_core::capability::{
     CapabilityProbe, assert_main_supports_tool_calling, warn_implied_slot_capability_mismatches,
 };
 use seasoned_hand_core::curator::{
-    CuratorConfig, EmbeddingBudget, ProductionCuratorCycleExecutor, ProductionCuratorWorker,
-    ProductionEmbeddingReranker, SqliteBacklogProbe, SqliteCandidateBuilder,
-    SqliteConsolidationEngine,
+    CuratorConfig, EmbeddingBudget, LlmSemanticAdjudicator, ProductionCuratorCycleExecutor,
+    ProductionCuratorWorker, ProductionEmbeddingReranker, SqliteBacklogProbe,
+    SqliteCandidateBuilder, SqliteConflictDetector, SqliteConsolidationEngine,
 };
 use seasoned_hand_core::llm::LlmClient;
 use seasoned_hand_core::router::{SlotName, SlotRouter};
@@ -434,6 +434,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let candidate_builder = std::sync::Arc::new(SqliteCandidateBuilder::new(state.db.clone()));
         let consolidation_engine =
             std::sync::Arc::new(SqliteConsolidationEngine::new(state.db.clone()));
+        let conflict_slot = state.router.resolve(SlotName::SessionSearch);
+        let conflict_llm = LlmClient::new(
+            conflict_slot.base_url.clone(),
+            conflict_slot.api_key.clone(),
+        );
+        let conflict_detector = std::sync::Arc::new(SqliteConflictDetector::new(
+            state.db.clone(),
+            std::sync::Arc::new(LlmSemanticAdjudicator::new(
+                conflict_llm,
+                conflict_slot.model.clone(),
+            )),
+        ));
         let reranker = std::sync::Arc::new(ProductionEmbeddingReranker::new(
             embedding_llm,
             config.embedding_model.clone(),
@@ -447,6 +459,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             candidate_builder,
             reranker,
             consolidation_engine,
+            conflict_detector,
             config.max_candidates_per_cycle,
         ));
         let worker = ProductionCuratorWorker::new(

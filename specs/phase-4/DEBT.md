@@ -33,6 +33,13 @@ explicitly partially close with evidence.
 - Phase 4 may partially close: `#75`, `#76`, `#91` if broader global harmonization is deferred.
 - Any non-closure must include rationale + successor phase owner in this file.
 
+### Story 4.6 execution note
+
+- `#89` **partially closed** by story 4.6 (ConflictDetector):
+  - Added production semantic-adjudication prompt path (`LlmSemanticAdjudicator`) and structural
+    prefilter + severity triage writes to `sop_conflicts`.
+  - Remaining closure scope stays with story 4.7 retrospective refusal-hardening.
+
 ## Categories quick-reference
 
 Phase 4 uses a finer-grained 4-tier scheme. Phase 0-3 used H/M/L. Cross-phase
