@@ -5685,4 +5685,76 @@ mod tests {
             "suppressed"
         );
     }
+
+    // Story 4.20 — Embedding cost circuit-breaker regression.
+    //
+    // NFR-4.6 pins three behaviors. The existing
+    // embedding_budget_uses_monthly_token_fallback_when_total_tokens_zero test
+    // covers the zero-baseline absolute-floor path; the tests below add the
+    // ratio-based gating paths (soft cap below/between/above hard breaker) plus
+    // the zero->ratio transition and the DEBT #98 two-field-split check.
+
+    fn nfr_4_6_budget() -> EmbeddingBudget {
+        EmbeddingBudget {
+            monthly_embedding_tokens: 50_000,
+            soft_cap_pct: 0.08,
+            hard_breaker_pct: 0.12,
+        }
+    }
+
+    #[test]
+    fn embedding_budget_under_soft_cap_stays_open() {
+        let budget = nfr_4_6_budget();
+        // 5% utilization: under 8% soft cap, neither signal fires.
+        assert!(!budget.soft_cap_exceeded(50_000, 1_000_000));
+        assert!(!budget.breaker_open(50_000, 1_000_000));
+    }
+
+    #[test]
+    fn embedding_budget_soft_cap_fires_between_thresholds() {
+        let budget = nfr_4_6_budget();
+        // 9% utilization: soft cap fires (>= 0.08) but breaker stays closed (< 0.12).
+        assert!(budget.soft_cap_exceeded(90_000, 1_000_000));
+        assert!(!budget.breaker_open(90_000, 1_000_000));
+    }
+
+    #[test]
+    fn embedding_budget_hard_breaker_opens_at_threshold() {
+        let budget = nfr_4_6_budget();
+        // 12% utilization: hard breaker is inclusive (>= 0.12) per NFR-4.6.
+        assert!(budget.soft_cap_exceeded(120_000, 1_000_000));
+        assert!(budget.breaker_open(120_000, 1_000_000));
+
+        // 15% utilization: still open.
+        assert!(budget.breaker_open(150_000, 1_000_000));
+    }
+
+    #[test]
+    fn embedding_budget_transitions_from_zero_baseline_to_ratio_mode() {
+        let budget = nfr_4_6_budget();
+        // As soon as total_used > 0, the budget switches to ratio-based gating —
+        // the absolute fallback no longer applies. With 100k embedding tokens at
+        // 2M total (5% utilization), both signals must stay closed even though
+        // the absolute 50k fallback would have been blown long ago.
+        assert!(!budget.soft_cap_exceeded(100_000, 2_000_000));
+        assert!(!budget.breaker_open(100_000, 2_000_000));
+
+        // Bump embedding to 250k (12.5% of 2M): hard breaker now opens.
+        assert!(budget.breaker_open(250_000, 2_000_000));
+    }
+
+    #[test]
+    fn embedding_budget_two_field_split_matches_nfr_4_6_contract() {
+        // DEBT #98 closure: budget must carry TWO distinct knobs (soft + hard),
+        // not a single ambiguous field. Asymmetric construction with independent
+        // behavior is the structural protection against accidental collapse.
+        let asymmetric = EmbeddingBudget {
+            monthly_embedding_tokens: 50_000,
+            soft_cap_pct: 0.05,
+            hard_breaker_pct: 0.20,
+        };
+        // 10% utilization: above 5% soft cap but below 20% hard breaker.
+        assert!(asymmetric.soft_cap_exceeded(100_000, 1_000_000));
+        assert!(!asymmetric.breaker_open(100_000, 1_000_000));
+    }
 }

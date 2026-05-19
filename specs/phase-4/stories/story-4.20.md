@@ -1,6 +1,6 @@
 # Story 4.20 — Embedding cost circuit-breaker regression
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 4.4, 4.14
 > **Phase**: 4
