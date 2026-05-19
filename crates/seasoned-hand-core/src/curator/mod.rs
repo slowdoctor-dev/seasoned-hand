@@ -1,6 +1,8 @@
 //! Curator worker runtime for Phase 4.
 //! refs: /specs/phase-4/architecture.md §2.1, §2.2, §2.3, §4.1, §4.2, §6.5, §7
 
+pub mod retention;
+
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::sync::Arc;

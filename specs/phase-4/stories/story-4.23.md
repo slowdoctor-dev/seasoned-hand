@@ -1,6 +1,6 @@
 # Story 4.23 — Curator telemetry retention + compaction (NFR-4.4 close)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 4.2, 4.12
 > **Phase**: 4
