@@ -38,7 +38,7 @@ use tokio_util::sync::CancellationToken;
 use crate::db::DbPool;
 use crate::events::{EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
 use crate::project::{TaskError, TaskStatus, TaskStore};
-use crate::sandbox::{SandboxClient, SandboxError, SandboxHandle};
+use crate::sandbox::{SandboxClient, SandboxError, SandboxHandle, is_safe_session_id};
 
 /// Minimal lifecycle surface the cron needs from the sandbox layer.
 /// Production impl is on [`SandboxClient`]; tests substitute a fake so
@@ -285,9 +285,25 @@ impl<S: SandboxJanitor + 'static> WorkspaceTtlCron<S> {
         // handle. Cross-process restart (Phase 2 DEBT #27) loses the
         // cache, so fall back to `workspace_root/{session_id}` — the
         // canonical path Phase 0 0.8 wrote during create().
+        //
+        // Phase 4 security hardening iter-2 F1: validate session_id before
+        // the fallback join. Intake already filters via `is_safe_session_id`
+        // but defense-in-depth here protects against a future bypass —
+        // a `..` segment in `sessions.id` (whatever its provenance) must
+        // never resolve `remove_dir_all` outside `workspace_root`.
         let workspace_path = match self.sandbox.get_handle(&session_id).await {
             Some(h) => h.workspace_host_path,
-            None => self.sandbox.workspace_root().join(&session_id),
+            None => {
+                if !is_safe_session_id(&session_id) {
+                    tracing::warn!(
+                        task_id = %cand.task_id,
+                        session_id = %session_id,
+                        "ttl cron: unsafe session_id rejected; skipping rmdir",
+                    );
+                    return CleanupOutcome::Skipped;
+                }
+                self.sandbox.workspace_root().join(&session_id)
+            }
         };
 
         let destroy_err = self.sandbox.destroy(&session_id).await.err();

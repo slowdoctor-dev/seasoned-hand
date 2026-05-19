@@ -316,11 +316,12 @@ fn is_unique_violation(err: &IntakeStoreError) -> bool {
 /// `tokio::fs::remove_dir_all(...)` on the TTL cron + the docker
 /// container name. `..` segments here are a host-side path-traversal
 /// primitive.
+///
+/// Phase 4 security hardening iter-2 F1: this is now a thin wrapper over
+/// the canonical `sandbox::is_safe_session_id` so the intake layer and
+/// the sandbox layer share one definition (and one set of test cases).
 fn is_safe_session_id(hint: &str) -> bool {
-    if hint.is_empty() || hint.len() > 64 {
-        return false;
-    }
-    hint.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    crate::sandbox::is_safe_session_id(hint)
 }
 
 /// Truncate brief input to a single line ≤ 200 chars for the Task's

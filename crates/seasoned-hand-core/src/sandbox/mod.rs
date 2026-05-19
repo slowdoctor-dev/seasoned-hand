@@ -208,6 +208,7 @@ impl SandboxClient {
     }
 
     pub async fn create(&self, session_id: &str) -> Result<SandboxHandle, SandboxError> {
+        require_safe_session_id(session_id)?;
         let workspace = self.workspace_root.join(session_id);
         std::fs::create_dir_all(&workspace)?;
         let workspace_abs = workspace.canonicalize()?;
@@ -504,6 +505,7 @@ impl SandboxClient {
     /// Reconstruct a `SandboxHandle` for an existing container without going
     /// through the `create()` path. Used by `rehydrate_from_docker`.
     async fn register_existing(&self, session_id: &str) -> Result<(), SandboxError> {
+        require_safe_session_id(session_id)?;
         let name = container_name(session_id);
         let inspect = self.docker.inspect_container(&name, None).await?;
         let container_id = inspect.id.clone().unwrap_or_default();
@@ -592,6 +594,37 @@ impl SandboxClient {
 ///
 /// We also reject null bytes (Rust `Path` would silently accept them
 /// but the underlying OS calls truncate at them).
+/// Strict alphabet for any string that flows into a host workspace path
+/// or a Docker container name. Mirrors the intake-router check
+/// (`is_safe_session_id` in `intake::router`) so the two layers carry the
+/// same definition; the sandbox layer enforces it as defense-in-depth in
+/// case a future caller bypasses the intake validator.
+///
+/// Threat model: an unfiltered `session_id` flows into
+/// `workspace_root.join(...)` (host-side directory creation +
+/// `remove_dir_all` during TTL cleanup) and `container_name(...)` (Docker
+/// container name). A `..` segment escapes the workspace bind-mount;
+/// shell metacharacters / slashes break the container name.
+pub fn is_safe_session_id(s: &str) -> bool {
+    if s.is_empty() || s.len() > 64 {
+        return false;
+    }
+    s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// Reject the call with an `InvalidWorkspace` error if `session_id` is
+/// not strictly safe per [`is_safe_session_id`]. Used by every sandbox
+/// entry point that joins `session_id` into a host path or container
+/// name.
+fn require_safe_session_id(session_id: &str) -> Result<(), SandboxError> {
+    if !is_safe_session_id(session_id) {
+        return Err(SandboxError::InvalidWorkspace(format!(
+            "unsafe session_id rejected by sandbox layer: {session_id:?}"
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn normalize_workspace_relative_path(path: &str) -> Result<&str, SandboxError> {
     if path.contains('\0') {
         return Err(SandboxError::InvalidWorkspace(format!(

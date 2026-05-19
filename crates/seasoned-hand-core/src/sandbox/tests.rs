@@ -63,6 +63,51 @@ fn normalize_workspace_relative_path_strips_prefix_and_blocks_traversal() {
 }
 
 #[test]
+fn is_safe_session_id_accepts_and_rejects() {
+    // Phase 4 security hardening iter-2 F1: canonical session-id validator
+    // shared between intake (`is_safe_session_id` wrapper) and the sandbox
+    // layer's `require_safe_session_id` guard.
+    for good in &[
+        "a1b2c3d4-1234-5678-9abc-def012345678",
+        "session-abc",
+        "x",
+        // Length-64 boundary.
+        "0123456789012345678901234567890123456789012345678901234567890123",
+    ] {
+        assert!(is_safe_session_id(good), "{good:?} must be accepted");
+    }
+    for bad in &[
+        "",
+        "../etc/passwd",
+        "..",
+        "with space",
+        "has/slash",
+        "has\\back",
+        "$(whoami)",
+        "x;rm",
+        "session.with.dots",
+        "session_underscore",
+        // Length-65 just over boundary.
+        "01234567890123456789012345678901234567890123456789012345678901234",
+    ] {
+        assert!(!is_safe_session_id(bad), "{bad:?} must be rejected");
+    }
+}
+
+#[test]
+fn require_safe_session_id_returns_invalid_workspace() {
+    // The sandbox-layer guard returns the same error variant as the
+    // path-normalizer so callers can pattern-match consistently.
+    let err = require_safe_session_id("../etc")
+        .expect_err("path-traversal session id must be rejected");
+    assert!(
+        matches!(err, SandboxError::InvalidWorkspace(_)),
+        "wrong variant: {err:?}",
+    );
+    assert!(require_safe_session_id("a1b2c3d4").is_ok());
+}
+
+#[test]
 fn new_client_records_image_and_workspace() {
     let tmp = tempfile::tempdir().unwrap();
     let client = SandboxClient::new(
