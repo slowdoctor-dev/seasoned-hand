@@ -92,7 +92,7 @@ accountability, not speculative implementation details.
 - **Plan**: evaluate adaptive thresholds after Phase 4 telemetry stabilizes.
 - **Owner**: Phase 5 Architect
 - **Target phase/story**: Phase 5 curation-tuning slice
-- **Status**: open
+- **Status**: partial (story 4.13; adaptive deferred to Phase 5 — see F-4.26 close-out matrix)
 
 ### #93 Optional fork-promotion governance mode (H3)
 - **Opened**: 2026-05-18 by Architect
@@ -101,7 +101,7 @@ accountability, not speculative implementation details.
 - **Plan**: add optional policy mode (fork + explicit promote) behind feature flag.
 - **Owner**: PM/Architect (Phase 5)
 - **Target phase/story**: Phase 5 policy variants
-- **Status**: open
+- **Status**: deferred to Phase 5 — see F-4.26 close-out matrix
 
 ### #94 Retrospective tiered model-by-size policy (H3)
 - **Opened**: 2026-05-18 by Architect
@@ -110,7 +110,7 @@ accountability, not speculative implementation details.
 - **Plan**: evaluate size-aware profile switching once baseline quality metrics are stable.
 - **Owner**: Phase 5 Architect
 - **Target phase/story**: Phase 5 retrospective optimization
-- **Status**: open
+- **Status**: deferred to Phase 5 — see F-4.26 close-out matrix
 
 ### #95 Cross-project read-only analytics pilot (H3)
 - **Opened**: 2026-05-18 by Architect
@@ -128,7 +128,7 @@ accountability, not speculative implementation details.
 - **Plan**: add rationale schema registry + migration validator.
 - **Owner**: Phase 5 Architect
 - **Target phase/story**: Phase 5 data evolution hardening
-- **Status**: open
+- **Status**: deferred to Phase 5 — see F-4.26 close-out matrix
 
 ## Architect REVIEW iter-1 (Claude) — DEBT seeds for L-severity findings
 
@@ -143,7 +143,7 @@ accountability, not speculative implementation details.
   library where pragmatic.
 - **Owner**: Architect (Phase 4 implementation slice)
 - **Target phase/story**: each crate-adoption story
-- **Status**: open
+- **Status**: deferred (H3 documentation, not blocking) — see F-4.26 close-out matrix
 
 ### #98 Split embedding budget cap field (H3)
 - **Opened**: 2026-05-18 by Claude review iter-1
@@ -154,7 +154,7 @@ accountability, not speculative implementation details.
 - **Plan**: Split to `embedding_budget_soft_cap_pct: f32` + `embedding_budget_hard_breaker_pct: f32`.
 - **Owner**: PM (config story)
 - **Target phase/story**: Phase 4 CuratorConfig story
-- **Status**: open
+- **Status**: closed (story 4.14) — see F-4.26 close-out matrix
 
 ### #99 §7 cycle budget amortization arithmetic (H3)
 - **Opened**: 2026-05-18 by Claude review iter-1
@@ -165,7 +165,7 @@ accountability, not speculative implementation details.
   retrospective); retrospective +1200ms once weekly. Total weekly = 4 × 3600 + 1200 = 15600ms.
 - **Owner**: Architect (next iter-2 or PM stories)
 - **Target phase/story**: Phase 4 §7 hardening or first benchmark story
-- **Status**: open
+- **Status**: closed (story 4.4) — see F-4.26 close-out matrix
 
 ### #100 F-4.22 OOM handling: process vs batch (H3)
 - **Opened**: 2026-05-18 by Claude review iter-1
@@ -179,7 +179,7 @@ accountability, not speculative implementation details.
   `curator_decision_quarantined` post-restart).
 - **Owner**: PM (CuratorWorker failure-handling story)
 - **Target phase/story**: Phase 4 CuratorWorker failure story
-- **Status**: open
+- **Status**: closed (story 4.11) — see F-4.26 close-out matrix
 
 ### #101 phase4_warm_full_loop_benchmark concrete setup (H3)
 - **Opened**: 2026-05-18 by Claude review iter-1
@@ -191,7 +191,7 @@ accountability, not speculative implementation details.
   Specify which metric (precision@3? stale ratio?) is the gate.
 - **Owner**: PM (benchmark fixture story)
 - **Target phase/story**: Phase 4 F-4.21 fixture story
-- **Status**: open
+- **Status**: closed (story 4.21) — see F-4.26 close-out matrix
 
 ### #102 playbook_revisions FOREIGN KEY for parent_revision_id (H3)
 - **Opened**: 2026-05-18 by Claude review iter-1
@@ -201,7 +201,7 @@ accountability, not speculative implementation details.
   to schema. Catches dangling parents at write time.
 - **Owner**: Architect (next iter) or PM (V011 migration story)
 - **Target phase/story**: Phase 4 V011 migration story
-- **Status**: open
+- **Status**: closed (story 4.2) — see F-4.26 close-out matrix
 
 ## Story 4.2 close-out (2026-05-18)
 
