@@ -1,6 +1,6 @@
 # Story 4.3 — CuratorWorker production runtime + main.rs wiring
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 4.2
 > **Phase**: 4
@@ -15,11 +15,11 @@ boot wiring in `main.rs`.
 
 ## Acceptance criteria
 
-- [ ] Production `CuratorWorker` implementation exists (not test-only).
-- [ ] Dual trigger model (interval + backlog threshold) implemented.
-- [ ] Runtime is wired from `seasoned-hand-server/src/main.rs`.
-- [ ] Curator remains async and non-blocking to verifier PASS path.
-- [ ] Integration test runs end-to-end cycle with stub dependencies.
+- [x] Production `CuratorWorker` implementation exists (not test-only).
+- [x] Dual trigger model (interval + backlog threshold) implemented.
+- [x] Runtime is wired from `seasoned-hand-server/src/main.rs`.
+- [x] Curator remains async and non-blocking to verifier PASS path.
+- [x] Integration test runs end-to-end cycle with stub dependencies.
 
 ## Non-goals
 

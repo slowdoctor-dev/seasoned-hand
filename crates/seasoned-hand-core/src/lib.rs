@@ -7,6 +7,7 @@ pub mod capability;
 pub mod channel;
 pub mod checkpoint;
 pub mod cost;
+pub mod curator;
 pub mod db;
 pub mod deliverable;
 pub mod delivery;

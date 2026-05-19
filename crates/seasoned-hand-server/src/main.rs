@@ -7,6 +7,9 @@ use std::path::PathBuf;
 use seasoned_hand_core::capability::{
     CapabilityProbe, assert_main_supports_tool_calling, warn_implied_slot_capability_mismatches,
 };
+use seasoned_hand_core::curator::{
+    CuratorConfig, NoopCycleExecutor, ProductionCuratorWorker, SqliteBacklogProbe,
+};
 use seasoned_hand_core::llm::LlmClient;
 use seasoned_hand_core::router::{SlotName, SlotRouter};
 use seasoned_hand_core::sandbox::SandboxClient;
@@ -381,6 +384,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    let curator_shutdown = tokio_util::sync::CancellationToken::new();
+    let curator_enabled = std::env::var("SH_CURATOR_ENABLED")
+        .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
+        .unwrap_or(false);
+    let curator_handle = if curator_enabled {
+        let config = CuratorConfig {
+            enabled: true,
+            interval_seconds: std::env::var("SH_CURATOR_INTERVAL_SECONDS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300),
+            backlog_threshold: std::env::var("SH_CURATOR_BACKLOG_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10),
+            project_id: std::env::var("SH_CURATOR_PROJECT_ID")
+                .unwrap_or_else(|_| "default".to_string()),
+        };
+        let worker = ProductionCuratorWorker::new(
+            config.clone(),
+            state.db.clone(),
+            state.events.clone(),
+            std::sync::Arc::new(SqliteBacklogProbe::new(state.db.clone())),
+            std::sync::Arc::new(NoopCycleExecutor),
+        );
+        let token = curator_shutdown.clone();
+        Some(tokio::spawn(async move {
+            if let Err(error) = worker.run(token).await {
+                tracing::error!(%error, "curator worker exited with error");
+            }
+        }))
+    } else {
+        tracing::info!("curator worker not spawned (SH_CURATOR_ENABLED=false)");
+        None
+    };
+
     // Story 2.17 / Phase 0 DEBT #16: spawn the workspace TTL cron.
     // Single-task loop that wakes every `SANDBOX_CLEANUP_INTERVAL_SEC`
     // (default 3600), tears down container + workspace for terminal-
@@ -414,6 +453,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     verifier_shutdown.cancel();
     if let Some(handle) = verifier_handle {
         log_join_error("verifier", handle.await);
+    }
+
+    curator_shutdown.cancel();
+    if let Some(handle) = curator_handle {
+        log_join_error("curator", handle.await);
     }
 
     // Story 1.13: drain the checkpoint manager.
