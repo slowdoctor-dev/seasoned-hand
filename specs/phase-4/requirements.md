@@ -243,7 +243,7 @@ Owner: BMAD Analyst pass
 | 4.5 | ConsolidationEngine with revision-chain writes | 3.0h | 4.2, 4.4 | done |
 | 4.6 | ConflictDetector production implementation | 2.5h | 4.2, 4.4 | done |
 | 4.7 | RetrospectiveGenerator weekly cadence + citation validator | 3.0h | 4.2, 4.3, 4.6 | done |
-| 4.8 | WorkPatternExtractor + recommendation loop | 2.5h | 4.2, 4.3 | ready |
+| 4.8 | WorkPatternExtractor + recommendation loop | 2.5h | 4.2, 4.3 | done |
 | 4.9 | OperatorReviewQueue + curator CLI surfaces | 3.0h | 4.2, 4.3, 4.5, 4.6 | ready |
 | 4.10 | Knowledge/Datasource writers + L2 enforcement rollout | 3.0h | 4.2, 4.3, 4.4 | ready |
 | 4.11 | Curator failure containment + adversarial confidence bounds | 2.5h | 4.3, 4.4, 4.5, 4.6 | ready |

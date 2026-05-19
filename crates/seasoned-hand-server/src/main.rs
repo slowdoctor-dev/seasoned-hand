@@ -8,10 +8,10 @@ use seasoned_hand_core::capability::{
     CapabilityProbe, assert_main_supports_tool_calling, warn_implied_slot_capability_mismatches,
 };
 use seasoned_hand_core::curator::{
-    CuratorConfig, EmbeddingBudget, LlmSemanticAdjudicator, ProductionCuratorCycleExecutor,
-    ProductionCuratorWorker, ProductionEmbeddingReranker, SqliteBacklogProbe,
-    SqliteCandidateBuilder, SqliteConflictDetector, SqliteConsolidationEngine,
-    SqliteRetrospectiveGenerator,
+    CuratorConfig, CuratorRuntimeDeps, EmbeddingBudget, LlmSemanticAdjudicator,
+    ProductionCuratorCycleExecutor, ProductionCuratorWorker, ProductionEmbeddingReranker,
+    SqliteBacklogProbe, SqliteCandidateBuilder, SqliteConflictDetector, SqliteConsolidationEngine,
+    SqliteRetrospectiveGenerator, SqliteWorkPatternExtractor,
 };
 use seasoned_hand_core::llm::LlmClient;
 use seasoned_hand_core::router::{SlotName, SlotRouter};
@@ -456,6 +456,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             retrospective_llm,
             conflict_slot.model.clone(),
         ));
+        let work_pattern_extractor =
+            std::sync::Arc::new(SqliteWorkPatternExtractor::new(state.db.clone()));
         let reranker = std::sync::Arc::new(ProductionEmbeddingReranker::new(
             embedding_llm,
             config.embedding_model.clone(),
@@ -466,11 +468,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         ));
         let executor = std::sync::Arc::new(ProductionCuratorCycleExecutor::new(
-            candidate_builder,
-            reranker,
-            consolidation_engine,
-            conflict_detector,
-            retrospective_generator,
+            CuratorRuntimeDeps {
+                candidate_builder,
+                reranker,
+                consolidation_engine,
+                conflict_detector,
+                retrospective_generator,
+                work_pattern_extractor,
+            },
             config.max_candidates_per_cycle,
             config.backlog_threshold,
         ));

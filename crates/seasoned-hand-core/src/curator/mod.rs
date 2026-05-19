@@ -137,6 +137,24 @@ pub struct WeeklyRetrospective {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct WorkPattern {
+    pub pattern_id: String,
+    pub pattern_key: String,
+    pub score: f32,
+    pub evidence_json: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct PatternRecommendation {
+    pub recommendation_id: String,
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub confidence: f32,
+    pub rationale_json: serde_json::Value,
+    pub evidence_json: serde_json::Value,
+}
+
 #[derive(Debug, Error)]
 pub enum CuratorWorkerError {
     #[error("event: {0}")]
@@ -273,6 +291,18 @@ pub trait RetrospectiveGenerator: Send + Sync {
         backlog_count: u32,
         backlog_threshold: u32,
     ) -> Result<Option<WeeklyRetrospective>, CuratorWorkerError>;
+}
+
+#[async_trait]
+pub trait WorkPatternExtractor: Send + Sync {
+    async fn extract(&self, project_id: &str) -> Result<Vec<WorkPattern>, CuratorWorkerError>;
+
+    async fn recommend(
+        &self,
+        project_id: &str,
+        cycle_id: &str,
+        patterns: &[WorkPattern],
+    ) -> Result<Vec<PatternRecommendation>, CuratorWorkerError>;
 }
 
 #[derive(Clone)]
@@ -576,6 +606,17 @@ impl SqliteRetrospectiveGenerator {
     }
 }
 
+#[derive(Clone)]
+pub struct SqliteWorkPatternExtractor {
+    db: DbPool,
+}
+
+impl SqliteWorkPatternExtractor {
+    pub fn new(db: DbPool) -> Self {
+        Self { db }
+    }
+}
+
 #[async_trait]
 impl ConflictDetector for SqliteConflictDetector {
     async fn detect(
@@ -636,6 +677,155 @@ impl ConflictDetector for SqliteConflictDetector {
             findings.push(finding);
         }
         Ok(findings)
+    }
+}
+
+#[async_trait]
+impl WorkPatternExtractor for SqliteWorkPatternExtractor {
+    async fn extract(&self, project_id: &str) -> Result<Vec<WorkPattern>, CuratorWorkerError> {
+        let project_id = project_id.to_string();
+        let mut patterns = self
+            .db
+            .with_conn(move |conn| {
+                let mut out = Vec::new();
+
+                let mut event_stmt = conn.prepare(
+                    "SELECT source, COUNT(*) AS cnt
+                     FROM session_search_index
+                     WHERE session_id LIKE (?1 || ':%')
+                       AND event_type IN ('Action','Observation')
+                     GROUP BY source
+                     ORDER BY cnt DESC, source ASC
+                     LIMIT 6",
+                )?;
+                let mut event_rows = event_stmt.query([project_id.clone()])?;
+                while let Some(row) = event_rows.next()? {
+                    let source: String = row.get(0)?;
+                    let cnt: i64 = row.get(1)?;
+                    out.push(WorkPattern {
+                        pattern_id: format!("pat-{}-{}", source.replace(' ', "_"), cnt),
+                        pattern_key: format!("event_source:{source}"),
+                        score: ((cnt as f32) / 20.0).clamp(0.0, 1.0),
+                        evidence_json: json!({
+                            "kind":"event_replay",
+                            "source":source,
+                            "count":cnt
+                        }),
+                    });
+                }
+
+                let mut decision_stmt = conn.prepare(
+                    "SELECT decision_type, COUNT(*) AS cnt
+                     FROM curator_decisions
+                     WHERE project_id = ?1
+                     GROUP BY decision_type
+                     ORDER BY cnt DESC, decision_type ASC
+                     LIMIT 4",
+                )?;
+                let mut decision_rows = decision_stmt.query([project_id.clone()])?;
+                while let Some(row) = decision_rows.next()? {
+                    let decision_type: String = row.get(0)?;
+                    let cnt: i64 = row.get(1)?;
+                    out.push(WorkPattern {
+                        pattern_id: format!("pat-decision-{}-{}", decision_type, cnt),
+                        pattern_key: format!("decision_type:{decision_type}"),
+                        score: ((cnt as f32) / 15.0).clamp(0.0, 1.0),
+                        evidence_json: json!({
+                            "kind":"aggregate",
+                            "decision_type":decision_type,
+                            "count":cnt
+                        }),
+                    });
+                }
+
+                Ok::<_, CuratorWorkerError>(out)
+            })
+            .await?;
+
+        patterns.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| a.pattern_key.cmp(&b.pattern_key))
+                .then_with(|| a.pattern_id.cmp(&b.pattern_id))
+        });
+        Ok(patterns)
+    }
+
+    async fn recommend(
+        &self,
+        project_id: &str,
+        cycle_id: &str,
+        patterns: &[WorkPattern],
+    ) -> Result<Vec<PatternRecommendation>, CuratorWorkerError> {
+        let project_id = project_id.to_string();
+        let cycle_id = cycle_id.to_string();
+        let patterns = patterns.to_vec();
+        self.db
+            .with_conn(move |conn| {
+                conn.execute_batch("BEGIN IMMEDIATE;")?;
+                let now = now_micros()?;
+                let mut recommendations = Vec::new();
+                for pattern in patterns.iter().take(3) {
+                    let subject_id: String = conn
+                        .query_row(
+                            "SELECT o.revision_id
+                             FROM playbook_revision_outcomes o
+                             JOIN playbook_revisions r ON r.id = o.revision_id
+                             WHERE r.source_project_id = ?1
+                             ORDER BY (o.failure_count - o.success_count) DESC, o.revision_id ASC
+                             LIMIT 1",
+                            [project_id.clone()],
+                            |row| row.get(0),
+                        )
+                        .unwrap_or_else(|_| pattern.pattern_id.clone());
+                    let subject_kind = if subject_id.starts_with("rev-") {
+                        "revision".to_string()
+                    } else {
+                        "pattern".to_string()
+                    };
+                    let confidence = (0.35 + (pattern.score * 0.45)).clamp(0.0, 0.80);
+                    let recommendation_id = format!("rec-{}", uuid::Uuid::new_v4());
+                    let rationale_json = json!({
+                        "policy_version":"phase4_story_4_8",
+                        "pattern_key":pattern.pattern_key,
+                        "score":pattern.score,
+                        "subject_kind":subject_kind
+                    });
+                    let evidence_json = json!({
+                        "pattern_id":pattern.pattern_id,
+                        "evidence":pattern.evidence_json
+                    });
+
+                    conn.execute(
+                        "INSERT INTO curator_decisions (
+                            id, tenant_id, project_id, cycle_id, decision_type, subject_kind,
+                            subject_id, confidence, rationale_json, evidence_json, status, failure_category, created_at
+                         ) VALUES (?1, NULL, ?2, ?3, 'recommendation', ?4, ?5, ?6, ?7, ?8, 'applied', NULL, ?9)",
+                        rusqlite::params![
+                            recommendation_id,
+                            project_id,
+                            cycle_id,
+                            subject_kind,
+                            subject_id,
+                            confidence,
+                            rationale_json.to_string(),
+                            evidence_json.to_string(),
+                            now
+                        ],
+                    )?;
+                    recommendations.push(PatternRecommendation {
+                        recommendation_id,
+                        subject_kind,
+                        subject_id,
+                        confidence,
+                        rationale_json,
+                        evidence_json,
+                    });
+                }
+                conn.execute_batch("COMMIT;")?;
+                Ok::<_, CuratorWorkerError>(recommendations)
+            })
+            .await
     }
 }
 
@@ -976,26 +1166,33 @@ pub struct ProductionCuratorCycleExecutor {
     consolidation_engine: Arc<dyn ConsolidationEngine>,
     conflict_detector: Arc<dyn ConflictDetector>,
     retrospective_generator: Arc<dyn RetrospectiveGenerator>,
+    work_pattern_extractor: Arc<dyn WorkPatternExtractor>,
     max_candidates_per_cycle: u32,
     backlog_threshold: u32,
 }
 
+pub struct CuratorRuntimeDeps {
+    pub candidate_builder: Arc<dyn CandidateBuilder>,
+    pub reranker: Arc<dyn EmbeddingReranker>,
+    pub consolidation_engine: Arc<dyn ConsolidationEngine>,
+    pub conflict_detector: Arc<dyn ConflictDetector>,
+    pub retrospective_generator: Arc<dyn RetrospectiveGenerator>,
+    pub work_pattern_extractor: Arc<dyn WorkPatternExtractor>,
+}
+
 impl ProductionCuratorCycleExecutor {
     pub fn new(
-        candidate_builder: Arc<dyn CandidateBuilder>,
-        reranker: Arc<dyn EmbeddingReranker>,
-        consolidation_engine: Arc<dyn ConsolidationEngine>,
-        conflict_detector: Arc<dyn ConflictDetector>,
-        retrospective_generator: Arc<dyn RetrospectiveGenerator>,
+        deps: CuratorRuntimeDeps,
         max_candidates_per_cycle: u32,
         backlog_threshold: u32,
     ) -> Self {
         Self {
-            candidate_builder,
-            reranker,
-            consolidation_engine,
-            conflict_detector,
-            retrospective_generator,
+            candidate_builder: deps.candidate_builder,
+            reranker: deps.reranker,
+            consolidation_engine: deps.consolidation_engine,
+            conflict_detector: deps.conflict_detector,
+            retrospective_generator: deps.retrospective_generator,
+            work_pattern_extractor: deps.work_pattern_extractor,
             max_candidates_per_cycle,
             backlog_threshold,
         }
@@ -1026,6 +1223,11 @@ impl CuratorCycleExecutor for ProductionCuratorCycleExecutor {
             .consolidation_engine
             .apply(project_id, &cycle_id, &decisions)
             .await?;
+        let patterns = self.work_pattern_extractor.extract(project_id).await?;
+        let recommendations = self
+            .work_pattern_extractor
+            .recommend(project_id, &cycle_id, &patterns)
+            .await?;
         let retrospective = self
             .retrospective_generator
             .generate_if_due(project_id, _trigger, _backlog_count, self.backlog_threshold)
@@ -1036,6 +1238,7 @@ impl CuratorCycleExecutor for ProductionCuratorCycleExecutor {
             project_id: project_id.to_string(),
             decisions_total: decisions.len() as u32
                 + conflicts.len() as u32
+                + recommendations.len() as u32
                 + u32::from(retrospective.is_some()),
             queued_for_review: apply_result.queued_for_review,
             failures: apply_result.failures,
@@ -1768,11 +1971,14 @@ mod tests {
         let reranker = Arc::new(TestReranker::new(true));
         let consolidation = Arc::new(SqliteConsolidationEngine::new(db.clone()));
         let executor = Arc::new(ProductionCuratorCycleExecutor::new(
-            builder,
-            reranker,
-            consolidation,
-            Arc::new(StubNoopConflictDetector),
-            Arc::new(StubNoopRetrospectiveGenerator),
+            CuratorRuntimeDeps {
+                candidate_builder: builder,
+                reranker,
+                consolidation_engine: consolidation,
+                conflict_detector: Arc::new(StubNoopConflictDetector),
+                retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
+                work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
+            },
             50,
             10,
         ));
@@ -1903,11 +2109,14 @@ mod tests {
         let reranker = Arc::new(StubMergeKeepReranker);
         let consolidation = Arc::new(SqliteConsolidationEngine::new(db.clone()));
         let executor = Arc::new(ProductionCuratorCycleExecutor::new(
-            builder,
-            reranker,
-            consolidation,
-            Arc::new(StubNoopConflictDetector),
-            Arc::new(StubNoopRetrospectiveGenerator),
+            CuratorRuntimeDeps {
+                candidate_builder: builder,
+                reranker,
+                consolidation_engine: consolidation,
+                conflict_detector: Arc::new(StubNoopConflictDetector),
+                retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
+                work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
+            },
             50,
             10,
         ));
@@ -2151,6 +2360,24 @@ mod tests {
         }
     }
 
+    struct StubNoopWorkPatternExtractor;
+
+    #[async_trait]
+    impl WorkPatternExtractor for StubNoopWorkPatternExtractor {
+        async fn extract(&self, _project_id: &str) -> Result<Vec<WorkPattern>, CuratorWorkerError> {
+            Ok(Vec::new())
+        }
+
+        async fn recommend(
+            &self,
+            _project_id: &str,
+            _cycle_id: &str,
+            _patterns: &[WorkPattern],
+        ) -> Result<Vec<PatternRecommendation>, CuratorWorkerError> {
+            Ok(Vec::new())
+        }
+    }
+
     #[tokio::test]
     async fn e2e_cycle_conflict_detector_covers_conflict_and_non_conflict_paths() {
         let db = db::open(":memory:").await.expect("db");
@@ -2182,11 +2409,14 @@ mod tests {
         ));
         let consolidation = Arc::new(SqliteConsolidationEngine::new(db.clone()));
         let executor = Arc::new(ProductionCuratorCycleExecutor::new(
-            builder,
-            reranker,
-            consolidation,
-            conflict_detector,
-            Arc::new(StubNoopRetrospectiveGenerator),
+            CuratorRuntimeDeps {
+                candidate_builder: builder,
+                reranker,
+                consolidation_engine: consolidation,
+                conflict_detector,
+                retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
+                work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
+            },
             50,
             10,
         ));
@@ -2253,11 +2483,14 @@ mod tests {
         ));
         let consolidation2 = Arc::new(SqliteConsolidationEngine::new(db2.clone()));
         let executor2 = Arc::new(ProductionCuratorCycleExecutor::new(
-            builder2,
-            reranker2,
-            consolidation2,
-            conflict_detector2,
-            Arc::new(StubNoopRetrospectiveGenerator),
+            CuratorRuntimeDeps {
+                candidate_builder: builder2,
+                reranker: reranker2,
+                consolidation_engine: consolidation2,
+                conflict_detector: conflict_detector2,
+                retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
+                work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
+            },
             50,
             10,
         ));
@@ -2309,11 +2542,14 @@ mod tests {
             let conflict_detector = Arc::new(StubNoopConflictDetector);
             let retrospective = Arc::new(StubRetrospectiveGenerator { mode });
             let executor = Arc::new(ProductionCuratorCycleExecutor::new(
-                builder,
-                reranker,
-                consolidation,
-                conflict_detector,
-                retrospective,
+                CuratorRuntimeDeps {
+                    candidate_builder: builder,
+                    reranker,
+                    consolidation_engine: consolidation,
+                    conflict_detector,
+                    retrospective_generator: retrospective,
+                    work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
+                },
                 50,
                 10,
             ));
@@ -2365,11 +2601,14 @@ mod tests {
             Arc::new(SqliteEventStore::new(db.clone())),
             Arc::new(StubBacklogProbe),
             Arc::new(ProductionCuratorCycleExecutor::new(
-                Arc::new(SqliteCandidateBuilder::new(db.clone())),
-                Arc::new(TestReranker::new(true)),
-                Arc::new(SqliteConsolidationEngine::new(db.clone())),
-                Arc::new(StubNoopConflictDetector),
-                Arc::new(StubNoopRetrospectiveGenerator),
+                CuratorRuntimeDeps {
+                    candidate_builder: Arc::new(SqliteCandidateBuilder::new(db.clone())),
+                    reranker: Arc::new(TestReranker::new(true)),
+                    consolidation_engine: Arc::new(SqliteConsolidationEngine::new(db.clone())),
+                    conflict_detector: Arc::new(StubNoopConflictDetector),
+                    retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
+                    work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
+                },
                 50,
                 10,
             )),
@@ -2407,5 +2646,108 @@ mod tests {
             10,
             now
         ));
+    }
+
+    #[tokio::test]
+    async fn e2e_cycle_pattern_extractor_emits_deterministic_recommendations() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_revision_pair(&db, "proj-pattern").await;
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO playbook_revision_outcomes (
+                    revision_id, tenant_id, success_count, failure_count, decayed_success, decayed_failure, last_outcome_at
+                 ) VALUES ('rev-l-1', NULL, 1, 5, 0, 0, NULL)",
+                [],
+            )
+            .expect("seed outcomes left");
+            conn.execute(
+                "INSERT INTO playbook_revision_outcomes (
+                    revision_id, tenant_id, success_count, failure_count, decayed_success, decayed_failure, last_outcome_at
+                 ) VALUES ('rev-r-1', NULL, 4, 1, 0, 0, NULL)",
+                [],
+            )
+            .expect("seed outcomes right");
+            conn.execute(
+                "INSERT INTO session_search_index (
+                    event_id, session_id, timestamp, event_type, source, searchable_text
+                 ) VALUES (9001, 'proj-pattern:s-1', 1, 'Action', 'shell_exec', 'run make test')",
+                [],
+            )
+            .expect("seed event 1");
+            conn.execute(
+                "INSERT INTO session_search_index (
+                    event_id, session_id, timestamp, event_type, source, searchable_text
+                 ) VALUES (9002, 'proj-pattern:s-2', 2, 'Observation', 'shell_exec', 'tests failed')",
+                [],
+            )
+            .expect("seed event 2");
+        })
+        .await;
+
+        let events = Arc::new(SqliteEventStore::new(db.clone()));
+        let executor = Arc::new(ProductionCuratorCycleExecutor::new(
+            CuratorRuntimeDeps {
+                candidate_builder: Arc::new(SqliteCandidateBuilder::new(db.clone())),
+                reranker: Arc::new(TestReranker::new(true)),
+                consolidation_engine: Arc::new(SqliteConsolidationEngine::new(db.clone())),
+                conflict_detector: Arc::new(StubNoopConflictDetector),
+                retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
+                work_pattern_extractor: Arc::new(SqliteWorkPatternExtractor::new(db.clone())),
+            },
+            50,
+            10,
+        ));
+        let worker = ProductionCuratorWorker::new(
+            CuratorConfig {
+                enabled: true,
+                interval_seconds: 1,
+                backlog_threshold: 10,
+                max_candidates_per_cycle: 50,
+                embedding_budget_monthly_tokens: 50_000,
+                embedding_budget_soft_cap_pct: 0.08,
+                embedding_budget_hard_breaker_pct: 0.12,
+                embedding_model: "text-embedding-3-small".to_string(),
+                project_id: "proj-pattern".to_string(),
+            },
+            db.clone(),
+            events,
+            Arc::new(StubBacklogProbe),
+            executor,
+        );
+
+        let result = worker
+            .run_once(CuratorTrigger::Manual, 12)
+            .await
+            .expect("run");
+        assert!(result.decisions_total >= 2);
+
+        db.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT subject_kind, subject_id, confidence
+                     FROM curator_decisions
+                     WHERE project_id='proj-pattern' AND decision_type='recommendation'
+                     ORDER BY confidence DESC, subject_id ASC",
+                )
+                .expect("prepare");
+            let mut rows = stmt.query([]).expect("query");
+            let mut got: Vec<(String, String, f32)> = Vec::new();
+            while let Some(row) = rows.next().expect("next") {
+                got.push((
+                    row.get(0).expect("kind"),
+                    row.get(1).expect("id"),
+                    row.get(2).expect("c"),
+                ));
+            }
+            assert!(!got.is_empty());
+            assert!(
+                got.iter()
+                    .all(|(kind, _, _)| kind == "revision" || kind == "pattern")
+            );
+            for (_, _, confidence) in &got {
+                assert!((*confidence >= 0.35) && (*confidence <= 0.80));
+            }
+        })
+        .await;
     }
 }

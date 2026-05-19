@@ -1,6 +1,6 @@
 # Story 4.8 — WorkPatternExtractor + pattern-to-recommendation loop
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 4.2, 4.3
 > **Phase**: 4
