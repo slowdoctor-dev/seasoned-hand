@@ -119,7 +119,7 @@ accountability, not speculative implementation details.
 - **Plan**: design read-only, opt-in analytics path with strong isolation controls.
 - **Owner**: Phase 5 Architect
 - **Target phase/story**: Phase 5 multi-project analytics
-- **Status**: open
+- **Status**: closed (story 4.15)
 
 ### #96 Curator rationale schema evolution tooling (H3)
 - **Opened**: 2026-05-18 by Architect
@@ -336,3 +336,15 @@ accountability, not speculative implementation details.
     `crates/seasoned-hand-core/src/curator/mod.rs`,
     `tests::embedding_budget_zero_baseline_fallback_is_absolute_cap`,
     `curator::tests::embedding_budget_uses_monthly_token_fallback_when_total_tokens_zero`
+
+## Story 4.15 close-out (2026-05-19)
+
+- `#95` CLOSED by story 4.15:
+  - project-scope isolation now has explicit fail-closed regression coverage for cross-project
+    consolidation decisions and conflict writes, plus review-queue project-scoped query behavior
+  - cross-project revision references are rejected before curator decision insertion
+  - evidence:
+    `crates/seasoned-hand-core/src/curator/mod.rs`
+    (`validate_decision_scope`, `consolidation_apply_rejects_cross_project_revision_scope`,
+    `conflict_detector_rejects_cross_project_pairs_without_writes`,
+    `review_queue_transitions_are_scoped_to_target_queue_project_rows`)

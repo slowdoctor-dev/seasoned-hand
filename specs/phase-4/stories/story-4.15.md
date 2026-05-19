@@ -1,6 +1,6 @@
 # Story 4.15 — Project-scope isolation enforcement regression
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 1.5 hours
 > **Dependencies**: 4.2, 4.3, 4.5, 4.10
 > **Phase**: 4
@@ -14,9 +14,9 @@ Guarantee Curator reads/writes fail closed on cross-project attempts.
 
 ## Acceptance criteria
 
-- [ ] Integration test attempts cross-project decision and verifies rejection.
-- [ ] Query-level guards are validated for merge/archive/conflict/review writes.
-- [ ] No cross-project decision row can be inserted through runtime APIs.
+- [x] Integration test attempts cross-project decision and verifies rejection.
+- [x] Query-level guards are validated for merge/archive/conflict/review writes.
+- [x] No cross-project decision row can be inserted through runtime APIs.
 
 ## Non-goals
 

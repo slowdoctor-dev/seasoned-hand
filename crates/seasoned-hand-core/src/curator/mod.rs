@@ -8,6 +8,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use rusqlite::OptionalExtension;
 use serde_json::json;
 use thiserror::Error;
 use tokio::time::MissedTickBehavior;
@@ -1392,6 +1393,15 @@ impl ConsolidationEngine for SqliteConsolidationEngine {
                 conn.execute_batch("BEGIN IMMEDIATE;")?;
                 let now = now_micros()?;
                 for decision in &decisions {
+                    let target_revision = decision.target_revision_id.as_deref().unwrap_or("");
+                    if !validate_decision_scope(conn, &project_id, target_revision, &decision.subject_revision_ids)?
+                    {
+                        conn.execute_batch("ROLLBACK;")?;
+                        return Err(CuratorWorkerError::Executor(format!(
+                            "project_scope_violation: decision {} references revisions outside project {}",
+                            decision.decision_id, project_id
+                        )));
+                    }
                     let status = if decision.requires_review {
                         "queued_review"
                     } else {
@@ -1462,6 +1472,40 @@ impl ConsolidationEngine for SqliteConsolidationEngine {
             })
             .await
     }
+}
+
+fn validate_decision_scope(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    target_revision: &str,
+    subject_revision_ids: &[String],
+) -> Result<bool, CuratorWorkerError> {
+    if !target_revision.is_empty()
+        && !revision_belongs_to_project(conn, target_revision, project_id)?
+    {
+        return Ok(false);
+    }
+    for revision_id in subject_revision_ids {
+        if !revision_id.is_empty() && !revision_belongs_to_project(conn, revision_id, project_id)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn revision_belongs_to_project(
+    conn: &rusqlite::Connection,
+    revision_id: &str,
+    project_id: &str,
+) -> Result<bool, CuratorWorkerError> {
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM playbook_revisions WHERE id = ?1 AND source_project_id = ?2",
+            rusqlite::params![revision_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(found.is_some())
 }
 
 #[derive(Clone, Debug)]
@@ -3406,6 +3450,53 @@ mod tests {
         .await;
     }
 
+    #[tokio::test]
+    async fn consolidation_apply_rejects_cross_project_revision_scope() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_revision_pair(&db, "proj-a").await;
+
+        let engine =
+            SqliteConsolidationEngine::new(db.clone()).with_archive_policy(true, 0.40, 0.55);
+        let decision = ConsolidationDecision {
+            decision_id: "cd-cross-project".to_string(),
+            kind: ConsolidationDecisionKind::Merge,
+            subject_revision_ids: vec!["rev-l-1".to_string(), "rev-r-1".to_string()],
+            target_revision_id: Some("rev-l-1".to_string()),
+            confidence: 0.9,
+            rationale_json: json!({"policy":"isolation_test"}),
+            requires_review: false,
+        };
+
+        // Rewrite one subject revision to project-b so this decision becomes cross-project.
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE playbook_revisions SET source_project_id='proj-b' WHERE id='rev-r-1'",
+                [],
+            )
+            .expect("mutate revision scope");
+        })
+        .await;
+
+        let error = engine
+            .apply("proj-a", "cycle-cross-project", &[decision])
+            .await
+            .expect_err("cross-project decision must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("project_scope_violation"));
+
+        db.with_conn(|conn| {
+            let rows: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM curator_decisions WHERE cycle_id='cycle-cross-project'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("decision count");
+            assert_eq!(rows, 0, "no decision rows may be inserted");
+        })
+        .await;
+    }
+
     #[derive(Clone)]
     struct TestReranker {
         embedding_used: bool,
@@ -3895,6 +3986,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn conflict_detector_rejects_cross_project_pairs_without_writes() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_revision_pair(&db, "proj-left").await;
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE playbook_revisions
+                 SET source_project_id='proj-right'
+                 WHERE id='rev-r-1'",
+                [],
+            )
+            .expect("mutate right revision project");
+        })
+        .await;
+
+        let detector = SqliteConflictDetector::new(
+            db.clone(),
+            Arc::new(StubSemanticAdjudicator { score: 0.9 }),
+        );
+        let reranked = vec![RerankedCandidate {
+            left_revision_id: "rev-l-1".to_string(),
+            right_revision_id: "rev-r-1".to_string(),
+            blended_score: 0.8,
+            embedding_cosine: 0.8,
+            fts_norm: 0.8,
+            deterministic_floor: 0.8,
+            llm_contribution: 0.2,
+            embedding_used: true,
+        }];
+        let result = detector.detect("proj-left", &reranked).await;
+        assert!(
+            result.is_err(),
+            "cross-project conflict candidate must fail closed"
+        );
+
+        db.with_conn(|conn| {
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM sop_conflicts", [], |row| row.get(0))
+                .expect("count");
+            assert_eq!(count, 0, "no conflict row should be written");
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn e2e_cycle_retrospective_success_refusal_and_retry_paths() {
         let db = db::open(":memory:").await.expect("db");
         seed_revision_pair(&db, "proj-retro").await;
@@ -4331,6 +4466,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn review_queue_transitions_are_scoped_to_target_queue_project_rows() {
+        let db = db::open(":memory:").await.expect("db");
+        let queue = SqliteOperatorReviewQueue::new(db.clone());
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO curator_decisions (
+                    id, tenant_id, project_id, cycle_id, decision_type, subject_kind, subject_id,
+                    confidence, rationale_json, evidence_json, status, failure_category, created_at
+                 ) VALUES (
+                    'cd-pa', NULL, 'proj-a', 'cycle-a', 'archive', 'revision', 'rev-a',
+                    0.52, '{}', '{}', 'queued_review', NULL, 1
+                 )",
+                [],
+            )
+            .expect("seed decision a");
+            conn.execute(
+                "INSERT INTO curator_decisions (
+                    id, tenant_id, project_id, cycle_id, decision_type, subject_kind, subject_id,
+                    confidence, rationale_json, evidence_json, status, failure_category, created_at
+                 ) VALUES (
+                    'cd-pb', NULL, 'proj-b', 'cycle-b', 'archive', 'revision', 'rev-b',
+                    0.52, '{}', '{}', 'queued_review', NULL, 1
+                 )",
+                [],
+            )
+            .expect("seed decision b");
+            conn.execute(
+                "INSERT INTO curator_review_queue (
+                    id, tenant_id, decision_id, project_id, queue_reason, severity, state, reviewer, reviewer_note, resolved_at, created_at
+                 ) VALUES (
+                    'rq-pa', NULL, 'cd-pa', 'proj-a', 'test', 'high', 'pending', NULL, NULL, NULL, 1
+                 )",
+                [],
+            )
+            .expect("seed queue a");
+            conn.execute(
+                "INSERT INTO curator_review_queue (
+                    id, tenant_id, decision_id, project_id, queue_reason, severity, state, reviewer, reviewer_note, resolved_at, created_at
+                 ) VALUES (
+                    'rq-pb', NULL, 'cd-pb', 'proj-b', 'test', 'high', 'pending', NULL, NULL, NULL, 1
+                 )",
+                [],
+            )
+            .expect("seed queue b");
+        })
+        .await;
+
+        let filtered = queue
+            .list(Some("proj-a"), Some("pending"), 10)
+            .await
+            .expect("filtered list");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].queue_id, "rq-pa");
+
+        let transitioned = queue
+            .transition(
+                "rq-pa",
+                ReviewQueueAction::Approve,
+                Some("ops"),
+                Some("ok"),
+                None,
+            )
+            .await
+            .expect("transition");
+        assert!(transitioned);
+
+        db.with_conn(|conn| {
+            let a_state: String = conn
+                .query_row(
+                    "SELECT state FROM curator_review_queue WHERE id='rq-pa'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("state a");
+            let b_state: String = conn
+                .query_row(
+                    "SELECT state FROM curator_review_queue WHERE id='rq-pb'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("state b");
+            assert_eq!(a_state, "approved");
+            assert_eq!(b_state, "pending");
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn run_once_emits_quarantine_events_for_all_failure_categories() {
         let db = db::open(":memory:").await.expect("db");
         let events = Arc::new(SqliteEventStore::new(db.clone()));
@@ -4399,6 +4622,21 @@ mod tests {
     async fn emits_curation_decision_skill_and_curator_misc_taxonomy_events() {
         let db = db::open(":memory:").await.expect("db");
         seed_revision_pair(&db, "proj-taxonomy").await;
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id, created_at, updated_at, trigger_keywords, content, status, source_project_id, active_revision_id, success_count, failure_count)
+                 VALUES ('pb-k', NULL, 'Keep', '/tmp/k.md', 1, NULL, 1, 1, '[\"docs\"]', 'Documentation workflow', 'active', 'proj-taxonomy', 'rev-k-1', 0, 0)",
+                [],
+            )
+            .expect("insert keep playbook for taxonomy");
+            conn.execute(
+                "INSERT INTO playbook_revisions (id, tenant_id, playbook_id, revision_no, parent_revision_id, title, trigger_keywords, content, source_task_id, source_project_id, author_type, change_kind, confidence, created_at, superseded_at)
+                 VALUES ('rev-k-1', NULL, 'pb-k', 1, NULL, 'Keep rev', '[\"docs\"]', 'Documentation workflow', NULL, 'proj-taxonomy', 'extractor', 'extract', 1.0, 1, NULL)",
+                [],
+            )
+            .expect("insert keep revision for taxonomy");
+        })
+        .await;
         let events = Arc::new(SqliteEventStore::new(db.clone()));
         let executor = Arc::new(ProductionCuratorCycleExecutor::new(
             CuratorRuntimeDeps {
