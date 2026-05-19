@@ -1,5 +1,6 @@
 pub mod brief;
 pub mod channel;
+pub mod curator;
 pub mod inbox;
 pub mod init;
 pub mod playbook;

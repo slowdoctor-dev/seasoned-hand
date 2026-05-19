@@ -11,7 +11,7 @@ use seasoned_hand_core::curator::{
     CuratorConfig, CuratorRuntimeDeps, EmbeddingBudget, LlmSemanticAdjudicator,
     ProductionCuratorCycleExecutor, ProductionCuratorWorker, ProductionEmbeddingReranker,
     SqliteBacklogProbe, SqliteCandidateBuilder, SqliteConflictDetector, SqliteConsolidationEngine,
-    SqliteRetrospectiveGenerator, SqliteWorkPatternExtractor,
+    SqliteOperatorReviewQueue, SqliteRetrospectiveGenerator, SqliteWorkPatternExtractor,
 };
 use seasoned_hand_core::llm::LlmClient;
 use seasoned_hand_core::router::{SlotName, SlotRouter};
@@ -458,6 +458,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
         let work_pattern_extractor =
             std::sync::Arc::new(SqliteWorkPatternExtractor::new(state.db.clone()));
+        let operator_review_queue =
+            std::sync::Arc::new(SqliteOperatorReviewQueue::new(state.db.clone()));
         let reranker = std::sync::Arc::new(ProductionEmbeddingReranker::new(
             embedding_llm,
             config.embedding_model.clone(),
@@ -475,6 +477,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 conflict_detector,
                 retrospective_generator,
                 work_pattern_extractor,
+                operator_review_queue,
             },
             config.max_candidates_per_cycle,
             config.backlog_threshold,

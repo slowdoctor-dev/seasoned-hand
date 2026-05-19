@@ -155,6 +155,23 @@ pub struct PatternRecommendation {
     pub evidence_json: serde_json::Value,
 }
 
+#[derive(Debug, Clone)]
+pub struct ReviewQueueItem {
+    pub queue_id: String,
+    pub decision_id: String,
+    pub project_id: String,
+    pub state: String,
+    pub severity: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ReviewQueueAction {
+    Approve,
+    Reject,
+    Suppress,
+}
+
 #[derive(Debug, Error)]
 pub enum CuratorWorkerError {
     #[error("event: {0}")]
@@ -303,6 +320,27 @@ pub trait WorkPatternExtractor: Send + Sync {
         cycle_id: &str,
         patterns: &[WorkPattern],
     ) -> Result<Vec<PatternRecommendation>, CuratorWorkerError>;
+}
+
+#[async_trait]
+pub trait OperatorReviewQueue: Send + Sync {
+    async fn list(
+        &self,
+        project_id: Option<&str>,
+        state: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ReviewQueueItem>, CuratorWorkerError>;
+
+    async fn transition(
+        &self,
+        queue_id: &str,
+        action: ReviewQueueAction,
+        reviewer: Option<&str>,
+        note: Option<&str>,
+        suppress_ttl_days: Option<u32>,
+    ) -> Result<bool, CuratorWorkerError>;
+
+    async fn reconcile_suppression_expiry(&self) -> Result<u32, CuratorWorkerError>;
 }
 
 #[derive(Clone)]
@@ -611,6 +649,17 @@ pub struct SqliteWorkPatternExtractor {
     db: DbPool,
 }
 
+#[derive(Clone)]
+pub struct SqliteOperatorReviewQueue {
+    db: DbPool,
+}
+
+impl SqliteOperatorReviewQueue {
+    pub fn new(db: DbPool) -> Self {
+        Self { db }
+    }
+}
+
 impl SqliteWorkPatternExtractor {
     pub fn new(db: DbPool) -> Self {
         Self { db }
@@ -824,6 +873,146 @@ impl WorkPatternExtractor for SqliteWorkPatternExtractor {
                 }
                 conn.execute_batch("COMMIT;")?;
                 Ok::<_, CuratorWorkerError>(recommendations)
+            })
+            .await
+    }
+}
+
+#[async_trait]
+impl OperatorReviewQueue for SqliteOperatorReviewQueue {
+    async fn list(
+        &self,
+        project_id: Option<&str>,
+        state: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ReviewQueueItem>, CuratorWorkerError> {
+        let project_id = project_id.map(ToString::to_string);
+        let state = state.map(ToString::to_string);
+        let limit = i64::try_from(limit.max(1)).unwrap_or(100);
+        self.db
+            .with_conn(move |conn| {
+                let mut out = Vec::new();
+                let mut stmt = conn.prepare(
+                    "SELECT id, decision_id, project_id, state, severity, created_at
+                     FROM curator_review_queue
+                     WHERE (?1 IS NULL OR project_id = ?1)
+                       AND (?2 IS NULL OR state = ?2)
+                     ORDER BY created_at DESC, id ASC
+                     LIMIT ?3",
+                )?;
+                let mut rows = stmt.query(rusqlite::params![project_id, state, limit])?;
+                while let Some(row) = rows.next()? {
+                    out.push(ReviewQueueItem {
+                        queue_id: row.get(0)?,
+                        decision_id: row.get(1)?,
+                        project_id: row.get(2)?,
+                        state: row.get(3)?,
+                        severity: row.get(4)?,
+                        created_at: row.get(5)?,
+                    });
+                }
+                Ok::<_, CuratorWorkerError>(out)
+            })
+            .await
+    }
+
+    async fn transition(
+        &self,
+        queue_id: &str,
+        action: ReviewQueueAction,
+        reviewer: Option<&str>,
+        note: Option<&str>,
+        suppress_ttl_days: Option<u32>,
+    ) -> Result<bool, CuratorWorkerError> {
+        let queue_id = queue_id.to_string();
+        let reviewer = reviewer.map(ToString::to_string);
+        let note = note.map(ToString::to_string).unwrap_or_default();
+        let ttl_days = suppress_ttl_days.unwrap_or(30);
+        self.db
+            .with_conn(move |conn| {
+                conn.execute_batch("BEGIN IMMEDIATE;")?;
+                let now = now_micros()?;
+                let Some((decision_id, state)): Option<(String, String)> = conn
+                    .query_row(
+                        "SELECT decision_id, state FROM curator_review_queue WHERE id = ?1",
+                        [queue_id.clone()],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .ok()
+                else {
+                    conn.execute_batch("ROLLBACK;")?;
+                    return Ok(false);
+                };
+                if state != "pending" {
+                    conn.execute_batch("ROLLBACK;")?;
+                    return Ok(false);
+                }
+                let (next_state, next_status, note_out) = match action {
+                    ReviewQueueAction::Approve => ("approved", "applied", note),
+                    ReviewQueueAction::Reject => ("rejected", "rejected", note),
+                    ReviewQueueAction::Suppress => {
+                        let until = now.saturating_add(i64::from(ttl_days) * 86_400_000_000_i64);
+                        (
+                            "suppressed",
+                            "suppressed",
+                            format!("suppress_until={until};{}", note),
+                        )
+                    }
+                };
+                conn.execute(
+                    "UPDATE curator_review_queue
+                     SET state = ?1, reviewer = ?2, reviewer_note = ?3, resolved_at = ?4
+                     WHERE id = ?5",
+                    rusqlite::params![next_state, reviewer, note_out, now, queue_id],
+                )?;
+                conn.execute(
+                    "UPDATE curator_decisions
+                     SET status = ?1
+                     WHERE id = ?2",
+                    rusqlite::params![next_status, decision_id],
+                )?;
+                conn.execute_batch("COMMIT;")?;
+                Ok::<_, CuratorWorkerError>(true)
+            })
+            .await
+    }
+
+    async fn reconcile_suppression_expiry(&self) -> Result<u32, CuratorWorkerError> {
+        self.db
+            .with_conn(move |conn| {
+                let now = now_micros()?;
+                let mut stmt = conn.prepare(
+                    "SELECT id, reviewer_note FROM curator_review_queue WHERE state='suppressed'",
+                )?;
+                let mut rows = stmt.query([])?;
+                let mut to_reopen = Vec::new();
+                while let Some(row) = rows.next()? {
+                    let qid: String = row.get(0)?;
+                    let note: Option<String> = row.get(1)?;
+                    if let Some(note) = note
+                        && let Some(rest) = note.strip_prefix("suppress_until=")
+                        && let Some((ts, _tail)) = rest.split_once(';')
+                        && let Ok(until) = ts.parse::<i64>()
+                        && until <= now
+                    {
+                        to_reopen.push(qid);
+                    }
+                }
+                for qid in &to_reopen {
+                    conn.execute(
+                        "UPDATE curator_review_queue
+                         SET state='pending', reviewer_note='suppress_expired', resolved_at=NULL
+                         WHERE id = ?1",
+                        [qid],
+                    )?;
+                    let _ = conn.execute(
+                        "UPDATE curator_decisions
+                         SET status='queued_review'
+                         WHERE id = (SELECT decision_id FROM curator_review_queue WHERE id = ?1)",
+                        [qid],
+                    );
+                }
+                Ok::<_, CuratorWorkerError>(u32::try_from(to_reopen.len()).unwrap_or(0))
             })
             .await
     }
@@ -1167,6 +1356,7 @@ pub struct ProductionCuratorCycleExecutor {
     conflict_detector: Arc<dyn ConflictDetector>,
     retrospective_generator: Arc<dyn RetrospectiveGenerator>,
     work_pattern_extractor: Arc<dyn WorkPatternExtractor>,
+    operator_review_queue: Arc<dyn OperatorReviewQueue>,
     max_candidates_per_cycle: u32,
     backlog_threshold: u32,
 }
@@ -1178,6 +1368,7 @@ pub struct CuratorRuntimeDeps {
     pub conflict_detector: Arc<dyn ConflictDetector>,
     pub retrospective_generator: Arc<dyn RetrospectiveGenerator>,
     pub work_pattern_extractor: Arc<dyn WorkPatternExtractor>,
+    pub operator_review_queue: Arc<dyn OperatorReviewQueue>,
 }
 
 impl ProductionCuratorCycleExecutor {
@@ -1193,6 +1384,7 @@ impl ProductionCuratorCycleExecutor {
             conflict_detector: deps.conflict_detector,
             retrospective_generator: deps.retrospective_generator,
             work_pattern_extractor: deps.work_pattern_extractor,
+            operator_review_queue: deps.operator_review_queue,
             max_candidates_per_cycle,
             backlog_threshold,
         }
@@ -1208,6 +1400,10 @@ impl CuratorCycleExecutor for ProductionCuratorCycleExecutor {
         _backlog_count: u32,
     ) -> Result<CuratorCycleResult, CuratorWorkerError> {
         let started = std::time::Instant::now();
+        let _ = self
+            .operator_review_queue
+            .reconcile_suppression_expiry()
+            .await?;
         let candidates = self
             .candidate_builder
             .build_duplicate_candidates(project_id, self.max_candidates_per_cycle)
@@ -1978,6 +2174,7 @@ mod tests {
                 conflict_detector: Arc::new(StubNoopConflictDetector),
                 retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
                 work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
+                operator_review_queue: Arc::new(StubNoopOperatorReviewQueue),
             },
             50,
             10,
@@ -2116,6 +2313,7 @@ mod tests {
                 conflict_detector: Arc::new(StubNoopConflictDetector),
                 retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
                 work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
+                operator_review_queue: Arc::new(StubNoopOperatorReviewQueue),
             },
             50,
             10,
@@ -2276,6 +2474,35 @@ mod tests {
         }
     }
 
+    struct StubArchiveRecommendReranker;
+
+    #[async_trait]
+    impl EmbeddingReranker for StubArchiveRecommendReranker {
+        async fn rerank(
+            &self,
+            _project_id: &str,
+            candidates: Vec<DuplicateCandidate>,
+        ) -> Result<Vec<RerankedCandidate>, CuratorWorkerError> {
+            let first = candidates.first().cloned().unwrap_or(DuplicateCandidate {
+                left_revision_id: "rev-l-1".to_string(),
+                right_revision_id: "rev-r-1".to_string(),
+                left_text: String::new(),
+                right_text: String::new(),
+                fts_score: 0.5,
+                lexical_overlap: 0.5,
+                recency_delta_days: 0,
+            });
+            Ok(vec![RerankedCandidate {
+                left_revision_id: first.left_revision_id,
+                right_revision_id: first.right_revision_id,
+                blended_score: 0.50,
+                embedding_cosine: 0.25,
+                fts_norm: 0.50,
+                embedding_used: true,
+            }])
+        }
+    }
+
     struct StubNoopConflictDetector;
 
     #[async_trait]
@@ -2378,6 +2605,35 @@ mod tests {
         }
     }
 
+    struct StubNoopOperatorReviewQueue;
+
+    #[async_trait]
+    impl OperatorReviewQueue for StubNoopOperatorReviewQueue {
+        async fn list(
+            &self,
+            _project_id: Option<&str>,
+            _state: Option<&str>,
+            _limit: usize,
+        ) -> Result<Vec<ReviewQueueItem>, CuratorWorkerError> {
+            Ok(Vec::new())
+        }
+
+        async fn transition(
+            &self,
+            _queue_id: &str,
+            _action: ReviewQueueAction,
+            _reviewer: Option<&str>,
+            _note: Option<&str>,
+            _suppress_ttl_days: Option<u32>,
+        ) -> Result<bool, CuratorWorkerError> {
+            Ok(true)
+        }
+
+        async fn reconcile_suppression_expiry(&self) -> Result<u32, CuratorWorkerError> {
+            Ok(0)
+        }
+    }
+
     #[tokio::test]
     async fn e2e_cycle_conflict_detector_covers_conflict_and_non_conflict_paths() {
         let db = db::open(":memory:").await.expect("db");
@@ -2416,6 +2672,7 @@ mod tests {
                 conflict_detector,
                 retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
                 work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
+                operator_review_queue: Arc::new(StubNoopOperatorReviewQueue),
             },
             50,
             10,
@@ -2490,6 +2747,7 @@ mod tests {
                 conflict_detector: conflict_detector2,
                 retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
                 work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
+                operator_review_queue: Arc::new(StubNoopOperatorReviewQueue),
             },
             50,
             10,
@@ -2549,6 +2807,7 @@ mod tests {
                     conflict_detector,
                     retrospective_generator: retrospective,
                     work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
+                    operator_review_queue: Arc::new(StubNoopOperatorReviewQueue),
                 },
                 50,
                 10,
@@ -2608,6 +2867,7 @@ mod tests {
                     conflict_detector: Arc::new(StubNoopConflictDetector),
                     retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
                     work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
+                    operator_review_queue: Arc::new(StubNoopOperatorReviewQueue),
                 },
                 50,
                 10,
@@ -2693,6 +2953,7 @@ mod tests {
                 conflict_detector: Arc::new(StubNoopConflictDetector),
                 retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
                 work_pattern_extractor: Arc::new(SqliteWorkPatternExtractor::new(db.clone())),
+                operator_review_queue: Arc::new(StubNoopOperatorReviewQueue),
             },
             50,
             10,
@@ -2749,5 +3010,73 @@ mod tests {
             }
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn e2e_operator_review_queue_transitions_after_cycle() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_revision_pair(&db, "proj-review").await;
+        let events = Arc::new(SqliteEventStore::new(db.clone()));
+        let queue = Arc::new(SqliteOperatorReviewQueue::new(db.clone()));
+        let executor = Arc::new(ProductionCuratorCycleExecutor::new(
+            CuratorRuntimeDeps {
+                candidate_builder: Arc::new(SqliteCandidateBuilder::new(db.clone())),
+                reranker: Arc::new(StubArchiveRecommendReranker),
+                consolidation_engine: Arc::new(SqliteConsolidationEngine::new(db.clone())),
+                conflict_detector: Arc::new(StubNoopConflictDetector),
+                retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
+                work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
+                operator_review_queue: queue.clone(),
+            },
+            50,
+            10,
+        ));
+        let worker = ProductionCuratorWorker::new(
+            CuratorConfig {
+                enabled: true,
+                interval_seconds: 1,
+                backlog_threshold: 10,
+                max_candidates_per_cycle: 50,
+                embedding_budget_monthly_tokens: 50_000,
+                embedding_budget_soft_cap_pct: 0.08,
+                embedding_budget_hard_breaker_pct: 0.12,
+                embedding_model: "text-embedding-3-small".to_string(),
+                project_id: "proj-review".to_string(),
+            },
+            db.clone(),
+            events,
+            Arc::new(StubBacklogProbe),
+            executor,
+        );
+
+        worker
+            .run_once(CuratorTrigger::Manual, 12)
+            .await
+            .expect("run cycle");
+
+        let pending = queue
+            .list(Some("proj-review"), Some("pending"), 20)
+            .await
+            .expect("list pending");
+        assert!(!pending.is_empty());
+        let qid = pending[0].queue_id.clone();
+
+        let suppressed = queue
+            .transition(
+                &qid,
+                ReviewQueueAction::Suppress,
+                Some("ops"),
+                Some("mute noisy"),
+                Some(1),
+            )
+            .await
+            .expect("suppress");
+        assert!(suppressed);
+
+        let suppressed_rows = queue
+            .list(Some("proj-review"), Some("suppressed"), 20)
+            .await
+            .expect("list suppressed");
+        assert_eq!(suppressed_rows.len(), 1);
     }
 }

@@ -1,6 +1,6 @@
 # Story 4.9 — OperatorReviewQueue + curator CLI surfaces
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 4.2, 4.3, 4.5, 4.6
 > **Phase**: 4

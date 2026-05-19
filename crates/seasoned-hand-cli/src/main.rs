@@ -65,6 +65,9 @@ enum Commands {
     /// Channel management — `seasoned-hand channel <list|test|logs>`.
     #[command(subcommand)]
     Channel(commands::channel::ChannelCmd),
+    /// Curator operations — `seasoned-hand curator <status|run|review ...>`.
+    #[command(subcommand)]
+    Curator(commands::curator::CuratorCmd),
     /// SOP lifecycle — `seasoned-hand sop <create|edit|list|show|delete>`.
     #[command(subcommand)]
     Sop(commands::sop::SopCmd),
@@ -103,6 +106,7 @@ async fn main() -> ExitCode {
         Commands::Brief(cmd) => commands::brief::run(cmd, &client, cli.json).await,
         Commands::Inbox(cmd) => commands::inbox::run(cmd, &client, cli.json).await,
         Commands::Channel(cmd) => commands::channel::run(cmd, &client, cli.json).await,
+        Commands::Curator(cmd) => commands::curator::run(cmd, cli.json).await,
         Commands::Sop(cmd) => commands::sop::run(cmd, cli.json).await,
         Commands::Playbook(cmd) => commands::playbook::run(cmd, cli.json).await,
         Commands::Session(cmd) => commands::session_search::run(cmd, cli.json).await,
