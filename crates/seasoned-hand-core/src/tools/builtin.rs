@@ -16,6 +16,7 @@ use crate::agent::init::progress;
 use crate::events::{EventStore, EventType, NewEvent};
 use crate::matcher::{MatchRequest, MatcherMode, match_playbooks};
 use crate::plan::{Phase, PhaseStatus, PlanMutationSource};
+use crate::time::now_micros;
 
 pub(super) async fn sandbox_post_raw(url: &str, body: Value) -> Result<ToolOutput, ToolError> {
     let client = reqwest::Client::new();
@@ -1099,7 +1100,7 @@ impl Tool for FeatureMarkDone {
             .await
             .map_err(|e| ToolError::Backend(e.to_string()))?;
 
-        let now = progress::now_micros();
+        let now = now_micros();
         let Some(feature) = list.features.iter_mut().find(|f| f.id == feature_id) else {
             return Err(ToolError::InvalidArgs(format!(
                 "unknown feature_id '{feature_id}'"

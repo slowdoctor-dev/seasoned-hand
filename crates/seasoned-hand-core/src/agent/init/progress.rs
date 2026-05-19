@@ -1,4 +1,4 @@
-pub use crate::time::{now_micros, now_micros_str};
+use crate::time::now_micros_str;
 
 pub const MAX_PROGRESS_LINE_CHARS: usize = 200;
 
