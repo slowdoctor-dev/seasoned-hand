@@ -18,13 +18,12 @@
 //! refs: /specs/phase-2/architecture.md §2.7 (channel matrix), §2.9
 //! refs: /specs/phase-2/stories/story-2.12.md
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{Value, json};
 
 use super::{ChannelError, NotifyEvent, NotifyReceipt, NotifySink, NotifyTarget};
+use crate::time::now_micros;
 
 /// Channel name registered into the [`crate::channel::ChannelRegistry`].
 pub const CHANNEL_NAME: &str = "ntfy";
@@ -199,13 +198,6 @@ fn truncate(s: &str, n: usize) -> String {
     } else {
         s.chars().take(n).collect()
     }
-}
-
-fn now_micros() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
 }
 
 /// Internal helper trait — the `NotifyEvent` shape doesn't expose a

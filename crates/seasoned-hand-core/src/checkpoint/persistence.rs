@@ -2,14 +2,13 @@
 //! refs: /specs/phase-1/architecture.md §3.3
 //! refs: /specs/phase-1/stories/story-1.13.md
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::db::DbPool;
+use crate::time::now_micros;
 
 #[derive(Debug, Error)]
 pub enum CheckpointPersistenceError {
@@ -232,11 +231,4 @@ impl CheckpointStore {
             .await?;
         Ok(rows)
     }
-}
-
-fn now_micros() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or(0)
 }

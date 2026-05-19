@@ -27,7 +27,6 @@
 //! refs: /specs/phase-2/stories/story-2.10.md
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use ipnet::IpNet;
@@ -42,6 +41,7 @@ use super::{
     IntakeProvider, NotifyEvent, NotifyReceipt, NotifySink, NotifyTarget,
 };
 
+use crate::time::now_micros;
 pub mod ssrf;
 
 #[cfg(test)]
@@ -282,11 +282,4 @@ fn decode_url_ref(target_ref: &str) -> Result<String, ChannelError> {
         });
     }
     Ok(url.to_string())
-}
-
-fn now_micros() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or(0)
 }

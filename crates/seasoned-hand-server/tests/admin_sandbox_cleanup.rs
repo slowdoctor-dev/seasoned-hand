@@ -13,13 +13,14 @@
 //! refs: /specs/phase-2/stories/story-2.17.md
 
 use std::net::SocketAddr;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use axum::http::StatusCode;
 use seasoned_hand_core::project::{NewProject, ProjectStore, TaskStatus};
 use seasoned_hand_core::router::SlotRouter;
 use seasoned_hand_core::sandbox::SandboxClient;
 use seasoned_hand_core::search::{SearchClient, SearchProvider};
+use seasoned_hand_core::time::now_micros;
 use seasoned_hand_core::{db, pubsub};
 use seasoned_hand_server::{AppState, app};
 use serde_json::json;
@@ -32,13 +33,6 @@ struct Harness {
     db: db::DbPool,
     task_id: String,
     seeded_updated_at: i64,
-}
-
-fn now_micros() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or(0)
 }
 
 async fn build_harness(admin_token: Option<&str>) -> Harness {

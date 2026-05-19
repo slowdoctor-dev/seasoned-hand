@@ -10,14 +10,13 @@
 //! refs: /specs/phase-2/architecture.md §2.1, §3 V006
 //! refs: /specs/phase-2/stories/story-2.2.md
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::db::DbPool;
+use crate::time::now_micros;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -435,13 +434,6 @@ impl RawRow {
             updated_at: self.updated_at,
         })
     }
-}
-
-fn now_micros() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

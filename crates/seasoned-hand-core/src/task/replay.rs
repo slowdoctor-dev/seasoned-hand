@@ -10,8 +10,6 @@
 //! refs: /specs/phase-2/architecture.md §2.6, §8
 //! refs: /specs/phase-2/stories/story-2.16.md
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
@@ -21,6 +19,7 @@ use crate::db::DbPool;
 use crate::events::{EventError, EventQuery, EventStore, EventType, sqlite::SqliteEventStore};
 use crate::plan::{PhaseStatus, Plan, PlanError, PlanManager};
 use crate::sandbox::SandboxError;
+use crate::time::now_micros;
 
 /// Discriminator for [`ReplayError`] — the rebuild path embeds this in
 /// the `task_resume_rebuild_failed` Misc + the Task's `failure_reason`
@@ -416,11 +415,4 @@ fn append_replay_line(existing: &str, line: &str) -> String {
     }
     out.push_str(&format!("replay         user           {truncated}\n"));
     out
-}
-
-fn now_micros() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
 }

@@ -29,7 +29,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use rusqlite::params;
 use serde_json::json;
@@ -39,6 +39,7 @@ use crate::db::DbPool;
 use crate::events::{EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
 use crate::project::{TaskError, TaskStatus, TaskStore};
 use crate::sandbox::{SandboxClient, SandboxError, SandboxHandle, is_safe_session_id};
+use crate::time::now_micros;
 
 /// Minimal lifecycle surface the cron needs from the sandbox layer.
 /// Production impl is on [`SandboxClient`]; tests substitute a fake so
@@ -419,13 +420,6 @@ async fn remove_workspace(path: &Path) -> std::io::Result<()> {
 fn saturating_cutoff(now: i64, ttl: Duration) -> i64 {
     let ttl_micros = i64::try_from(ttl.as_micros()).unwrap_or(i64::MAX);
     now.saturating_sub(ttl_micros)
-}
-
-fn now_micros() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

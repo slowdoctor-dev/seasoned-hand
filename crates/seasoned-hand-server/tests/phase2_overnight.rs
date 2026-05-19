@@ -50,7 +50,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use axum::{Json, Router, extract::State, routing::get, routing::post};
 use serde_json::{Value, json};
@@ -74,6 +74,7 @@ use seasoned_hand_core::search::{SearchClient, SearchProvider};
 use seasoned_hand_core::task::{
     ResumeDeps, ResumeOutcome, SandboxOps, replay::WorkspaceWriter, resume_task,
 };
+use seasoned_hand_core::time::now_micros;
 use seasoned_hand_core::verifier::{
     VerifyRequest, VerifyTrigger, Worker, WorkerDeps, gate::VerifierGate,
 };
@@ -954,13 +955,6 @@ async fn misc_events(state: &AppState, session_id: &str) -> Vec<Value> {
         .filter(|e| e.event_type == EventType::Misc)
         .map(|e| e.data)
         .collect()
-}
-
-fn now_micros() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or(0)
 }
 
 // ============================================================================

@@ -20,7 +20,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -32,6 +31,7 @@ use super::{
     IntakeProvider,
 };
 
+use crate::time::now_micros;
 /// Channel name registered into the [`crate::channel::ChannelRegistry`].
 pub const CHANNEL_NAME: &str = "cli";
 
@@ -258,13 +258,6 @@ fn format_extension(format: &str) -> &'static str {
         "json" | "code" | "url" => "json",
         _ => "json",
     }
-}
-
-fn now_micros() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

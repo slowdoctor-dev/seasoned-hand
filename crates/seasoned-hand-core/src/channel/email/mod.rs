@@ -28,7 +28,7 @@
 //! refs: /specs/phase-2/stories/story-2.11.md
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use lettre::message::header::ContentType;
@@ -42,6 +42,7 @@ use super::{
     IntakeProvider, NotifyEvent, NotifyReceipt, NotifySink, NotifyTarget,
 };
 
+use crate::time::now_micros;
 pub mod allowlist;
 pub mod imap;
 pub mod smtp;
@@ -611,11 +612,4 @@ fn filename_for(deliverable: &Deliverable) -> String {
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| format!("deliverable-{}.{}", deliverable.id, deliverable.format))
-}
-
-fn now_micros() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or(0)
 }

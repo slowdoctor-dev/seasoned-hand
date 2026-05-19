@@ -1,3 +1,4 @@
+use crate::time::now_micros;
 use rusqlite::{Connection, OptionalExtension, params};
 use unicode_normalization::UnicodeNormalization;
 
@@ -251,14 +252,6 @@ fn age_days(now_micros: i64, created_at: i64) -> f64 {
     }
     let delta = now_micros - created_at;
     delta as f64 / 86_400_000_000.0
-}
-
-fn now_micros() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(d) => (d.as_secs() as i64) * 1_000_000 + (d.subsec_micros() as i64),
-        Err(_) => 0,
-    }
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+pub use crate::time::{now_micros, now_micros_str};
 
 pub const MAX_PROGRESS_LINE_CHARS: usize = 200;
 
@@ -13,23 +13,6 @@ pub fn truncate_line(line: &str) -> String {
     }
     out.push('…');
     out
-}
-
-pub fn now_micros() -> i64 {
-    let micros = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_micros())
-        .unwrap_or(0);
-    i64::try_from(micros).unwrap_or(0)
-}
-
-/// Stringified microseconds since the Unix epoch — the timestamp form
-/// used in progress-line prefixes. Story 1.4 called these "iso8601"
-/// timestamps; the actual on-disk format is `<i64-micros>` because
-/// adding a chrono/time dep solely to format one timestamp wasn't
-/// justified for Phase 1 (see story-1.4.md execution notes).
-pub fn now_micros_str() -> String {
-    format!("{}", now_micros())
 }
 
 pub fn append_line(existing: &str, line: &str) -> String {

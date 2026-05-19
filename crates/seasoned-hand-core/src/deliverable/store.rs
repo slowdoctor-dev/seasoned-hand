@@ -3,14 +3,13 @@
 //! refs: /specs/phase-2/architecture.md §2.3, §2.11, §3 V007
 //! refs: /specs/phase-2/stories/story-2.3.md
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use rusqlite::params;
 use thiserror::Error;
 use uuid::Uuid;
 
 use super::Deliverable;
 use crate::db::DbPool;
+use crate::time::now_micros;
 
 #[derive(Debug, Clone)]
 pub struct NewDeliverable {
@@ -241,11 +240,4 @@ impl RawRow {
             created_at: self.created_at,
         })
     }
-}
-
-fn now_micros() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or(0)
 }

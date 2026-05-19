@@ -21,6 +21,7 @@ use crate::events::{EventStore, sqlite::SqliteEventStore};
 use crate::project::{NewProject, ProjectStore, TaskStatus, TaskStore};
 use crate::sandbox::{SandboxError, SandboxHandle};
 use crate::task::ttl::{SandboxJanitor, TtlConfig, WorkspaceTtlCron};
+use crate::time::now_micros;
 
 // ---------- fake janitor ----------------------------------------------
 
@@ -159,14 +160,6 @@ async fn seed_session(fx: &Fixture, task_id: &str) -> String {
         })
         .await;
     session_id
-}
-
-fn now_micros() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or(0)
 }
 
 fn micros_from_days(days: u64) -> i64 {

@@ -2,8 +2,6 @@
 //! refs: /specs/phase-1/architecture.md §3.1
 //! refs: /specs/phase-1/stories/story-1.9.md
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use rusqlite::params;
 use thiserror::Error;
 use uuid::Uuid;
@@ -11,6 +9,7 @@ use uuid::Uuid;
 use crate::db::DbPool;
 
 use super::{NewVerification, VerdictKind, Verification};
+use crate::time::now_micros;
 
 #[derive(Debug, Error)]
 pub enum VerifierPersistenceError {
@@ -211,13 +210,6 @@ impl RawRow {
             created_at: self.created_at,
         })
     }
-}
-
-fn now_micros() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

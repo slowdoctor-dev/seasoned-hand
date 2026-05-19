@@ -31,6 +31,7 @@ use tokio_util::sync::CancellationToken;
 use super::store::{NewNotificationSent, NotificationsSentStore, NotifyStoreError};
 use crate::channel::{ChannelError, ChannelRegistry, NotifyEvent, NotifyTarget};
 use crate::pubsub::RedisPool;
+use crate::time::now_micros;
 
 /// Stream name producers push [`NotifyRequest`]s onto.
 pub const NOTIFY_STREAM: &str = "notify_request";
@@ -481,14 +482,6 @@ fn is_webhook_5xx(channel: &str, error: &ChannelError) -> bool {
         return false;
     }
     matches!(error, ChannelError::RemoteRejected { status, .. } if (500..600).contains(status))
-}
-
-fn now_micros() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

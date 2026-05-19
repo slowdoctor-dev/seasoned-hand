@@ -20,8 +20,6 @@
 //! refs: /specs/phase-2/architecture.md §2.6, §8
 //! refs: /specs/phase-2/stories/story-2.16.md
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use rusqlite::OptionalExtension;
 use serde_json::json;
 use thiserror::Error;
@@ -37,6 +35,7 @@ use crate::task::replay::{
     replay_plan, replay_progress,
 };
 
+use crate::time::now_micros;
 /// Minimal sandbox lifecycle surface the resume path needs. The
 /// production impl is on [`SandboxClient`]; tests substitute a fake
 /// that pre-registers handles so the rebuild path runs without docker.
@@ -379,11 +378,4 @@ async fn set_session_state(
     })
     .await?;
     Ok(())
-}
-
-fn now_micros() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
 }

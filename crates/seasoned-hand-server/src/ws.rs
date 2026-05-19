@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::AppState;
+use seasoned_hand_core::time::now_micros;
 
 const HEARTBEAT_SECONDS: u64 = 30;
 const PONG_TIMEOUT_SECONDS: u64 = 10;
@@ -975,14 +976,6 @@ async fn set_session_state(
         .await
         .map_err(|error| error.to_string())?;
     Ok(())
-}
-
-fn now_micros() -> i64 {
-    let micros = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros();
-    i64::try_from(micros).unwrap_or(i64::MAX)
 }
 
 fn now_unix() -> i64 {

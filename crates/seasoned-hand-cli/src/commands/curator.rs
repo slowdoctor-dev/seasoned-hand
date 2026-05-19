@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow};
 use clap::Subcommand;
 use rusqlite::OptionalExtension;
 use seasoned_hand_core::db;
+use seasoned_hand_core::time::now_micros;
 use serde::Serialize;
 
 #[derive(Debug, Subcommand)]
@@ -337,14 +338,6 @@ fn database_url() -> String {
     std::env::var("SH_DATABASE_URL")
         .or_else(|_| std::env::var("DATABASE_URL"))
         .unwrap_or_else(|_| "sqlite:./data/seasoned-hand.db".to_string())
-}
-
-fn now_micros() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(d) => (d.as_secs() as i64) * 1_000_000 + (d.subsec_micros() as i64),
-        Err(_) => 0,
-    }
 }
 
 fn next_event_id(conn: &rusqlite::Connection) -> Result<i64> {

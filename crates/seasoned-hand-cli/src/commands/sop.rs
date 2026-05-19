@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow};
 use clap::Subcommand;
 use rusqlite::{OptionalExtension, params};
 use seasoned_hand_core::db;
+use seasoned_hand_core::time::now_micros;
 use serde::Serialize;
 
 #[derive(Debug, Subcommand)]
@@ -239,14 +240,6 @@ fn database_url() -> String {
 
 fn bool_to_i64(v: bool) -> i64 {
     if v { 1 } else { 0 }
-}
-
-fn now_micros() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(d) => (d.as_secs() as i64) * 1_000_000 + (d.subsec_micros() as i64),
-        Err(_) => 0,
-    }
 }
 
 #[cfg(test)]

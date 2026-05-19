@@ -43,6 +43,7 @@ use crate::delivery::store::{
 };
 use crate::events::{EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
 use crate::intake::store::{IntakeEventStore, IntakeStoreError};
+use crate::time::now_micros;
 
 /// Default retry pause for transient delivery failures. Spec §2.9 sets
 /// this at 30 s; tests override via [`DeliveryRouter::with_retry_delay`].
@@ -291,12 +292,4 @@ fn is_retryable(err: &ChannelError) -> bool {
         ChannelError::RemoteRejected { status, .. } => (500..600).contains(status),
         ChannelError::Decode(_) | ChannelError::Internal(_) | ChannelError::Cancelled => false,
     }
-}
-
-fn now_micros() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or(0)
 }
