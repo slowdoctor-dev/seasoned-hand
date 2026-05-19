@@ -141,6 +141,68 @@ pub trait EmbeddingReranker: Send + Sync {
     ) -> Result<Vec<RerankedCandidate>, CuratorWorkerError>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsolidationDecisionKind {
+    Merge,
+    Keep,
+    ArchiveRecommend,
+    ArchiveApply,
+    Quarantine,
+}
+
+impl ConsolidationDecisionKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            ConsolidationDecisionKind::Merge => "merge",
+            ConsolidationDecisionKind::Keep => "keep",
+            ConsolidationDecisionKind::ArchiveRecommend => "archive",
+            ConsolidationDecisionKind::ArchiveApply => "archive",
+            ConsolidationDecisionKind::Quarantine => "keep",
+        }
+    }
+
+    fn high_impact(self) -> bool {
+        matches!(
+            self,
+            ConsolidationDecisionKind::ArchiveRecommend | ConsolidationDecisionKind::ArchiveApply
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ConsolidationDecision {
+    pub decision_id: String,
+    pub kind: ConsolidationDecisionKind,
+    pub subject_revision_ids: Vec<String>,
+    pub target_revision_id: Option<String>,
+    pub confidence: f32,
+    pub rationale_json: serde_json::Value,
+    pub requires_review: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ConsolidationApplyResult {
+    pub applied: u32,
+    pub queued_for_review: u32,
+    pub failures: u32,
+}
+
+#[async_trait]
+pub trait ConsolidationEngine: Send + Sync {
+    async fn decide(
+        &self,
+        project_id: &str,
+        reranked: Vec<RerankedCandidate>,
+    ) -> Result<Vec<ConsolidationDecision>, CuratorWorkerError>;
+
+    async fn apply(
+        &self,
+        project_id: &str,
+        cycle_id: &str,
+        decisions: &[ConsolidationDecision],
+    ) -> Result<ConsolidationApplyResult, CuratorWorkerError>;
+}
+
 #[derive(Clone)]
 pub struct SqliteBacklogProbe {
     db: DbPool,
@@ -251,6 +313,150 @@ impl CandidateBuilder for SqliteCandidateBuilder {
                 .then_with(|| a.right_revision_id.cmp(&b.right_revision_id))
         });
         Ok(ranked)
+    }
+}
+
+#[derive(Clone)]
+pub struct SqliteConsolidationEngine {
+    db: DbPool,
+}
+
+impl SqliteConsolidationEngine {
+    pub fn new(db: DbPool) -> Self {
+        Self { db }
+    }
+}
+
+#[async_trait]
+impl ConsolidationEngine for SqliteConsolidationEngine {
+    async fn decide(
+        &self,
+        project_id: &str,
+        reranked: Vec<RerankedCandidate>,
+    ) -> Result<Vec<ConsolidationDecision>, CuratorWorkerError> {
+        let mut out = Vec::with_capacity(reranked.len());
+        for candidate in reranked {
+            let confidence = candidate.blended_score.clamp(0.0, 1.0);
+            let floor = candidate.fts_norm.max(0.0);
+            let kind = if floor < 0.30 {
+                ConsolidationDecisionKind::Quarantine
+            } else if confidence >= 0.82 {
+                ConsolidationDecisionKind::Merge
+            } else if confidence >= 0.65 {
+                ConsolidationDecisionKind::Keep
+            } else if confidence >= 0.40 {
+                ConsolidationDecisionKind::ArchiveRecommend
+            } else {
+                ConsolidationDecisionKind::Quarantine
+            };
+            let requires_review = review_required(
+                kind,
+                confidence,
+                &candidate.left_revision_id,
+                &candidate.right_revision_id,
+            );
+            out.push(ConsolidationDecision {
+                decision_id: format!("cd-{}", uuid::Uuid::new_v4()),
+                kind,
+                subject_revision_ids: vec![
+                    candidate.left_revision_id.clone(),
+                    candidate.right_revision_id.clone(),
+                ],
+                target_revision_id: Some(candidate.left_revision_id.clone()),
+                confidence,
+                rationale_json: json!({
+                    "project_id": project_id,
+                    "fts_norm": candidate.fts_norm,
+                    "embedding_cosine": candidate.embedding_cosine,
+                    "embedding_used": candidate.embedding_used,
+                    "policy": "q12.2_hybrid_q12.3_revision_chain_q12.19_confidence_band"
+                }),
+                requires_review,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn apply(
+        &self,
+        project_id: &str,
+        cycle_id: &str,
+        decisions: &[ConsolidationDecision],
+    ) -> Result<ConsolidationApplyResult, CuratorWorkerError> {
+        let mut result = ConsolidationApplyResult::default();
+        let project_id = project_id.to_string();
+        let cycle_id = cycle_id.to_string();
+        let decisions = decisions.to_vec();
+        self.db
+            .with_conn(move |conn| {
+                conn.execute_batch("BEGIN IMMEDIATE;")?;
+                let now = now_micros()?;
+                for decision in &decisions {
+                    let status = if decision.requires_review {
+                        "queued_review"
+                    } else {
+                        "applied"
+                    };
+                    conn.execute(
+                        "INSERT INTO curator_decisions (
+                            id, tenant_id, project_id, cycle_id, decision_type, subject_kind,
+                            subject_id, confidence, rationale_json, evidence_json, status, failure_category, created_at
+                         ) VALUES (?1, NULL, ?2, ?3, ?4, 'revision', ?5, ?6, ?7, ?8, ?9, NULL, ?10)",
+                        rusqlite::params![
+                            decision.decision_id,
+                            project_id,
+                            cycle_id,
+                            decision.kind.as_str(),
+                            decision
+                                .target_revision_id
+                                .as_deref()
+                                .unwrap_or(""),
+                            decision.confidence,
+                            decision.rationale_json.to_string(),
+                            "{}",
+                            status,
+                            now
+                        ],
+                    )?;
+
+                    if decision.requires_review {
+                        result.queued_for_review = result.queued_for_review.saturating_add(1);
+                        conn.execute(
+                            "INSERT INTO curator_review_queue (
+                                id, tenant_id, decision_id, project_id, queue_reason, severity, state, reviewer, reviewer_note, resolved_at, created_at
+                             ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, 'pending', NULL, NULL, NULL, ?6)",
+                            rusqlite::params![
+                                format!("rq-{}", uuid::Uuid::new_v4()),
+                                decision.decision_id,
+                                project_id,
+                                format!("low_confidence_{:.2}", decision.confidence),
+                                if decision.kind.high_impact() { "high" } else { "medium" },
+                                now
+                            ],
+                        )?;
+                        continue;
+                    }
+
+                    match decision.kind {
+                        ConsolidationDecisionKind::Merge => {
+                            apply_merge(conn, &project_id, decision, now)?;
+                            result.applied = result.applied.saturating_add(1);
+                        }
+                        ConsolidationDecisionKind::ArchiveApply => {
+                            apply_archive(conn, decision, now)?;
+                            result.applied = result.applied.saturating_add(1);
+                        }
+                        ConsolidationDecisionKind::ArchiveRecommend
+                        | ConsolidationDecisionKind::Keep
+                        | ConsolidationDecisionKind::Quarantine => {
+                            result.applied = result.applied.saturating_add(1);
+                        }
+                    }
+                }
+                conn.execute_batch("COMMIT;")?;
+                Ok::<_, CuratorWorkerError>(result)
+            })
+            .await
     }
 }
 
@@ -449,6 +655,7 @@ impl EmbeddingReranker for ProductionEmbeddingReranker {
 pub struct ProductionCuratorCycleExecutor {
     candidate_builder: Arc<dyn CandidateBuilder>,
     reranker: Arc<dyn EmbeddingReranker>,
+    consolidation_engine: Arc<dyn ConsolidationEngine>,
     max_candidates_per_cycle: u32,
 }
 
@@ -456,11 +663,13 @@ impl ProductionCuratorCycleExecutor {
     pub fn new(
         candidate_builder: Arc<dyn CandidateBuilder>,
         reranker: Arc<dyn EmbeddingReranker>,
+        consolidation_engine: Arc<dyn ConsolidationEngine>,
         max_candidates_per_cycle: u32,
     ) -> Self {
         Self {
             candidate_builder,
             reranker,
+            consolidation_engine,
             max_candidates_per_cycle,
         }
     }
@@ -480,16 +689,183 @@ impl CuratorCycleExecutor for ProductionCuratorCycleExecutor {
             .build_duplicate_candidates(project_id, self.max_candidates_per_cycle)
             .await?;
         let reranked = self.reranker.rerank(project_id, candidates).await?;
+        let decisions = self
+            .consolidation_engine
+            .decide(project_id, reranked)
+            .await?;
+        let cycle_id = format!("cycle-{}", uuid::Uuid::new_v4());
+        let apply_result = self
+            .consolidation_engine
+            .apply(project_id, &cycle_id, &decisions)
+            .await?;
 
         Ok(CuratorCycleResult {
-            cycle_id: format!("cycle-{}", uuid::Uuid::new_v4()),
+            cycle_id,
             project_id: project_id.to_string(),
-            decisions_total: reranked.len() as u32,
-            queued_for_review: 0,
-            failures: 0,
+            decisions_total: decisions.len() as u32,
+            queued_for_review: apply_result.queued_for_review,
+            failures: apply_result.failures,
             elapsed_ms: started.elapsed().as_millis() as u64,
         })
     }
+}
+
+fn review_required(
+    kind: ConsolidationDecisionKind,
+    confidence: f32,
+    left_revision_id: &str,
+    right_revision_id: &str,
+) -> bool {
+    if confidence < 0.55 {
+        return true;
+    }
+    if kind.high_impact() {
+        return true;
+    }
+    if confidence <= 0.75 {
+        let mut h: u64 = 1469598103934665603;
+        for b in left_revision_id
+            .as_bytes()
+            .iter()
+            .chain(right_revision_id.as_bytes().iter())
+        {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(1099511628211);
+        }
+        return h % 10 < 3;
+    }
+    false
+}
+
+fn apply_merge(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    decision: &ConsolidationDecision,
+    now: i64,
+) -> Result<(), CuratorWorkerError> {
+    let left = decision
+        .subject_revision_ids
+        .first()
+        .cloned()
+        .unwrap_or_default();
+    let right = decision
+        .subject_revision_ids
+        .get(1)
+        .cloned()
+        .unwrap_or_default();
+    if left.is_empty() || right.is_empty() {
+        return Ok(());
+    }
+
+    let (target_playbook, left_title, left_keywords, left_content): (
+        String,
+        String,
+        String,
+        String,
+    ) = conn.query_row(
+        "SELECT playbook_id, title, trigger_keywords, content
+             FROM playbook_revisions
+             WHERE id = ?1 AND source_project_id = ?2",
+        rusqlite::params![left, project_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let (_right_playbook, right_title, right_keywords, right_content): (
+        String,
+        String,
+        String,
+        String,
+    ) = conn.query_row(
+        "SELECT playbook_id, title, trigger_keywords, content
+         FROM playbook_revisions
+         WHERE id = ?1 AND source_project_id = ?2",
+        rusqlite::params![right, project_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+
+    let next_no: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(revision_no), 0) + 1 FROM playbook_revisions WHERE playbook_id = ?",
+        [target_playbook.clone()],
+        |row| row.get(0),
+    )?;
+    let new_id = format!("rev-{}-{}", target_playbook, next_no);
+    let merged_title = format!("{} / {}", left_title, right_title);
+    let merged_keywords = merge_keyword_json_arrays(&left_keywords, &right_keywords);
+    let merged_content = format!("{}\n\n---\n\n{}", left_content, right_content);
+
+    conn.execute(
+        "INSERT INTO playbook_revisions (
+            id, tenant_id, playbook_id, revision_no, parent_revision_id, title, trigger_keywords,
+            content, source_task_id, source_project_id, author_type, change_kind, confidence,
+            created_at, superseded_at
+        ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, 'curator', 'merge', ?9, ?10, NULL)",
+        rusqlite::params![
+            new_id,
+            target_playbook,
+            next_no,
+            left,
+            merged_title,
+            merged_keywords,
+            merged_content,
+            project_id,
+            decision.confidence,
+            now
+        ],
+    )?;
+    conn.execute(
+        "UPDATE playbook_revisions SET superseded_at = ?1 WHERE id IN (?2, ?3)",
+        rusqlite::params![now, left, right],
+    )?;
+    conn.execute(
+        "UPDATE playbooks SET active_revision_id = ?1, updated_at = ?2 WHERE id = ?3",
+        rusqlite::params![new_id, now, target_playbook],
+    )?;
+    Ok(())
+}
+
+fn apply_archive(
+    conn: &rusqlite::Connection,
+    decision: &ConsolidationDecision,
+    now: i64,
+) -> Result<(), CuratorWorkerError> {
+    let target_revision = decision
+        .target_revision_id
+        .as_deref()
+        .unwrap_or_default()
+        .to_string();
+    if target_revision.is_empty() {
+        return Ok(());
+    }
+    let playbook_id: String = conn.query_row(
+        "SELECT playbook_id FROM playbook_revisions WHERE id = ?",
+        [target_revision],
+        |row| row.get(0),
+    )?;
+    conn.execute(
+        "UPDATE playbooks
+         SET status = 'archived', archived_reason = ?1, archived_at = ?2, updated_at = ?2
+         WHERE id = ?3",
+        rusqlite::params![
+            format!("curator_decision:{}", decision.decision_id),
+            now,
+            playbook_id
+        ],
+    )?;
+    Ok(())
+}
+
+fn merge_keyword_json_arrays(left: &str, right: &str) -> String {
+    let mut set = HashSet::new();
+    let mut out = Vec::new();
+    for raw in [left, right] {
+        if let Ok(values) = serde_json::from_str::<Vec<String>>(raw) {
+            for v in values {
+                if set.insert(v.clone()) {
+                    out.push(v);
+                }
+            }
+        }
+    }
+    serde_json::to_string(&out).unwrap_or_else(|_| "[]".to_string())
 }
 
 #[derive(Clone)]
@@ -732,7 +1108,13 @@ mod tests {
         let events = Arc::new(SqliteEventStore::new(db.clone()));
         let builder = Arc::new(SqliteCandidateBuilder::new(db.clone()));
         let reranker = Arc::new(TestReranker::new(true));
-        let executor = Arc::new(ProductionCuratorCycleExecutor::new(builder, reranker, 50));
+        let consolidation = Arc::new(SqliteConsolidationEngine::new(db.clone()));
+        let executor = Arc::new(ProductionCuratorCycleExecutor::new(
+            builder,
+            reranker,
+            consolidation,
+            50,
+        ));
 
         let worker = ProductionCuratorWorker::new(
             CuratorConfig {
@@ -835,6 +1217,89 @@ mod tests {
         assert!(reranked_fallback.iter().all(|r| !r.embedding_used));
     }
 
+    #[tokio::test]
+    async fn e2e_cycle_covers_merge_and_keep_branches_with_stubbed_rerank() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_revision_pair(&db, "proj-consolidate").await;
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id, created_at, updated_at, trigger_keywords, content, status, source_project_id, active_revision_id, success_count, failure_count)
+                 VALUES ('pb-k', NULL, 'Keep', '/tmp/k.md', 1, NULL, 1, 1, '[\"docs\"]', 'Documentation workflow', 'active', 'proj-consolidate', 'rev-k-1', 0, 0)",
+                [],
+            )
+            .expect("insert keep playbook");
+            conn.execute(
+                "INSERT INTO playbook_revisions (id, tenant_id, playbook_id, revision_no, parent_revision_id, title, trigger_keywords, content, source_task_id, source_project_id, author_type, change_kind, confidence, created_at, superseded_at)
+                 VALUES ('rev-k-1', NULL, 'pb-k', 1, NULL, 'Keep rev', '[\"docs\"]', 'Documentation workflow', NULL, 'proj-consolidate', 'extractor', 'extract', 1.0, 1, NULL)",
+                [],
+            )
+            .expect("insert keep revision");
+        })
+        .await;
+
+        let events = Arc::new(SqliteEventStore::new(db.clone()));
+        let builder = Arc::new(StubCandidateBuilder);
+        let reranker = Arc::new(StubMergeKeepReranker);
+        let consolidation = Arc::new(SqliteConsolidationEngine::new(db.clone()));
+        let executor = Arc::new(ProductionCuratorCycleExecutor::new(
+            builder,
+            reranker,
+            consolidation,
+            50,
+        ));
+        let worker = ProductionCuratorWorker::new(
+            CuratorConfig {
+                enabled: true,
+                interval_seconds: 1,
+                backlog_threshold: 10,
+                max_candidates_per_cycle: 50,
+                embedding_budget_monthly_tokens: 50_000,
+                embedding_budget_soft_cap_pct: 0.08,
+                embedding_budget_hard_breaker_pct: 0.12,
+                embedding_model: "text-embedding-3-small".to_string(),
+                project_id: "proj-consolidate".to_string(),
+            },
+            db.clone(),
+            events,
+            Arc::new(StubBacklogProbe),
+            executor,
+        );
+
+        let result = worker
+            .run_once(CuratorTrigger::Manual, 2)
+            .await
+            .expect("run_once");
+        assert_eq!(result.decisions_total, 2);
+
+        db.with_conn(|conn| {
+            let merge_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM curator_decisions WHERE project_id='proj-consolidate' AND decision_type='merge'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("merge count");
+            let keep_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM curator_decisions WHERE project_id='proj-consolidate' AND decision_type='keep'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("keep count");
+            let merged_revision_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM playbook_revisions WHERE playbook_id='pb-l' AND change_kind='merge'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("merged revisions");
+            assert_eq!(merge_count, 1);
+            assert_eq!(keep_count, 1);
+            assert_eq!(merged_revision_count, 1);
+        })
+        .await;
+    }
+
     #[derive(Clone)]
     struct TestReranker {
         embedding_used: bool,
@@ -873,6 +1338,68 @@ mod tests {
     impl BacklogProbe for StubBacklogProbe {
         async fn pending_count(&self, _project_id: &str) -> Result<u32, CuratorWorkerError> {
             Ok(12)
+        }
+    }
+
+    struct StubCandidateBuilder;
+
+    #[async_trait]
+    impl CandidateBuilder for StubCandidateBuilder {
+        async fn build_duplicate_candidates(
+            &self,
+            _project_id: &str,
+            _limit: u32,
+        ) -> Result<Vec<DuplicateCandidate>, CuratorWorkerError> {
+            Ok(vec![
+                DuplicateCandidate {
+                    left_revision_id: "rev-l-1".to_string(),
+                    right_revision_id: "rev-r-1".to_string(),
+                    left_text: "refund stripe policy".to_string(),
+                    right_text: "refund billing chargeback".to_string(),
+                    fts_score: 0.92,
+                    lexical_overlap: 0.62,
+                    recency_delta_days: 0,
+                },
+                DuplicateCandidate {
+                    left_revision_id: "rev-k-1".to_string(),
+                    right_revision_id: "rev-r-1".to_string(),
+                    left_text: "documentation workflow".to_string(),
+                    right_text: "refund billing chargeback".to_string(),
+                    fts_score: 0.71,
+                    lexical_overlap: 0.31,
+                    recency_delta_days: 1,
+                },
+            ])
+        }
+    }
+
+    struct StubMergeKeepReranker;
+
+    #[async_trait]
+    impl EmbeddingReranker for StubMergeKeepReranker {
+        async fn rerank(
+            &self,
+            _project_id: &str,
+            candidates: Vec<DuplicateCandidate>,
+        ) -> Result<Vec<RerankedCandidate>, CuratorWorkerError> {
+            Ok(vec![
+                RerankedCandidate {
+                    left_revision_id: candidates[0].left_revision_id.clone(),
+                    right_revision_id: candidates[0].right_revision_id.clone(),
+                    blended_score: 0.90, // merge branch
+                    embedding_cosine: 0.88,
+                    fts_norm: 0.92,
+                    embedding_used: true,
+                },
+                RerankedCandidate {
+                    left_revision_id: candidates[1].left_revision_id.clone(),
+                    right_revision_id: candidates[1].right_revision_id.clone(),
+                    blended_score: 0.70, // keep branch
+                    embedding_cosine: 0.42,
+                    fts_norm: 0.71,
+                    embedding_used: true,
+                },
+            ])
         }
     }
 }

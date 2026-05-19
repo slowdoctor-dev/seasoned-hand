@@ -1,6 +1,6 @@
 # Story 4.5 — ConsolidationEngine with revision-chain writes
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 4.2, 4.4
 > **Phase**: 4
@@ -15,12 +15,12 @@ write revision-chain lineage consistently.
 
 ## Acceptance criteria
 
-- [ ] Production ConsolidationEngine exists (not trait-only/test-only scaffold).
-- [ ] Consolidation decision policy implemented per architecture §12.2/§12.3.
-- [ ] Revision-chain write path updates `playbook_revisions` + active revision pointers.
-- [ ] Low-confidence decisions are queued for review.
-- [ ] Runtime wiring is enabled from `main.rs` via CuratorWorker dependency graph.
-- [ ] Integration test covers merge and keep branches with stub rerank input in end-to-end curator
+- [x] Production ConsolidationEngine exists (not trait-only/test-only scaffold).
+- [x] Consolidation decision policy implemented per architecture §12.2/§12.3.
+- [x] Revision-chain write path updates `playbook_revisions` + active revision pointers.
+- [x] Low-confidence decisions are queued for review.
+- [x] Runtime wiring is enabled from `main.rs` via CuratorWorker dependency graph.
+- [x] Integration test covers merge and keep branches with stub rerank input in end-to-end curator
       cycle execution.
 
 ## Non-goals

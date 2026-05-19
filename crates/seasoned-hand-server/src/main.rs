@@ -10,6 +10,7 @@ use seasoned_hand_core::capability::{
 use seasoned_hand_core::curator::{
     CuratorConfig, EmbeddingBudget, ProductionCuratorCycleExecutor, ProductionCuratorWorker,
     ProductionEmbeddingReranker, SqliteBacklogProbe, SqliteCandidateBuilder,
+    SqliteConsolidationEngine,
 };
 use seasoned_hand_core::llm::LlmClient;
 use seasoned_hand_core::router::{SlotName, SlotRouter};
@@ -431,6 +432,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             embedding_slot.api_key.clone(),
         );
         let candidate_builder = std::sync::Arc::new(SqliteCandidateBuilder::new(state.db.clone()));
+        let consolidation_engine =
+            std::sync::Arc::new(SqliteConsolidationEngine::new(state.db.clone()));
         let reranker = std::sync::Arc::new(ProductionEmbeddingReranker::new(
             embedding_llm,
             config.embedding_model.clone(),
@@ -443,6 +446,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let executor = std::sync::Arc::new(ProductionCuratorCycleExecutor::new(
             candidate_builder,
             reranker,
+            consolidation_engine,
             config.max_candidates_per_cycle,
         ));
         let worker = ProductionCuratorWorker::new(

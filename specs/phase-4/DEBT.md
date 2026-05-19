@@ -215,3 +215,17 @@ accountability, not speculative implementation details.
   - evidence: `ProductionCuratorCycleExecutor::execute` elapsed accounting in
     `crates/seasoned-hand-core/src/curator/mod.rs` and cycle telemetry assertions in
     `curator::tests::run_once_emits_cycle_start_and_complete_events`
+
+## Story 4.5 close-out (2026-05-19)
+
+- `#90` PARTIAL by story 4.5:
+  - production `SqliteConsolidationEngine` now applies merge/keep/quarantine/archive-recommend
+    policy with confidence-band review gating and deterministic review sampling
+  - revision-chain writes are transactional (`playbook_revisions` insert + supersede + active
+    revision pointer update) for merge paths
+  - low-confidence and high-impact decisions are queued into `curator_review_queue`
+  - evidence: `crates/seasoned-hand-core/src/curator/mod.rs` (`SqliteConsolidationEngine`,
+    `review_required`, `apply_merge`), and
+    `curator::tests::e2e_cycle_covers_merge_and_keep_branches_with_stubbed_rerank`
+  - residual to close in later stories: full false-positive audit harness and archive
+    reversibility acceptance gates (stories 4.13 + 4.16)
