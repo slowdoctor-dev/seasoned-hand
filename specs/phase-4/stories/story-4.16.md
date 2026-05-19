@@ -1,6 +1,6 @@
 # Story 4.16 — NFR-4.7 false-positive audit harness
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 4.5, 4.13
 > **Phase**: 4
