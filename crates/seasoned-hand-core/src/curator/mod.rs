@@ -155,6 +155,14 @@ pub struct PatternRecommendation {
     pub evidence_json: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct KnowledgeDatasourceWriteResult {
+    pub raw_knowledge: u32,
+    pub raw_datasource: u32,
+    pub promoted_knowledge: u32,
+    pub promoted_datasource: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct ReviewQueueItem {
     pub queue_id: String,
@@ -341,6 +349,15 @@ pub trait OperatorReviewQueue: Send + Sync {
     ) -> Result<bool, CuratorWorkerError>;
 
     async fn reconcile_suppression_expiry(&self) -> Result<u32, CuratorWorkerError>;
+}
+
+#[async_trait]
+pub trait KnowledgeDatasourceWriter: Send + Sync {
+    async fn emit_and_promote(
+        &self,
+        project_id: &str,
+        cycle_id: &str,
+    ) -> Result<KnowledgeDatasourceWriteResult, CuratorWorkerError>;
 }
 
 #[derive(Clone)]
@@ -654,9 +671,26 @@ pub struct SqliteOperatorReviewQueue {
     db: DbPool,
 }
 
+#[derive(Clone)]
+pub struct SqliteKnowledgeDatasourceWriter {
+    db: DbPool,
+    enforce_l2_knowledge: bool,
+    enforce_l2_datasource: bool,
+}
+
 impl SqliteOperatorReviewQueue {
     pub fn new(db: DbPool) -> Self {
         Self { db }
+    }
+}
+
+impl SqliteKnowledgeDatasourceWriter {
+    pub fn new(db: DbPool, enforce_l2_knowledge: bool, enforce_l2_datasource: bool) -> Self {
+        Self {
+            db,
+            enforce_l2_knowledge,
+            enforce_l2_datasource,
+        }
     }
 }
 
@@ -1018,6 +1052,190 @@ impl OperatorReviewQueue for SqliteOperatorReviewQueue {
     }
 }
 
+#[async_trait]
+impl KnowledgeDatasourceWriter for SqliteKnowledgeDatasourceWriter {
+    async fn emit_and_promote(
+        &self,
+        project_id: &str,
+        cycle_id: &str,
+    ) -> Result<KnowledgeDatasourceWriteResult, CuratorWorkerError> {
+        let project_id = project_id.to_string();
+        let cycle_id = cycle_id.to_string();
+        let enforce_l2_knowledge = self.enforce_l2_knowledge;
+        let enforce_l2_datasource = self.enforce_l2_datasource;
+        self.db
+            .with_conn(move |conn| {
+                conn.execute_batch("BEGIN IMMEDIATE;")?;
+                let now = now_micros()?;
+                let mut result = KnowledgeDatasourceWriteResult::default();
+
+                let mut stmt = conn.prepare(
+                    "SELECT r.id, r.source_task_id, r.title, r.content, COALESCE(r.confidence, 0.0)
+                     FROM playbook_revisions r
+                     WHERE r.source_project_id = ?1
+                       AND r.author_type = 'extractor'
+                     ORDER BY r.created_at DESC, r.id ASC
+                     LIMIT 100",
+                )?;
+                let mut rows = stmt.query([project_id.clone()])?;
+                while let Some(row) = rows.next()? {
+                    let revision_id: String = row.get(0)?;
+                    let source_task_id: Option<String> = row.get(1)?;
+                    let title: String = row.get(2)?;
+                    let content: String = row.get(3)?;
+                    let confidence: f32 = row.get(4)?;
+                    let refs = extract_source_refs(&content);
+                    let has_citation = !refs.is_empty();
+                    if confidence >= 0.55 && has_citation {
+                        let key = infer_knowledge_key(&title, &content);
+                        let value = infer_knowledge_value(&content);
+                        let kid = format!(
+                            "ki-raw-{}-{}",
+                            revision_id,
+                            stable_u64_hex(&format!("{}|{}", key, value))
+                        );
+                        conn.execute(
+                            "INSERT OR IGNORE INTO knowledge_items (
+                                id, tenant_id, project_id, revision_id, source_task_id, key, value, confidence, evidence_json, created_at
+                             ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                            rusqlite::params![
+                                kid,
+                                project_id,
+                                revision_id,
+                                source_task_id,
+                                key,
+                                value,
+                                confidence,
+                                json!({
+                                    "tier":"raw",
+                                    "source_refs":refs.clone(),
+                                    "policy":"q12.15_story_4_10"
+                                })
+                                .to_string(),
+                                now
+                            ],
+                        )?;
+                        if conn.changes() > 0 {
+                            result.raw_knowledge = result.raw_knowledge.saturating_add(1);
+                        }
+                        let promoted = knowledge_l2_satisfied(
+                            conn,
+                            &project_id,
+                            &revision_id,
+                            source_task_id.as_deref(),
+                            &refs,
+                        )?;
+                        let status = if enforce_l2_knowledge && !promoted {
+                            "queued_review"
+                        } else {
+                            "applied"
+                        };
+                        let did = format!(
+                            "cd-knowledge-{}-{}",
+                            revision_id,
+                            stable_u64_hex(&format!("{}|{}", key, cycle_id))
+                        );
+                        conn.execute(
+                            "INSERT OR IGNORE INTO curator_decisions (
+                                id, tenant_id, project_id, cycle_id, decision_type, subject_kind, subject_id,
+                                confidence, rationale_json, evidence_json, status, failure_category, created_at
+                             ) VALUES (?1, NULL, ?2, ?3, 'knowledge_write', 'knowledge', ?4, ?5, ?6, ?7, ?8, NULL, ?9)",
+                            rusqlite::params![
+                                did,
+                                project_id,
+                                cycle_id,
+                                revision_id,
+                                confidence,
+                                json!({"enforce_l2_knowledge":enforce_l2_knowledge,"l2_promoted":promoted}).to_string(),
+                                json!({"source_refs":refs.clone()}).to_string(),
+                                status,
+                                now
+                            ],
+                        )?;
+                        if promoted {
+                            result.promoted_knowledge =
+                                result.promoted_knowledge.saturating_add(1);
+                        }
+                    }
+
+                    for source_ref in &refs {
+                        let did = format!(
+                            "cd-datasource-{}-{}",
+                            revision_id,
+                            stable_u64_hex(source_ref)
+                        );
+                        let l2_ok = datasource_l2_satisfied(
+                            conn,
+                            &project_id,
+                            &revision_id,
+                            source_task_id.as_deref(),
+                            source_ref,
+                        )?;
+                        let trust_level = if l2_ok { "l2" } else { "l0" };
+                        if confidence >= 0.50 {
+                            let ds_id = format!(
+                                "ds-{}-{}",
+                                trust_level,
+                                stable_u64_hex(&format!("{}|{}", revision_id, source_ref))
+                            );
+                            conn.execute(
+                                "INSERT OR IGNORE INTO datasource_items (
+                                    id, tenant_id, project_id, revision_id, source_task_id, source_type,
+                                    source_ref, trust_level, confidence, evidence_json, created_at
+                                 ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                                rusqlite::params![
+                                    ds_id,
+                                    project_id,
+                                    revision_id,
+                                    source_task_id,
+                                    source_type_from_ref(source_ref),
+                                    source_ref,
+                                    trust_level,
+                                    confidence,
+                                    json!({"tier":"raw","policy":"q12.15_story_4_10"}).to_string(),
+                                    now
+                                ],
+                            )?;
+                            if conn.changes() > 0 {
+                                result.raw_datasource = result.raw_datasource.saturating_add(1);
+                            }
+                            let status = if enforce_l2_datasource && !l2_ok {
+                                "queued_review"
+                            } else {
+                                "applied"
+                            };
+                            conn.execute(
+                                "INSERT OR IGNORE INTO curator_decisions (
+                                    id, tenant_id, project_id, cycle_id, decision_type, subject_kind, subject_id,
+                                    confidence, rationale_json, evidence_json, status, failure_category, created_at
+                                 ) VALUES (?1, NULL, ?2, ?3, 'datasource_write', 'datasource', ?4, ?5, ?6, ?7, ?8, NULL, ?9)",
+                                rusqlite::params![
+                                    did,
+                                    project_id,
+                                    cycle_id,
+                                    source_ref,
+                                    confidence,
+                                    json!({"enforce_l2_datasource":enforce_l2_datasource,"l2_promoted":l2_ok}).to_string(),
+                                    json!({"revision_id":revision_id}).to_string(),
+                                    status,
+                                    now
+                                ],
+                            )?;
+                            if l2_ok {
+                                result.promoted_datasource =
+                                    result.promoted_datasource.saturating_add(1);
+                            }
+                        }
+                    }
+                }
+
+                conn.execute_batch("COMMIT;")?;
+                Ok::<_, CuratorWorkerError>(result)
+            })
+            .await
+    }
+}
+
 impl SqliteConsolidationEngine {
     pub fn new(db: DbPool) -> Self {
         Self { db }
@@ -1357,6 +1575,7 @@ pub struct ProductionCuratorCycleExecutor {
     retrospective_generator: Arc<dyn RetrospectiveGenerator>,
     work_pattern_extractor: Arc<dyn WorkPatternExtractor>,
     operator_review_queue: Arc<dyn OperatorReviewQueue>,
+    knowledge_datasource_writer: Arc<dyn KnowledgeDatasourceWriter>,
     max_candidates_per_cycle: u32,
     backlog_threshold: u32,
 }
@@ -1369,6 +1588,7 @@ pub struct CuratorRuntimeDeps {
     pub retrospective_generator: Arc<dyn RetrospectiveGenerator>,
     pub work_pattern_extractor: Arc<dyn WorkPatternExtractor>,
     pub operator_review_queue: Arc<dyn OperatorReviewQueue>,
+    pub knowledge_datasource_writer: Arc<dyn KnowledgeDatasourceWriter>,
 }
 
 impl ProductionCuratorCycleExecutor {
@@ -1385,6 +1605,7 @@ impl ProductionCuratorCycleExecutor {
             retrospective_generator: deps.retrospective_generator,
             work_pattern_extractor: deps.work_pattern_extractor,
             operator_review_queue: deps.operator_review_queue,
+            knowledge_datasource_writer: deps.knowledge_datasource_writer,
             max_candidates_per_cycle,
             backlog_threshold,
         }
@@ -1424,6 +1645,10 @@ impl CuratorCycleExecutor for ProductionCuratorCycleExecutor {
             .work_pattern_extractor
             .recommend(project_id, &cycle_id, &patterns)
             .await?;
+        let write_result = self
+            .knowledge_datasource_writer
+            .emit_and_promote(project_id, &cycle_id)
+            .await?;
         let retrospective = self
             .retrospective_generator
             .generate_if_due(project_id, _trigger, _backlog_count, self.backlog_threshold)
@@ -1435,6 +1660,8 @@ impl CuratorCycleExecutor for ProductionCuratorCycleExecutor {
             decisions_total: decisions.len() as u32
                 + conflicts.len() as u32
                 + recommendations.len() as u32
+                + write_result.raw_knowledge
+                + write_result.raw_datasource
                 + u32::from(retrospective.is_some()),
             queued_for_review: apply_result.queued_for_review,
             failures: apply_result.failures,
@@ -2116,6 +2343,149 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
+fn source_type_from_ref(source_ref: &str) -> &'static str {
+    if source_ref.starts_with("http://") || source_ref.starts_with("https://") {
+        "url"
+    } else if source_ref.contains('/') {
+        "path"
+    } else {
+        "text"
+    }
+}
+
+fn extract_source_refs(content: &str) -> Vec<String> {
+    let mut refs = HashSet::new();
+    for line in content.lines() {
+        let t = line.trim();
+        if t.starts_with("http://") || t.starts_with("https://") {
+            refs.insert(t.to_string());
+            continue;
+        }
+        if let Some(idx) = t.find("http://").or_else(|| t.find("https://")) {
+            refs.insert(t[idx..].trim().to_string());
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
+            let rt = rest.trim();
+            if rt.starts_with('/') || rt.starts_with("./") || rt.contains('/') {
+                refs.insert(rt.to_string());
+            }
+        }
+    }
+    let mut out: Vec<String> = refs.into_iter().collect();
+    out.sort();
+    out
+}
+
+fn infer_knowledge_key(title: &str, _content: &str) -> String {
+    let key = title
+        .split_whitespace()
+        .take(6)
+        .collect::<Vec<_>>()
+        .join("_")
+        .to_ascii_lowercase();
+    if key.is_empty() {
+        "untitled_procedure".to_string()
+    } else {
+        key
+    }
+}
+
+fn infer_knowledge_value(content: &str) -> String {
+    content
+        .lines()
+        .take(8)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+fn stable_u64_hex(input: &str) -> String {
+    let mut h: u64 = 1469598103934665603;
+    for b in input.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(1099511628211);
+    }
+    format!("{h:016x}")
+}
+
+fn knowledge_l2_satisfied(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    revision_id: &str,
+    source_task_id: Option<&str>,
+    refs: &[String],
+) -> Result<bool, CuratorWorkerError> {
+    if refs.is_empty() {
+        return Ok(false);
+    }
+    let mut distinct_tasks: HashSet<String> = HashSet::new();
+    if let Some(tid) = source_task_id
+        && !tid.is_empty()
+    {
+        distinct_tasks.insert(tid.to_string());
+    }
+    for source_ref in refs {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT COALESCE(source_task_id, '')
+             FROM datasource_items
+             WHERE project_id = ?1 AND source_ref = ?2",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![project_id, source_ref])?;
+        while let Some(row) = rows.next()? {
+            let tid: String = row.get(0)?;
+            if !tid.is_empty() {
+                distinct_tasks.insert(tid);
+            }
+        }
+    }
+    if distinct_tasks.len() >= 2 {
+        return Ok(true);
+    }
+
+    let conflict_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sop_conflicts
+         WHERE project_id = ?1
+           AND status = 'open'
+           AND (left_revision_id = ?2 OR right_revision_id = ?2)",
+        rusqlite::params![project_id, revision_id],
+        |row| row.get(0),
+    )?;
+    Ok(conflict_count == 0)
+}
+
+fn datasource_l2_satisfied(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    revision_id: &str,
+    source_task_id: Option<&str>,
+    source_ref: &str,
+) -> Result<bool, CuratorWorkerError> {
+    let current_task = source_task_id.unwrap_or_default();
+    let independent_ref_count: i64 = conn.query_row(
+        "SELECT COUNT(DISTINCT COALESCE(source_task_id, ''))
+         FROM datasource_items
+         WHERE project_id = ?1
+           AND source_ref = ?2
+           AND COALESCE(source_task_id, '') <> ?3",
+        rusqlite::params![project_id, source_ref, current_task],
+        |row| row.get(0),
+    )?;
+    if independent_ref_count >= 1 {
+        return Ok(true);
+    }
+    let conflict_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sop_conflicts
+         WHERE project_id = ?1
+           AND status = 'open'
+           AND (left_revision_id = ?2 OR right_revision_id = ?2)",
+        rusqlite::params![project_id, revision_id],
+        |row| row.get(0),
+    )?;
+    Ok(conflict_count == 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2175,6 +2545,7 @@ mod tests {
                 retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
                 work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
                 operator_review_queue: Arc::new(StubNoopOperatorReviewQueue),
+                knowledge_datasource_writer: Arc::new(StubNoopKnowledgeDatasourceWriter),
             },
             50,
             10,
@@ -2314,6 +2685,7 @@ mod tests {
                 retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
                 work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
                 operator_review_queue: Arc::new(StubNoopOperatorReviewQueue),
+                knowledge_datasource_writer: Arc::new(StubNoopKnowledgeDatasourceWriter),
             },
             50,
             10,
@@ -2634,6 +3006,19 @@ mod tests {
         }
     }
 
+    struct StubNoopKnowledgeDatasourceWriter;
+
+    #[async_trait]
+    impl KnowledgeDatasourceWriter for StubNoopKnowledgeDatasourceWriter {
+        async fn emit_and_promote(
+            &self,
+            _project_id: &str,
+            _cycle_id: &str,
+        ) -> Result<KnowledgeDatasourceWriteResult, CuratorWorkerError> {
+            Ok(KnowledgeDatasourceWriteResult::default())
+        }
+    }
+
     #[tokio::test]
     async fn e2e_cycle_conflict_detector_covers_conflict_and_non_conflict_paths() {
         let db = db::open(":memory:").await.expect("db");
@@ -2673,6 +3058,7 @@ mod tests {
                 retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
                 work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
                 operator_review_queue: Arc::new(StubNoopOperatorReviewQueue),
+                knowledge_datasource_writer: Arc::new(StubNoopKnowledgeDatasourceWriter),
             },
             50,
             10,
@@ -2748,6 +3134,7 @@ mod tests {
                 retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
                 work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
                 operator_review_queue: Arc::new(StubNoopOperatorReviewQueue),
+                knowledge_datasource_writer: Arc::new(StubNoopKnowledgeDatasourceWriter),
             },
             50,
             10,
@@ -2808,6 +3195,7 @@ mod tests {
                     retrospective_generator: retrospective,
                     work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
                     operator_review_queue: Arc::new(StubNoopOperatorReviewQueue),
+                    knowledge_datasource_writer: Arc::new(StubNoopKnowledgeDatasourceWriter),
                 },
                 50,
                 10,
@@ -2868,6 +3256,7 @@ mod tests {
                     retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
                     work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
                     operator_review_queue: Arc::new(StubNoopOperatorReviewQueue),
+                    knowledge_datasource_writer: Arc::new(StubNoopKnowledgeDatasourceWriter),
                 },
                 50,
                 10,
@@ -2954,6 +3343,7 @@ mod tests {
                 retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
                 work_pattern_extractor: Arc::new(SqliteWorkPatternExtractor::new(db.clone())),
                 operator_review_queue: Arc::new(StubNoopOperatorReviewQueue),
+                knowledge_datasource_writer: Arc::new(StubNoopKnowledgeDatasourceWriter),
             },
             50,
             10,
@@ -3013,6 +3403,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn e2e_cycle_knowledge_datasource_emit_and_l2_promotion_paths() {
+        let db = db::open(":memory:").await.expect("db");
+        seed_revision_pair(&db, "proj-kd").await;
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE playbook_revisions
+                 SET source_task_id = 'task-kd-1',
+                     confidence = 0.72,
+                     title = 'Refund Escalation SOP',
+                     content = '## Procedure\n1. Validate request\n2. Escalate with evidence\n## Sources\n- https://docs.example.com/refund\n- https://kb.example.com/escalation'
+                 WHERE id = 'rev-l-1'",
+                [],
+            )
+            .expect("seed source task + content");
+            conn.execute(
+                "INSERT INTO datasource_items (
+                    id, tenant_id, project_id, revision_id, source_task_id, source_type, source_ref, trust_level, confidence, evidence_json, created_at
+                 ) VALUES (
+                    'ds-prev-1', NULL, 'proj-kd', 'rev-r-1', 'task-kd-0', 'url',
+                    'https://docs.example.com/refund', 'l0', 0.60, '{}', 1
+                 )",
+                [],
+            )
+            .expect("seed prior datasource");
+            conn.execute(
+                "INSERT INTO sop_conflicts (
+                    id, tenant_id, project_id, left_revision_id, right_revision_id,
+                    structural_score, semantic_score, severity, status, evidence_json, created_at
+                 ) VALUES (
+                    'conf-kd-1', NULL, 'proj-kd', 'rev-l-1', 'rev-r-1',
+                    0.8, 0.8, 'high', 'open', '{}', 2
+                 )",
+                [],
+            )
+            .expect("seed open conflict");
+        })
+        .await;
+
+        let events = Arc::new(SqliteEventStore::new(db.clone()));
+        let executor = Arc::new(ProductionCuratorCycleExecutor::new(
+            CuratorRuntimeDeps {
+                candidate_builder: Arc::new(SqliteCandidateBuilder::new(db.clone())),
+                reranker: Arc::new(TestReranker::new(true)),
+                consolidation_engine: Arc::new(SqliteConsolidationEngine::new(db.clone())),
+                conflict_detector: Arc::new(StubNoopConflictDetector),
+                retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
+                work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
+                operator_review_queue: Arc::new(StubNoopOperatorReviewQueue),
+                knowledge_datasource_writer: Arc::new(SqliteKnowledgeDatasourceWriter::new(
+                    db.clone(),
+                    true,
+                    true,
+                )),
+            },
+            50,
+            10,
+        ));
+        let worker = ProductionCuratorWorker::new(
+            CuratorConfig {
+                enabled: true,
+                interval_seconds: 1,
+                backlog_threshold: 10,
+                max_candidates_per_cycle: 50,
+                embedding_budget_monthly_tokens: 50_000,
+                embedding_budget_soft_cap_pct: 0.08,
+                embedding_budget_hard_breaker_pct: 0.12,
+                embedding_model: "text-embedding-3-small".to_string(),
+                project_id: "proj-kd".to_string(),
+            },
+            db.clone(),
+            events,
+            Arc::new(StubBacklogProbe),
+            executor,
+        );
+        let result = worker
+            .run_once(CuratorTrigger::Manual, 12)
+            .await
+            .expect("run cycle");
+        assert!(result.decisions_total >= 3);
+
+        db.with_conn(|conn| {
+            let raw_knowledge: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM knowledge_items WHERE project_id='proj-kd'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("knowledge rows");
+            let raw_datasource: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM datasource_items WHERE project_id='proj-kd'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("datasource rows");
+            let queued_writes: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM curator_decisions
+                     WHERE project_id='proj-kd'
+                       AND decision_type IN ('knowledge_write','datasource_write')
+                       AND status='queued_review'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("queued");
+            let applied_writes: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM curator_decisions
+                     WHERE project_id='proj-kd'
+                       AND decision_type IN ('knowledge_write','datasource_write')
+                       AND status='applied'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("applied");
+            assert!(raw_knowledge >= 1);
+            assert!(raw_datasource >= 3); // includes pre-seed + new raws
+            assert!(queued_writes >= 1);
+            assert!(applied_writes >= 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn e2e_operator_review_queue_transitions_after_cycle() {
         let db = db::open(":memory:").await.expect("db");
         seed_revision_pair(&db, "proj-review").await;
@@ -3027,6 +3541,7 @@ mod tests {
                 retrospective_generator: Arc::new(StubNoopRetrospectiveGenerator),
                 work_pattern_extractor: Arc::new(StubNoopWorkPatternExtractor),
                 operator_review_queue: queue.clone(),
+                knowledge_datasource_writer: Arc::new(StubNoopKnowledgeDatasourceWriter),
             },
             50,
             10,

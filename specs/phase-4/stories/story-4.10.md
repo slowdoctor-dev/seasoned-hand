@@ -1,6 +1,6 @@
 # Story 4.10 — Knowledge/Datasource writers + L2 enforcement rollout
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 4.2, 4.3, 4.4
 > **Phase**: 4

@@ -11,7 +11,8 @@ use seasoned_hand_core::curator::{
     CuratorConfig, CuratorRuntimeDeps, EmbeddingBudget, LlmSemanticAdjudicator,
     ProductionCuratorCycleExecutor, ProductionCuratorWorker, ProductionEmbeddingReranker,
     SqliteBacklogProbe, SqliteCandidateBuilder, SqliteConflictDetector, SqliteConsolidationEngine,
-    SqliteOperatorReviewQueue, SqliteRetrospectiveGenerator, SqliteWorkPatternExtractor,
+    SqliteKnowledgeDatasourceWriter, SqliteOperatorReviewQueue, SqliteRetrospectiveGenerator,
+    SqliteWorkPatternExtractor,
 };
 use seasoned_hand_core::llm::LlmClient;
 use seasoned_hand_core::router::{SlotName, SlotRouter};
@@ -460,6 +461,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::sync::Arc::new(SqliteWorkPatternExtractor::new(state.db.clone()));
         let operator_review_queue =
             std::sync::Arc::new(SqliteOperatorReviewQueue::new(state.db.clone()));
+        let enforce_l2_knowledge = std::env::var("SH_CURATOR_L2_ENFORCE_KNOWLEDGE")
+            .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
+            .unwrap_or(true);
+        let enforce_l2_datasource = std::env::var("SH_CURATOR_L2_ENFORCE_DATASOURCE")
+            .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
+            .unwrap_or(true);
+        let knowledge_datasource_writer =
+            std::sync::Arc::new(SqliteKnowledgeDatasourceWriter::new(
+                state.db.clone(),
+                enforce_l2_knowledge,
+                enforce_l2_datasource,
+            ));
         let reranker = std::sync::Arc::new(ProductionEmbeddingReranker::new(
             embedding_llm,
             config.embedding_model.clone(),
@@ -478,6 +491,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 retrospective_generator,
                 work_pattern_extractor,
                 operator_review_queue,
+                knowledge_datasource_writer,
             },
             config.max_candidates_per_cycle,
             config.backlog_threshold,

@@ -244,3 +244,18 @@ accountability, not speculative implementation details.
     `curator::tests::e2e_cycle_covers_merge_and_keep_branches_with_stubbed_rerank`
   - residual to close in later stories: full false-positive audit harness and archive
     reversibility acceptance gates (stories 4.13 + 4.16)
+
+## Story 4.10 close-out (2026-05-19)
+
+- `#73` CLOSED by story 4.10:
+  - production `SqliteKnowledgeDatasourceWriter` ships raw staging writes for `knowledge_items`
+    and `datasource_items`, plus L2-gated promotion decisions (`knowledge_write` /
+    `datasource_write`) in `curator_decisions`
+  - per-artifact-class rollout flags are wired (`SH_CURATOR_L2_ENFORCE_KNOWLEDGE`,
+    `SH_CURATOR_L2_ENFORCE_DATASOURCE`) and passed via Curator runtime dependency graph from
+    `main.rs`
+  - Curator cycle integrates writer execution in production path (`ProductionCuratorCycleExecutor`)
+  - evidence:
+    `crates/seasoned-hand-core/src/curator/mod.rs`,
+    `crates/seasoned-hand-server/src/main.rs`,
+    `curator::tests::e2e_cycle_knowledge_datasource_emit_and_l2_promotion_paths`
