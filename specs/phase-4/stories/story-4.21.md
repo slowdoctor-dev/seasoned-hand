@@ -1,6 +1,6 @@
 # Story 4.21 — phase4_warm_full_loop_benchmark
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 4.3, 4.4, 4.5, 4.7, 4.8, 4.10, 4.12, 4.13
 > **Phase**: 4

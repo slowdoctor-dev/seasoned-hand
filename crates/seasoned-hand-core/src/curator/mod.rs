@@ -5757,4 +5757,253 @@ mod tests {
         assert!(asymmetric.soft_cap_exceeded(100_000, 1_000_000));
         assert!(!asymmetric.breaker_open(100_000, 1_000_000));
     }
+
+    // Story 4.21 — phase4_warm_full_loop_benchmark.
+    //
+    // The headline Phase 4 acceptance gate: validates the full cold-curate ->
+    // warm-cycle loop produces a measurable improvement in active-corpus
+    // quality. Uses a deterministic >=200-artifact fixture, stub-based scoring
+    // (no live LLM), and asserts:
+    //   - stale_ratio strictly improves after curation
+    //   - top-3 highest-confidence merge decisions are precision@3 >= 0.66
+    //     (>=2/3 of them correspond to real labeled duplicate clusters)
+    //   - wall-clock stays inside the NFR-4.4 / acceptance proxy budget
+    //
+    // No live LLM calls and no Bifrost dependency — fixture entirely synthesized.
+    // Closes DEBT #87 (warm benchmark full-loop) + #101 (concrete setup detail).
+
+    async fn seed_warm_loop_corpus(
+        db: &DbPool,
+        project_id: &str,
+        active_revs: usize,
+        stale_revs: usize,
+    ) -> (
+        Vec<RerankedCandidate>,
+        std::collections::HashSet<(String, String)>,
+    ) {
+        // Active "good" revisions: pb-active-* / rev-active-*
+        // Stale revisions: pb-stale-* / rev-stale-* (lower confidence)
+        let project = project_id.to_string();
+        let pid_clone = project.clone();
+        db.with_conn(move |conn| {
+            for i in 0..active_revs {
+                let pb = format!("pb-active-{i}");
+                let rev = format!("rev-active-{i}");
+                conn.execute(
+                    "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id, created_at, updated_at, trigger_keywords, content, status, source_project_id, active_revision_id, success_count, failure_count)
+                     VALUES (?, NULL, 'Active', '/tmp/a.md', 1, NULL, 1, 1, '[\"deploy\"]', 'Active deployment workflow', 'active', ?, ?, 9, 1)",
+                    rusqlite::params![pb, pid_clone, rev],
+                )
+                .expect("seed active playbook");
+                conn.execute(
+                    "INSERT INTO playbook_revisions (id, tenant_id, playbook_id, revision_no, parent_revision_id, title, trigger_keywords, content, source_task_id, source_project_id, author_type, change_kind, confidence, created_at, superseded_at)
+                     VALUES (?, NULL, ?, 1, NULL, 'Active rev', '[\"deploy\"]', 'Active deployment workflow', NULL, ?, 'extractor', 'extract', 0.9, 1, NULL)",
+                    rusqlite::params![rev, pb, pid_clone],
+                )
+                .expect("seed active revision");
+            }
+            for i in 0..stale_revs {
+                let pb = format!("pb-stale-{i}");
+                let rev = format!("rev-stale-{i}");
+                conn.execute(
+                    "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id, created_at, updated_at, trigger_keywords, content, status, source_project_id, active_revision_id, success_count, failure_count)
+                     VALUES (?, NULL, 'Stale', '/tmp/s.md', 1, NULL, 1, 1, '[\"stale\"]', 'Stale legacy workflow', 'active', ?, ?, 0, 4)",
+                    rusqlite::params![pb, pid_clone, rev],
+                )
+                .expect("seed stale playbook");
+                conn.execute(
+                    "INSERT INTO playbook_revisions (id, tenant_id, playbook_id, revision_no, parent_revision_id, title, trigger_keywords, content, source_task_id, source_project_id, author_type, change_kind, confidence, created_at, superseded_at)
+                     VALUES (?, NULL, ?, 1, NULL, 'Stale rev', '[\"stale\"]', 'Stale legacy workflow', NULL, ?, 'extractor', 'extract', 0.4, 1, NULL)",
+                    rusqlite::params![rev, pb, pid_clone],
+                )
+                .expect("seed stale revision");
+            }
+        })
+        .await;
+
+        // Build candidates: 50 known duplicate clusters (pairs within active set)
+        // and 50 stale archive candidates (lone-stale revisions).
+        let mut candidates = Vec::new();
+        let mut true_duplicate_pairs = std::collections::HashSet::new();
+        let n_dup_pairs = 50;
+        let n_archive_pairs = 50;
+        for i in 0..n_dup_pairs {
+            let left = format!("rev-active-{}", i * 2);
+            let right = format!("rev-active-{}", i * 2 + 1);
+            true_duplicate_pairs.insert((left.clone(), right.clone()));
+            candidates.push(RerankedCandidate {
+                left_revision_id: left,
+                right_revision_id: right,
+                blended_score: 0.90,
+                embedding_cosine: 0.92,
+                fts_norm: 0.85,
+                deterministic_floor: 0.70,
+                llm_contribution: 0.20,
+                embedding_used: true,
+            });
+        }
+        for i in 0..n_archive_pairs {
+            let left = format!("rev-stale-{i}");
+            let right = format!("rev-stale-{}", (i + 1) % n_archive_pairs);
+            candidates.push(RerankedCandidate {
+                left_revision_id: left,
+                right_revision_id: right,
+                blended_score: 0.58,
+                embedding_cosine: 0.55,
+                fts_norm: 0.55,
+                deterministic_floor: 0.50,
+                llm_contribution: 0.08,
+                embedding_used: true,
+            });
+        }
+
+        (candidates, true_duplicate_pairs)
+    }
+
+    async fn count_active_playbooks(db: &DbPool, project_id: &str) -> i64 {
+        let project = project_id.to_string();
+        db.with_conn(move |conn| -> Result<i64, rusqlite::Error> {
+            conn.query_row(
+                "SELECT COUNT(*) FROM playbooks WHERE source_project_id = ? AND status = 'active'",
+                [project.as_str()],
+                |row| row.get(0),
+            )
+        })
+        .await
+        .expect("count active")
+    }
+
+    async fn count_stale_active(db: &DbPool, project_id: &str) -> i64 {
+        let project = project_id.to_string();
+        db.with_conn(move |conn| -> Result<i64, rusqlite::Error> {
+            conn.query_row(
+                "SELECT COUNT(*) FROM playbooks
+                 WHERE source_project_id = ?
+                   AND status = 'active'
+                   AND id LIKE 'pb-stale-%'",
+                [project.as_str()],
+                |row| row.get(0),
+            )
+        })
+        .await
+        .expect("count stale")
+    }
+
+    #[tokio::test]
+    async fn phase4_warm_full_loop_benchmark() {
+        let started = std::time::Instant::now();
+
+        let db = db::open(":memory:").await.expect("db");
+        let project_id = "proj-phase4-warm-bench";
+        // 150 active + 60 stale = 210 verified-artifact baseline (>=200 floor).
+        let (candidates, true_dup_pairs) = seed_warm_loop_corpus(&db, project_id, 150, 60).await;
+        assert_eq!(
+            candidates.len(),
+            100,
+            "fixture must produce 100 candidate pairs"
+        );
+
+        // Cold-state metrics: how many stale-active before curation.
+        let cold_active = count_active_playbooks(&db, project_id).await;
+        let cold_stale = count_stale_active(&db, project_id).await;
+        let cold_stale_ratio = (cold_stale as f64) / (cold_active as f64);
+        assert!(
+            cold_active >= 200,
+            "fixture must replay >=200 verified artifacts; observed {cold_active}"
+        );
+
+        // Cold-curate pass: drive engine over candidates and apply decisions.
+        let engine =
+            SqliteConsolidationEngine::new(db.clone()).with_archive_policy(true, 0.40, 0.55);
+        let mut decisions = engine
+            .decide(project_id, candidates)
+            .await
+            .expect("warm-bench cold decide");
+
+        // Top-3 highest-confidence Merge decisions feed precision@3.
+        let mut merge_with_conf: Vec<&ConsolidationDecision> = decisions
+            .iter()
+            .filter(|d| d.kind == ConsolidationDecisionKind::Merge)
+            .collect();
+        merge_with_conf.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let top3: Vec<&ConsolidationDecision> = merge_with_conf.iter().take(3).copied().collect();
+        assert!(
+            top3.len() == 3,
+            "warm benchmark must produce >=3 Merge decisions to compute precision@3"
+        );
+        let mut top3_hits = 0;
+        for d in &top3 {
+            if let [l, r] = d.subject_revision_ids.as_slice()
+                && (true_dup_pairs.contains(&(l.clone(), r.clone()))
+                    || true_dup_pairs.contains(&(r.clone(), l.clone())))
+            {
+                top3_hits += 1;
+            }
+        }
+        let precision_at_3 = (top3_hits as f64) / 3.0;
+
+        // Simulate the operator-approval warm cycle: high_impact ArchiveApply
+        // decisions normally land in the review queue (F-4.25 §12.19 governance).
+        // The warm benchmark runs the post-approval take-effect path, so we
+        // force requires_review=false on the ArchiveApply subset to model an
+        // operator who has approved all high-confidence stale archives. This
+        // matches the §11.3 acceptance gate definition: cold candidate set ->
+        // curate decisions -> approve queue -> warm corpus state.
+        for d in &mut decisions {
+            if d.kind == ConsolidationDecisionKind::ArchiveApply {
+                d.requires_review = false;
+            }
+        }
+
+        // Apply all merge + archive decisions (warm side effect).
+        let apply = engine
+            .apply(project_id, "cycle-warm-bench", &decisions)
+            .await
+            .expect("warm-bench apply");
+        assert!(
+            apply.applied >= 50,
+            "warm benchmark must apply >=50 decisions; observed {}",
+            apply.applied
+        );
+
+        // Warm-state metrics: stale-active count should drop.
+        let warm_stale = count_stale_active(&db, project_id).await;
+        let warm_active = count_active_playbooks(&db, project_id).await;
+        let warm_stale_ratio = (warm_stale as f64) / (warm_active.max(1) as f64);
+
+        let elapsed_ms = started.elapsed().as_millis();
+        eprintln!(
+            "phase4_warm_full_loop_benchmark report: \
+             cold_active={cold_active} cold_stale={cold_stale} cold_stale_ratio={cold_stale_ratio:.4} \
+             warm_active={warm_active} warm_stale={warm_stale} warm_stale_ratio={warm_stale_ratio:.4} \
+             precision@3={precision_at_3:.4} \
+             elapsed_ms={elapsed_ms}"
+        );
+
+        // Acceptance assertions:
+        // 1. stale ratio must IMPROVE (warm < cold) after curation.
+        assert!(
+            warm_stale_ratio < cold_stale_ratio,
+            "warm stale ratio {warm_stale_ratio:.4} must be lower than cold {cold_stale_ratio:.4}"
+        );
+
+        // 2. precision@3 floor — at least 2 of top-3 highest-confidence Merges
+        //    must correspond to a real labeled duplicate cluster.
+        assert!(
+            precision_at_3 >= 2.0 / 3.0,
+            "precision@3 floor breached: {precision_at_3:.4}"
+        );
+
+        // 3. wall-clock budget per acceptance #1 (45 min on baseline CI runner;
+        //    this synthetic harness should fit in seconds, but we assert a generous
+        //    in-test ceiling of 60_000ms to catch pathological regressions).
+        assert!(
+            elapsed_ms < 60_000,
+            "warm benchmark exceeded 60s in-test wall clock; observed {elapsed_ms}ms"
+        );
+    }
 }
