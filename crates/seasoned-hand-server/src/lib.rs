@@ -1189,7 +1189,12 @@ async fn get_feature_list(
         .sandbox
         .read_workspace_file(&session_id, "feature-list.json")
         .await
-        .map_err(|_| {
+        .map_err(|error| {
+            tracing::warn!(
+                session_id = %session_id,
+                %error,
+                "feature-list.json read failed (returning 404)",
+            );
             (
                 StatusCode::NOT_FOUND,
                 Json(ApiError {
@@ -1197,7 +1202,14 @@ async fn get_feature_list(
                 }),
             )
         })?;
-    let parsed = serde_json::from_slice::<FeatureList>(&bytes).map_err(|_| {
+    let parsed = serde_json::from_slice::<FeatureList>(&bytes).map_err(|error| {
+        tracing::warn!(
+            session_id = %session_id,
+            line = error.line(),
+            column = error.column(),
+            %error,
+            "feature-list.json parse failed (returning 500)",
+        );
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
@@ -1219,7 +1231,12 @@ async fn get_progress(
         .sandbox
         .read_workspace_file(&session_id, "progress.txt")
         .await
-        .map_err(|_| {
+        .map_err(|error| {
+            tracing::warn!(
+                session_id = %session_id,
+                %error,
+                "progress.txt read failed (returning 404)",
+            );
             (
                 StatusCode::NOT_FOUND,
                 Json(ApiError {
@@ -1513,7 +1530,8 @@ async fn post_intake_webhook_handler(
         TokenCheck::Ok => {}
     }
 
-    let Json(body) = body.map_err(|_| {
+    let Json(body) = body.map_err(|error| {
+        tracing::warn!(%error, "webhook intake: invalid JSON body (returning 400)");
         (
             StatusCode::BAD_REQUEST,
             Json(ApiError {
