@@ -210,13 +210,44 @@ Owner: BMAD Analyst pass
 
 ## 4. Story breakdown
 
-Phase 5 PM pass will expand this into concrete stories (target approximately 22-30 stories,
-1-3 hours each, mirroring Phase 4 granularity).
+Phase 5 PM pass expanded this into 33 stories (1-3 hours each, mirroring Phase 4 granularity).
+Atomic-slice story is 5.2 (V013 + ADR-014 + ARCH v1.4 — same shape as Phase 4 story 4.2).
 
 | story_id | title | est | deps | status |
 |---|---|---:|---|---|
-| 5.1 | Phase 5 scaffolds + story map + baseline hooks | 0.5h | — | ready |
-| 5.X | PM persona fills full story set in Phase 5 planning pass | TBD | TBD | ready |
+| 5.1 | Phase 5 scaffolds + story map + baseline hooks | 0.5h | — | done |
+| 5.2 | Atomic slice: V013 + ADR-014 + ARCH v1.4 + tenant backfill | 3.0h | 5.1 | ready |
+| 5.3 | AuthContext resolver + Policy engine core | 3.0h | 5.2 | ready |
+| 5.4 | org/user/membership persistence + project_role_overrides | 2.5h | 5.2 | ready |
+| 5.5 | HTTP middleware RBAC enforcement | 2.0h | 5.3, 5.4 | ready |
+| 5.6 | CLI + worker RBAC enforcement (hybrid defense) | 2.5h | 5.3, 5.4 | ready |
+| 5.7 | sop_shares ACL + CLI surfaces | 2.5h | 5.4, 5.5 | ready |
+| 5.8 | playbook_shares + visibility_state + curator integration | 3.0h | 5.4, 5.5 | ready |
+| 5.9 | Task hand-off lifecycle (pause -> transfer -> resume) | 3.0h | 5.5, 5.6 | ready |
+| 5.10 | audit_log writer + admin read API | 2.5h | 5.4, 5.5 | ready |
+| 5.11 | Hand-off audit emission + handoff CLI | 2.0h | 5.9, 5.10 | ready |
+| 5.12 | user_cost_ledger nearline writer | 2.5h | 5.4 | ready |
+| 5.13 | user_cost reconciliation job + drift alarm | 2.0h | 5.12 | ready |
+| 5.14 | tenant_event_view projection + write-time redaction hook | 3.0h | 5.2 | ready |
+| 5.15 | session_search_index RBAC predicates + redacted source | 3.0h | 5.14 | ready |
+| 5.16 | events::visibility module + admin raw-event route | 2.5h | 5.14, 5.5 | ready |
+| 5.17 | Curator tenant boundaries + failure taxonomy | 3.0h | 5.2, 5.4 | ready |
+| 5.18 | Optional org-wide curator aggregation flag (default off) | 1.5h | 5.17 | ready |
+| 5.19 | User invitation CLI + provisioning | 2.5h | 5.4, 5.10 | ready |
+| 5.20 | User deactivation + mandatory reassignment | 2.5h | 5.19, 5.9 | ready |
+| 5.21 | Optimistic concurrency for shared artifacts | 2.0h | 5.7, 5.8 | ready |
+| 5.22 | Global strict-config harmonization (closes DEBT #91) | 2.0h | 5.2 | ready |
+| 5.23 | Per-crate dependency justification (closes DEBT #97) | 1.0h | 5.1 | ready |
+| 5.24 | FTS5 weight retune (closes/partial DEBT #76) | 2.5h | 5.15 | ready |
+| 5.25 | Curator rationale schema versioning + DEBT #92/#93/#94/#96 decisions | 2.5h | 5.17 | ready |
+| 5.26 | phase5_cross_tenant_isolation_harness (NFR-5.1) | 3.0h | 5.5, 5.6, 5.17 | ready |
+| 5.27 | phase5_rbac_matrix_harness (NFR-5.2) | 2.0h | 5.5, 5.6 | ready |
+| 5.28 | phase5_handoff_lifecycle_harness + phase5_curator_tenant_failure_harness | 3.0h | 5.9, 5.17 | ready |
+| 5.29 | phase5_event_redaction_visibility_harness + phase5_search_rbac_harness | 3.0h | 5.14, 5.15 | ready |
+| 5.30 | phase5_user_cost_reconciliation_harness (NFR-5.4) | 2.0h | 5.13 | ready |
+| 5.31 | phase5_v013_migration_harness (NFR-5.8) | 2.5h | 5.2 | ready |
+| 5.32 | phase5_team_simulation_benchmark (5-actor, ≤60 min CI budget) | 3.0h | 5.26-5.31 | ready |
+| 5.33 | Phase 5 acceptance gate + close-out | 2.5h | 5.2-5.32 | ready |
 
 ## 5. Acceptance criteria (Phase-level)
 
