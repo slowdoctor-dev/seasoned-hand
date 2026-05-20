@@ -1,6 +1,6 @@
 # Story 5.11 — Hand-off audit emission + handoff CLI polish
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 5.9, 5.10
 > **Phase**: 5

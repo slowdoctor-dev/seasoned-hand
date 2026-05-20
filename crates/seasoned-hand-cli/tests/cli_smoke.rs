@@ -13,6 +13,7 @@
 use std::net::SocketAddr;
 use std::process::Command;
 
+use seasoned_hand_core::audit::{AuditAction, AuditLogger, AuditRecord};
 use seasoned_hand_core::router::SlotRouter;
 use seasoned_hand_core::sandbox::SandboxClient;
 use seasoned_hand_core::search::{SearchClient, SearchProvider};
@@ -68,6 +69,13 @@ fn run(mut cli: Command) -> (std::process::ExitStatus, String, String) {
         String::from_utf8_lossy(&output.stdout).into_owned(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
     )
+}
+
+fn apply_auth_env(cmd: &mut Command) {
+    cmd.env("SH_TENANT_ID", "tenant-a")
+        .env("SH_ORGANIZATION_ID", "org-tenant-a")
+        .env("SH_ACTOR_USER_ID", "u-admin")
+        .env("SH_ORG_ROLE", "admin");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -210,6 +218,153 @@ async fn cli_task_show_and_list_against_seeded_db() {
     assert!(status.success());
     let body: Vec<Value> = serde_json::from_str(&stdout).expect("task list json");
     assert!(body.iter().any(|t| t["id"] == task_id));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_task_handoff_succeeds_and_prints_audit_id() {
+    let h = boot().await;
+    h.state
+        .db
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO organizations (id, tenant_id, slug, display_name, status, created_at, updated_at)
+                 VALUES ('org-tenant-a', 'tenant-a', 'tenant-a', 'Tenant A', 'active', 1, 1)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO users (id, tenant_id, email, display_name, status, created_at, updated_at)
+                 VALUES ('u-admin', 'tenant-a', 'admin@acme.dev', 'Admin', 'active', 1, 1)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO users (id, tenant_id, email, display_name, status, created_at, updated_at)
+                 VALUES ('u-old', 'tenant-a', 'old@acme.dev', 'Old', 'active', 1, 1)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO users (id, tenant_id, email, display_name, status, created_at, updated_at)
+                 VALUES ('u-target', 'tenant-a', 'target@acme.dev', 'Target', 'active', 1, 1)",
+                [],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("seed auth users");
+
+    let project_id = h
+        .state
+        .projects
+        .insert(seasoned_hand_core::project::NewProject {
+            tenant_id: Some("tenant-a".into()),
+            title: "handoff".into(),
+            description: None,
+        })
+        .await
+        .expect("project");
+    let task_id = h
+        .state
+        .tasks
+        .insert(seasoned_hand_core::project::NewTask {
+            project_id,
+            tenant_id: Some("tenant-a".into()),
+            title: "handoff me".into(),
+            expected_due_at: None,
+        })
+        .await
+        .expect("task");
+    h.state
+        .db
+        .with_conn({
+            let task_id = task_id.clone();
+            move |conn| {
+                conn.execute(
+                    "UPDATE tasks SET owner_user_id = 'u-old' WHERE id = ?",
+                    rusqlite::params![task_id],
+                )?;
+                Ok::<(), rusqlite::Error>(())
+            }
+        })
+        .await
+        .expect("owner seed");
+
+    let mut cmd = cli();
+    cmd.args([
+        "--server",
+        &h.server_url,
+        "--no-color",
+        "task",
+        "handoff",
+        &task_id,
+        "--to",
+        "target@acme.dev",
+        "--reason",
+        "coverage",
+    ]);
+    apply_auth_env(&mut cmd);
+    let (status, stdout, stderr) = run(cmd);
+    assert!(status.success(), "handoff failed: {stderr}");
+    assert!(stdout.contains("audit="), "expected audit id in output");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_audit_list_returns_json_rows() {
+    let h = boot().await;
+    h.state
+        .db
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO organizations (id, tenant_id, slug, display_name, status, created_at, updated_at)
+                 VALUES ('org-tenant-a', 'tenant-a', 'tenant-a', 'Tenant A', 'active', 1, 1)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO users (id, tenant_id, email, display_name, status, created_at, updated_at)
+                 VALUES ('u-admin', 'tenant-a', 'admin@acme.dev', 'Admin', 'active', 1, 1)",
+                [],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("seed auth users");
+
+    let logger = AuditLogger::new(h.state.db.clone(), h.state.events.clone());
+    logger
+        .record(
+            &seasoned_hand_core::auth::AuthContext {
+                tenant_id: "tenant-a".into(),
+                organization_id: "org-tenant-a".into(),
+                actor_user_id: "u-admin".into(),
+                org_role: seasoned_hand_core::auth::Role::Admin,
+                project_override_role: None,
+            },
+            AuditRecord {
+                action: AuditAction::TaskHandoff,
+                resource_type: "task",
+                resource_id: "task-x",
+                target_user_id: None,
+                decision: Some("allow"),
+                reason: Some("seed"),
+                metadata: serde_json::json!({}),
+            },
+        )
+        .await
+        .expect("seed audit row");
+
+    let mut cmd = cli();
+    cmd.args([
+        "--server",
+        &h.server_url,
+        "--json",
+        "audit",
+        "list",
+        "--limit",
+        "10",
+    ]);
+    apply_auth_env(&mut cmd);
+    let (status, stdout, stderr) = run(cmd);
+    assert!(status.success(), "audit list failed: {stderr}");
+    let rows: Vec<Value> = serde_json::from_str(&stdout).expect("audit list json");
+    assert!(!rows.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

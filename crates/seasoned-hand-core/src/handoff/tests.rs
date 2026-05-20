@@ -2,6 +2,7 @@
 //! refs: /specs/phase-5/stories/story-5.9.md
 
 use super::*;
+use crate::audit::AuditLogger;
 use crate::auth::{AuthContext, Role};
 use crate::db::{self, DbPool};
 use crate::events::sqlite::SqliteEventStore;
@@ -13,7 +14,8 @@ const TENANT: &str = "tenant-test";
 async fn setup() -> (DbPool, TaskHandoffService) {
     let pool = db::open(":memory:").await.unwrap();
     let events = std::sync::Arc::new(SqliteEventStore::new(pool.clone()));
-    let service = TaskHandoffService::new(pool.clone(), events);
+    let audit = AuditLogger::new(pool.clone(), events.clone());
+    let service = TaskHandoffService::new(pool.clone(), events, audit);
     (pool, service)
 }
 

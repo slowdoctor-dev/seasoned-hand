@@ -21,6 +21,7 @@ use seasoned_hand_core::agent::init::feature_list::FeatureList;
 use seasoned_hand_core::agent::init::progress;
 use seasoned_hand_core::agent::narrate::NarratorHook;
 use seasoned_hand_core::agent::{AgentRunner, AgentRunnerDeps};
+use seasoned_hand_core::audit::{AuditLogger, AuditQuery};
 use seasoned_hand_core::auth::{Action, AuthContext, AuthResource, authorize};
 use seasoned_hand_core::browser::tracks::PostBrowserActionHook;
 use seasoned_hand_core::capability::ModelCapabilities;
@@ -47,6 +48,7 @@ use seasoned_hand_core::dispatch::{
     hooks::{EventEmittingHook, InvalidationHook},
 };
 use seasoned_hand_core::events::{EventQuery, EventStore, EventType, sqlite::SqliteEventStore};
+use seasoned_hand_core::handoff::{HandoffRequest, TaskHandoffService};
 use seasoned_hand_core::intake::{IntakeEventStore, IntakeRouter};
 use seasoned_hand_core::llm::LlmClient;
 use seasoned_hand_core::notify::{NotificationsSentStore, NotifyConfig};
@@ -1408,6 +1410,14 @@ pub fn app(state: AppState) -> Router {
             ),
         )
         .route(
+            "/v1/tasks/:id/handoff/can",
+            with_auth(get(get_task_handoff_can_handler), Action::TaskHandoff),
+        )
+        .route(
+            "/v1/audit",
+            with_auth(get(list_audit_handler), Action::AuditRead),
+        )
+        .route(
             "/v1/sops/:id/shares",
             with_auth(get(list_sop_shares_handler), Action::SopShare),
         )
@@ -2487,7 +2497,24 @@ async fn post_task_cancel_handler(
 
 #[derive(Debug, Deserialize)]
 struct TaskHandoffBody {
-    to_user_id: String,
+    to_user_email: String,
+    reason: Option<String>,
+    expected_updated_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct TaskHandoffCanResponse {
+    can_handoff: bool,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AuditListQuery {
+    actor: Option<String>,
+    action: Option<String>,
+    since: Option<String>,
+    limit: Option<usize>,
+    task: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2537,16 +2564,243 @@ impl From<seasoned_hand_core::sharing::sop::SopShareRow> for SopShareDto {
 }
 
 async fn post_task_handoff_handler(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Extension(auth_ctx): Extension<AuthContext>,
-    Path(_task_id): Path<String>,
+    Path(task_id): Path<String>,
     Json(body): Json<TaskHandoffBody>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> ApiResult<(
+    StatusCode,
+    Json<seasoned_hand_core::handoff::HandoffOutcome>,
+)> {
     require_loopback(remote)?;
     authorize_in_handler(Action::TaskHandoff, &auth_ctx)?;
-    let _ = body.to_user_id;
-    Ok(StatusCode::NOT_IMPLEMENTED)
+    let handoff = TaskHandoffService::new(
+        state.db.clone(),
+        state.events.clone(),
+        AuditLogger::new(state.db.clone(), state.events.clone()),
+    );
+    let outcome = handoff
+        .handoff(
+            &auth_ctx,
+            HandoffRequest {
+                task_id,
+                to_user_email: body.to_user_email,
+                reason: body.reason,
+                expected_updated_at: body.expected_updated_at,
+            },
+        )
+        .await
+        .map_err(map_handoff_error)?;
+    Ok((StatusCode::OK, Json(outcome)))
+}
+
+async fn get_task_handoff_can_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
+    Path(task_id): Path<String>,
+) -> ApiResult<Json<TaskHandoffCanResponse>> {
+    require_loopback(remote)?;
+    authorize_in_handler(Action::TaskHandoff, &auth_ctx)?;
+    let handoff = TaskHandoffService::new(
+        state.db.clone(),
+        state.events.clone(),
+        AuditLogger::new(state.db.clone(), state.events.clone()),
+    );
+    let can = handoff
+        .can_handoff(&task_id)
+        .await
+        .map_err(map_handoff_error)?;
+    let reason = if can {
+        None
+    } else {
+        Some("pause required or terminal/unknown task".to_string())
+    };
+    Ok(Json(TaskHandoffCanResponse {
+        can_handoff: can,
+        reason,
+    }))
+}
+
+async fn list_audit_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
+    Query(q): Query<AuditListQuery>,
+) -> ApiResult<Json<Vec<seasoned_hand_core::audit::AuditRow>>> {
+    require_loopback(remote)?;
+    authorize_in_handler(Action::AuditRead, &auth_ctx)?;
+    let logger = AuditLogger::new(state.db.clone(), state.events.clone());
+    let action = match q.action.as_deref() {
+        Some(v) => Some(parse_audit_action(v).ok_or((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "invalid_action".into(),
+            }),
+        ))?),
+        None => None,
+    };
+    let since_micros = q
+        .since
+        .as_deref()
+        .map(parse_since_to_micros)
+        .transpose()
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: "invalid_since".into(),
+                }),
+            )
+        })?;
+    let rows = logger
+        .query(
+            &auth_ctx,
+            AuditQuery {
+                actor_user_id: q.actor,
+                action,
+                since_micros,
+                limit: q.limit,
+            },
+        )
+        .await
+        .map_err(map_audit_query_error)?;
+    let rows = if let Some(task_id) = q.task {
+        rows.into_iter()
+            .filter(|r| r.resource_type == "task" && r.resource_id == task_id)
+            .collect()
+    } else {
+        rows
+    };
+    Ok(Json(rows))
+}
+
+fn parse_audit_action(value: &str) -> Option<seasoned_hand_core::audit::AuditAction> {
+    use seasoned_hand_core::audit::AuditAction;
+    match value {
+        "task.handoff" => Some(AuditAction::TaskHandoff),
+        "task.cancel" => Some(AuditAction::TaskCancel),
+        "sop.share" => Some(AuditAction::SopShare),
+        "sop.unshare" => Some(AuditAction::SopUnshare),
+        "playbook.share" => Some(AuditAction::PlaybookShare),
+        "playbook.unshare" => Some(AuditAction::PlaybookUnshare),
+        "playbook.approve" => Some(AuditAction::PlaybookApprove),
+        "user.invite" => Some(AuditAction::UserInvite),
+        "user.deactivate" => Some(AuditAction::UserDeactivate),
+        "membership.update" => Some(AuditAction::MembershipUpdate),
+        "event.raw_read" => Some(AuditAction::EventRawRead),
+        _ => None,
+    }
+}
+
+fn parse_since_to_micros(value: &str) -> Result<i64, ()> {
+    value.parse::<i64>().map_err(|_| ())
+}
+
+fn map_handoff_error(err: seasoned_hand_core::handoff::HandoffError) -> ApiErrorResponse {
+    use seasoned_hand_core::handoff::HandoffError;
+    match err {
+        HandoffError::Auth(seasoned_hand_core::auth::AuthError::MissingTenantContext) => (
+            StatusCode::UNAUTHORIZED,
+            Json(ApiError {
+                error: "unauthorized_context".into(),
+            }),
+        ),
+        HandoffError::Auth(seasoned_hand_core::auth::AuthError::Unauthorized { .. }) => (
+            StatusCode::FORBIDDEN,
+            Json(ApiError {
+                error: "forbidden_action".into(),
+            }),
+        ),
+        HandoffError::TaskNotFound(_) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "task_not_found".into(),
+            }),
+        ),
+        HandoffError::UserNotFound(_) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "user_not_found".into(),
+            }),
+        ),
+        HandoffError::TerminalState(_) => (
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "task_terminal".into(),
+            }),
+        ),
+        HandoffError::MustPauseFirst(_) => (
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "pause_required".into(),
+            }),
+        ),
+        HandoffError::StaleRevision { .. } => (
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "stale_revision".into(),
+            }),
+        ),
+        HandoffError::InvalidStatus(_) => (
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "invalid_task_status".into(),
+            }),
+        ),
+        HandoffError::Sqlite(error) => {
+            tracing::error!(%error, "handoff sqlite error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            )
+        }
+        HandoffError::Event(error) => {
+            tracing::error!(%error, "handoff event error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            )
+        }
+    }
+}
+
+fn map_audit_query_error(err: seasoned_hand_core::audit::AuditQueryError) -> ApiErrorResponse {
+    use seasoned_hand_core::audit::AuditQueryError;
+    match err {
+        AuditQueryError::Auth(seasoned_hand_core::auth::AuthError::MissingTenantContext) => (
+            StatusCode::UNAUTHORIZED,
+            Json(ApiError {
+                error: "unauthorized_context".into(),
+            }),
+        ),
+        AuditQueryError::Auth(seasoned_hand_core::auth::AuthError::Unauthorized { .. }) => (
+            StatusCode::FORBIDDEN,
+            Json(ApiError {
+                error: "forbidden_action".into(),
+            }),
+        ),
+        AuditQueryError::InvalidAction(_) => (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "invalid_action_db".into(),
+            }),
+        ),
+        AuditQueryError::Sqlite(error) => {
+            tracing::error!(%error, "audit query sqlite error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            )
+        }
+    }
 }
 
 async fn post_sop_share_handler(

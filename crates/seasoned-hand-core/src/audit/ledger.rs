@@ -218,11 +218,7 @@ impl AuditLogger {
         auth: &AuthContext,
         q: AuditQuery,
     ) -> Result<Vec<AuditRow>, AuditQueryError> {
-        authorize(
-            Action::AuditRead,
-            &AuditResourceProxy(auth.org_role).into(),
-            auth,
-        )?;
+        authorize(Action::AuditRead, &AuditResourceProxy.into(), auth)?;
         // User role: limit results to the actor's own rows regardless of
         // the caller-supplied `actor_user_id` filter (per architecture
         // §4.3 row "View audit log (org) — user → allow (limited)").
@@ -316,7 +312,7 @@ impl AuditLogger {
 
 // Per-role gating uses the same `is_same_org=true` shape as the SOP /
 // playbook share gates; defining the proxy keeps the call-site terse.
-struct AuditResourceProxy(Role);
+struct AuditResourceProxy;
 
 impl From<AuditResourceProxy> for AuthResource {
     fn from(_: AuditResourceProxy) -> Self {

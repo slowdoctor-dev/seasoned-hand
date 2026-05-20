@@ -1,4 +1,4 @@
-//! `seasoned-hand task <list|show|new|brief|deliverable|pause|resume|cancel|provenance>`.
+//! `seasoned-hand task <list|show|new|brief|deliverable|pause|resume|cancel|handoff|provenance>`.
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
@@ -69,6 +69,16 @@ pub enum TaskCmd {
     Resume { id: String },
     /// Cancel a task (state-machine widened to Drafted/Briefed/Confirmed/Running/Paused → Cancelled).
     Cancel { id: String },
+    /// Transfer task ownership to another user (requires TaskHandoff permission).
+    Handoff {
+        id: String,
+        #[arg(long = "to")]
+        to_user_email: String,
+        #[arg(long)]
+        reason: Option<String>,
+        #[arg(long = "expected-updated-at")]
+        expected_updated_at: Option<i64>,
+    },
     /// Print the latest deliverable's provenance manifest.
     Provenance { id: String },
 }
@@ -230,6 +240,26 @@ pub async fn run(cmd: TaskCmd, client: &ApiClient, json: bool) -> Result<()> {
                 println!("{}", serde_json::json!({"task_id": id, "cancelled": true}));
             } else {
                 println!("cancelled {id}");
+            }
+        }
+        TaskCmd::Handoff {
+            id,
+            to_user_email,
+            reason,
+            expected_updated_at,
+        } => {
+            let outcome = into_anyhow(
+                client
+                    .task_handoff(&id, &to_user_email, reason.as_deref(), expected_updated_at)
+                    .await,
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&outcome)?);
+            } else {
+                println!(
+                    "handoff {}: {} -> {} (audit={})",
+                    outcome.task_id, outcome.from_user_id, outcome.to_user_id, outcome.audit_log_id
+                );
             }
         }
         TaskCmd::Provenance { id } => {

@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod brief;
 pub mod channel;
 pub mod curator;

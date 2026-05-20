@@ -1,8 +1,8 @@
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use uuid::Uuid;
 
+use crate::audit::{AuditAction, AuditLogger, AuditRecord};
 use crate::auth::{Action, AuthContext, AuthError, AuthResource, authorize};
 use crate::db::DbPool;
 use crate::events::{EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
@@ -58,11 +58,12 @@ pub enum HandoffError {
 pub struct TaskHandoffService {
     db: DbPool,
     events: std::sync::Arc<SqliteEventStore>,
+    audit: AuditLogger,
 }
 
 impl TaskHandoffService {
-    pub fn new(db: DbPool, events: std::sync::Arc<SqliteEventStore>) -> Self {
-        Self { db, events }
+    pub fn new(db: DbPool, events: std::sync::Arc<SqliteEventStore>, audit: AuditLogger) -> Self {
+        Self { db, events, audit }
     }
 
     /// Cheap predicate — returns Ok(()) if the given task is in a state
@@ -111,13 +112,11 @@ impl TaskHandoffService {
             auth,
         )?;
 
-        let actor = auth.actor_user_id.clone();
-        let tenant = auth.tenant_id.clone();
-        let org_id = auth.organization_id.clone();
         let task_id = req.task_id.clone();
         let to_email = req.to_user_email.clone();
         let reason = req.reason.clone();
         let expected_updated_at = req.expected_updated_at;
+        let tenant = auth.tenant_id.clone();
 
         // Append the `task_paused_for_handoff` event OUTSIDE the transaction
         // — `EventStore::append` is an async fn that grabs its own
@@ -178,32 +177,6 @@ impl TaskHandoffService {
                     "UPDATE tasks SET owner_user_id = ?, updated_at = ? WHERE id = ?",
                     params![to_user_id, now, task_id],
                 )?;
-                // 6. Write audit_log row.
-                let audit_id = format!("audit-{}", Uuid::new_v4());
-                let metadata_json = serde_json::to_string(&serde_json::json!({
-                    "task_id": task_id,
-                    "previous_status": status_str,
-                    "reason": reason,
-                }))
-                .unwrap_or_else(|_| "{}".to_string());
-                tx.execute(
-                    "INSERT INTO audit_log (
-                       id, tenant_id, organization_id, actor_user_id, action,
-                       resource_type, resource_id, target_user_id, decision, reason,
-                       metadata, created_at
-                     ) VALUES (?, ?, ?, ?, 'task.handoff', 'task', ?, ?, 'allow', ?, ?, ?)",
-                    params![
-                        audit_id,
-                        tenant,
-                        org_id,
-                        actor,
-                        task_id,
-                        to_user_id,
-                        reason,
-                        metadata_json,
-                        now,
-                    ],
-                )?;
                 tx.commit()?;
                 Ok(HandoffOutcomeInner {
                     task_id: task_id.clone(),
@@ -211,11 +184,40 @@ impl TaskHandoffService {
                     to_user_id,
                     previous_status: status_str.clone(),
                     new_status: status_str,
-                    audit_log_id: audit_id,
                     updated_at: now,
                 })
             })
             .await?;
+
+        // 6. Write immutable audit row through the canonical service after
+        //    task transaction commit. This mirrors the post-commit event append
+        //    pattern and keeps a single writer shape for audit_log.
+        let audit_log_id = self
+            .audit
+            .record(
+                auth,
+                AuditRecord {
+                    action: AuditAction::TaskHandoff,
+                    resource_type: "task",
+                    resource_id: &outcome_inner.task_id,
+                    target_user_id: Some(&outcome_inner.to_user_id),
+                    decision: Some("allow"),
+                    reason: reason.as_deref(),
+                    metadata: serde_json::json!({
+                        "task_id": outcome_inner.task_id,
+                        "previous_status": outcome_inner.previous_status,
+                        "reason": reason,
+                    }),
+                },
+            )
+            .await
+            .map_err(|e| match e {
+                crate::audit::AuditWriteError::Sqlite(err) => HandoffError::Sqlite(err),
+                crate::audit::AuditWriteError::Event(err) => HandoffError::Event(err),
+                crate::audit::AuditWriteError::Json(err) => {
+                    HandoffError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(err)))
+                }
+            })?;
 
         // 7. Append the task_paused_for_handoff event (post-transaction so
         //    the single-connection pool doesn't deadlock — see note above).
@@ -235,7 +237,7 @@ impl TaskHandoffService {
                     "task_id": outcome_inner.task_id,
                     "from_user_id": outcome_inner.from_user_id,
                     "to_user_id": outcome_inner.to_user_id,
-                    "audit_log_id": outcome_inner.audit_log_id,
+                    "audit_log_id": audit_log_id,
                 }),
             })
             .await?;
@@ -246,7 +248,7 @@ impl TaskHandoffService {
             to_user_id: outcome_inner.to_user_id,
             previous_status: outcome_inner.previous_status,
             new_status: outcome_inner.new_status,
-            audit_log_id: outcome_inner.audit_log_id,
+            audit_log_id,
             task_paused_event_id: event.id,
             updated_at: outcome_inner.updated_at,
         })
@@ -295,6 +297,5 @@ struct HandoffOutcomeInner {
     to_user_id: String,
     previous_status: String,
     new_status: String,
-    audit_log_id: String,
     updated_at: i64,
 }

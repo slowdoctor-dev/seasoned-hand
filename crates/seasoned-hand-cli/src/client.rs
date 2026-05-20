@@ -7,6 +7,7 @@
 use anyhow::{Context, Result};
 use seasoned_hand_core::agent::init::briefing::PartialBrief;
 use seasoned_hand_core::deliverable::Deliverable;
+use seasoned_hand_core::handoff::HandoffOutcome;
 use seasoned_hand_core::project::{Project, Task};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -89,6 +90,25 @@ pub struct SopShareEntry {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuditListRow {
+    pub id: String,
+    pub tenant_id: String,
+    pub organization_id: String,
+    pub actor_user_id: String,
+    pub action: String,
+    pub resource_type: String,
+    pub resource_id: String,
+    #[serde(default)]
+    pub target_user_id: Option<String>,
+    #[serde(default)]
+    pub decision: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    pub metadata: String,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Serialize)]
 struct SopShareBody<'a> {
     user_email: &'a str,
@@ -98,6 +118,15 @@ struct SopShareBody<'a> {
 #[derive(Debug, Serialize)]
 struct SopUnshareBody<'a> {
     user_email: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct TaskHandoffBody<'a> {
+    to_user_email: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expected_updated_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -240,6 +269,60 @@ impl ApiClient {
             )
             .send()
             .await?;
+        decode(resp).await
+    }
+
+    pub async fn task_handoff(
+        &self,
+        task_id: &str,
+        to_user_email: &str,
+        reason: Option<&str>,
+        expected_updated_at: Option<i64>,
+    ) -> Result<HandoffOutcome, ApiError> {
+        let resp = self
+            .with_auth_headers(
+                self.inner
+                    .post(self.url(&format!("/v1/tasks/{task_id}/handoff"))),
+            )
+            .json(&TaskHandoffBody {
+                to_user_email,
+                reason,
+                expected_updated_at,
+            })
+            .send()
+            .await?;
+        decode(resp).await
+    }
+
+    pub async fn list_audit(
+        &self,
+        actor: Option<&str>,
+        action: Option<&str>,
+        since_micros: Option<i64>,
+        limit: Option<usize>,
+        task_id: Option<&str>,
+    ) -> Result<Vec<AuditListRow>, ApiError> {
+        let mut req = self.with_auth_headers(self.inner.get(self.url("/v1/audit")));
+        let mut query: Vec<(&str, String)> = Vec::new();
+        if let Some(v) = actor {
+            query.push(("actor", v.to_string()));
+        }
+        if let Some(v) = action {
+            query.push(("action", v.to_string()));
+        }
+        if let Some(v) = since_micros {
+            query.push(("since", v.to_string()));
+        }
+        if let Some(v) = limit {
+            query.push(("limit", v.to_string()));
+        }
+        if let Some(v) = task_id {
+            query.push(("task", v.to_string()));
+        }
+        if !query.is_empty() {
+            req = req.query(&query);
+        }
+        let resp = req.send().await?;
         decode(resp).await
     }
 
