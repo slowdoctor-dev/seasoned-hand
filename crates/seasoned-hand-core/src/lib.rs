@@ -2,6 +2,7 @@
 //! refs: /specs/phase-0/architecture.md §2
 
 pub mod agent;
+pub mod auth;
 pub mod browser;
 pub mod capability;
 pub mod channel;

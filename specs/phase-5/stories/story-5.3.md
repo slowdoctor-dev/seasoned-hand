@@ -1,6 +1,6 @@
 # Story 5.3 — AuthContext resolver + Policy engine core
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 5.2
 > **Phase**: 5
