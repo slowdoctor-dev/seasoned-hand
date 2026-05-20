@@ -4,6 +4,7 @@
 pub mod agent;
 pub mod audit;
 pub mod auth;
+pub mod billing;
 pub mod browser;
 pub mod capability;
 pub mod channel;

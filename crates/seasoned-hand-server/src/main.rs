@@ -713,6 +713,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // state tasks past their per-status TTL. Active tasks
     // (running/paused) are never GC'd. Failures within the cycle are
     // absorbed; the loop itself never exits with Err.
+    // Story 5.12: spawn the user_cost_ledger nearline writer. Tick
+    // cadence defaults to 1h; `SH_USER_COST_INTERVAL_SEC` strict-parsed
+    // override matches the `_INTERVAL_SEC` family.
+    let user_cost_shutdown = tokio_util::sync::CancellationToken::new();
+    let user_cost_handle = {
+        let interval_secs = env_u64_or_default(
+            &env_lookup,
+            "SH_USER_COST_INTERVAL_SEC",
+            seasoned_hand_core::billing::user_cost::DEFAULT_USER_COST_INTERVAL_SECS,
+        )
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        let writer = seasoned_hand_core::billing::NearlineWriter::new(state.db.clone());
+        let token = user_cost_shutdown.clone();
+        let user_cost_auth = seasoned_hand_core::auth::SystemAuth::for_worker(
+            std::env::var("SH_USER_COST_ORGANIZATION_ID")
+                .unwrap_or_else(|_| "org-legacy-default".to_string()),
+            std::env::var("SH_USER_COST_TENANT_ID")
+                .unwrap_or_else(|_| "legacy-default".to_string()),
+            "user-cost",
+        );
+        tracing::info!(
+            interval_seconds = interval_secs,
+            system_actor = %user_cost_auth.actor_user_id,
+            system_tenant = %user_cost_auth.tenant_id,
+            "user_cost_ledger nearline writer spawned",
+        );
+        tokio::spawn(async move {
+            writer
+                .run(std::time::Duration::from_secs(interval_secs), token)
+                .await;
+        })
+    };
+
     let ttl_shutdown = tokio_util::sync::CancellationToken::new();
     let ttl_handle = {
         let cron = state.workspace_ttl_cron.clone();
@@ -761,6 +794,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(handle) = retention_handle {
         log_join_error("curator-retention", handle.await);
     }
+
+    user_cost_shutdown.cancel();
+    log_join_error("user-cost", user_cost_handle.await);
 
     // Story 1.13: drain the checkpoint manager.
     checkpoint_shutdown.cancel();

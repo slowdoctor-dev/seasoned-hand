@@ -1,6 +1,6 @@
 # Story 5.12 — user_cost_ledger nearline writer
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 5.4
 > **Phase**: 5
