@@ -334,7 +334,7 @@ async fn playbook_search_returns_project_scoped_hits() {
                     created_at, updated_at, trigger_keywords, content, success_count,
                     failure_count, avg_duration_ms, avg_tool_calls, status, version
                  ) VALUES (
-                    'pb-1', NULL, 'Deploy checklist', '', 1, 't1',
+                    'pb-1', 'legacy-default', 'Deploy checklist', '', 1, 't1',
                     1, 1, '[\"deploy\"]', 'deploy runbook checklist', 0,
                     0, NULL, NULL, 'active', 1
                  )",
@@ -347,7 +347,7 @@ async fn playbook_search_returns_project_scoped_hits() {
                     created_at, updated_at, trigger_keywords, content, success_count,
                     failure_count, avg_duration_ms, avg_tool_calls, status, version
                  ) VALUES (
-                    'pb-2', NULL, 'Deploy but archived', '', 1, 't1',
+                    'pb-2', 'legacy-default', 'Deploy but archived', '', 1, 't1',
                     1, 1, '[\"deploy\"]', 'deploy archived', 0,
                     0, NULL, NULL, 'archived', 1
                  )",
@@ -360,7 +360,7 @@ async fn playbook_search_returns_project_scoped_hits() {
                     created_at, updated_at, trigger_keywords, content, success_count,
                     failure_count, avg_duration_ms, avg_tool_calls, status, version
                  ) VALUES (
-                    'pb-3', NULL, 'Deploy other project', '', 1, 't2',
+                    'pb-3', 'legacy-default', 'Deploy other project', '', 1, 't2',
                     1, 1, '[\"deploy\"]', 'deploy different project', 0,
                     0, NULL, NULL, 'active', 1
                  )",

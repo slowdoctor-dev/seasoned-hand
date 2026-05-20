@@ -3122,13 +3122,13 @@ mod tests {
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id, created_at, updated_at, trigger_keywords, content, status, source_project_id, active_revision_id, success_count, failure_count)
-                 VALUES ('pb-l', NULL, 'Left', '/tmp/l.md', 1, NULL, 1, 1, '[\"refund\",\"stripe\"]', 'Handle stripe refund policy and customer email.', 'active', ?, 'rev-l-1', 0, 0)",
+                 VALUES ('pb-l', 'legacy-default', 'Left', '/tmp/l.md', 1, NULL, 1, 1, '[\"refund\",\"stripe\"]', 'Handle stripe refund policy and customer email.', 'active', ?, 'rev-l-1', 0, 0)",
                 [project_id],
             )
             .expect("insert left playbook");
             conn.execute(
                 "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id, created_at, updated_at, trigger_keywords, content, status, source_project_id, active_revision_id, success_count, failure_count)
-                 VALUES ('pb-r', NULL, 'Right', '/tmp/r.md', 1, NULL, 1, 1, '[\"refund\",\"billing\"]', 'Refund workflow for billing disputes and stripe chargebacks.', 'active', ?, 'rev-r-1', 0, 0)",
+                 VALUES ('pb-r', 'legacy-default', 'Right', '/tmp/r.md', 1, NULL, 1, 1, '[\"refund\",\"billing\"]', 'Refund workflow for billing disputes and stripe chargebacks.', 'active', ?, 'rev-r-1', 0, 0)",
                 [project_id],
             )
             .expect("insert right playbook");
@@ -3284,7 +3284,7 @@ mod tests {
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id, created_at, updated_at, trigger_keywords, content, status, source_project_id, active_revision_id, success_count, failure_count)
-                 VALUES ('pb-k', NULL, 'Keep', '/tmp/k.md', 1, NULL, 1, 1, '[\"docs\"]', 'Documentation workflow', 'active', 'proj-consolidate', 'rev-k-1', 0, 0)",
+                 VALUES ('pb-k', 'legacy-default', 'Keep', '/tmp/k.md', 1, NULL, 1, 1, '[\"docs\"]', 'Documentation workflow', 'active', 'proj-consolidate', 'rev-k-1', 0, 0)",
                 [],
             )
             .expect("insert keep playbook");
@@ -4634,7 +4634,7 @@ mod tests {
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id, created_at, updated_at, trigger_keywords, content, status, source_project_id, active_revision_id, success_count, failure_count)
-                 VALUES ('pb-k', NULL, 'Keep', '/tmp/k.md', 1, NULL, 1, 1, '[\"docs\"]', 'Documentation workflow', 'active', 'proj-taxonomy', 'rev-k-1', 0, 0)",
+                 VALUES ('pb-k', 'legacy-default', 'Keep', '/tmp/k.md', 1, NULL, 1, 1, '[\"docs\"]', 'Documentation workflow', 'active', 'proj-taxonomy', 'rev-k-1', 0, 0)",
                 [],
             )
             .expect("insert keep playbook for taxonomy");
@@ -5800,7 +5800,7 @@ mod tests {
                 let rev = format!("rev-active-{i}");
                 conn.execute(
                     "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id, created_at, updated_at, trigger_keywords, content, status, source_project_id, active_revision_id, success_count, failure_count)
-                     VALUES (?, NULL, 'Active', '/tmp/a.md', 1, NULL, 1, 1, '[\"deploy\"]', 'Active deployment workflow', 'active', ?, ?, 9, 1)",
+                     VALUES (?, 'legacy-default', 'Active', '/tmp/a.md', 1, NULL, 1, 1, '[\"deploy\"]', 'Active deployment workflow', 'active', ?, ?, 9, 1)",
                     rusqlite::params![pb, pid_clone, rev],
                 )
                 .expect("seed active playbook");
@@ -5816,7 +5816,7 @@ mod tests {
                 let rev = format!("rev-stale-{i}");
                 conn.execute(
                     "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id, created_at, updated_at, trigger_keywords, content, status, source_project_id, active_revision_id, success_count, failure_count)
-                     VALUES (?, NULL, 'Stale', '/tmp/s.md', 1, NULL, 1, 1, '[\"stale\"]', 'Stale legacy workflow', 'active', ?, ?, 0, 4)",
+                     VALUES (?, 'legacy-default', 'Stale', '/tmp/s.md', 1, NULL, 1, 1, '[\"stale\"]', 'Stale legacy workflow', 'active', ?, ?, 0, 4)",
                     rusqlite::params![pb, pid_clone, rev],
                 )
                 .expect("seed stale playbook");

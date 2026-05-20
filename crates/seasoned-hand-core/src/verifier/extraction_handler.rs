@@ -310,7 +310,7 @@ impl ExtractionHandler for PlannerSlotExtractionHandler {
                         created_at, updated_at, trigger_keywords, content, success_count, failure_count,
                         avg_duration_ms, avg_tool_calls, status, version
                      ) VALUES (
-                        ?, NULL, ?, '', 1, ?,
+                        ?, 'legacy-default', ?, '', 1, ?,
                         unixepoch('subsec') * 1000000, unixepoch('subsec') * 1000000, ?, ?, 0, 0,
                         NULL, NULL, 'active', 1
                      )",

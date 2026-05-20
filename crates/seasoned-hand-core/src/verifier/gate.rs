@@ -1121,7 +1121,7 @@ mod tests {
                     created_at, updated_at, trigger_keywords, content, success_count,
                     failure_count, avg_duration_ms, avg_tool_calls, status, version
                  ) VALUES (
-                    ?, NULL, 'PB', '', 1, ?, 1, 1, '[]', 'body', 0, 0, NULL, NULL, 'active', 1
+                    ?, 'legacy-default', 'PB', '', 1, ?, 1, 1, '[]', 'body', 0, 0, NULL, NULL, 'active', 1
                  )",
                 rusqlite::params![id, task],
             )
@@ -1355,7 +1355,7 @@ mod tests {
                     created_at, updated_at, trigger_keywords, content, success_count, failure_count,
                     avg_duration_ms, avg_tool_calls, status, version
                  ) VALUES (
-                    'pb-benchmark-gate', NULL, 'Benchmark gate seed', '', 1, ?,
+                    'pb-benchmark-gate', 'legacy-default', 'Benchmark gate seed', '', 1, ?,
                     1, 1, ?, 'benchmark body', 1, 0, NULL, NULL, 'active', 1
                  )",
                 rusqlite::params![tid, trigger_keywords],

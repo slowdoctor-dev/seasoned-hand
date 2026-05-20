@@ -93,6 +93,11 @@ fn gate_match(
     let fixture_key = format!("fixture:{fixture_id}");
     let brief_key = format!("brief:{}", normalized_brief);
 
+    // Phase 5 story 5.8 / F-5.7: filter by share visibility. A playbook is
+    // matchable iff (a) no `playbook_shares` row exists for it (Phase 4
+    // backward-compat — the playbook predates Phase 5 sharing) OR (b) at least
+    // one share row has `visibility_state='shared'`. Rows in 'review' or
+    // 'suspended' state alone block the playbook from surfacing.
     let mut stmt = conn.prepare(
         "SELECT p.id, p.title, p.content, p.trigger_keywords, p.success_count, p.failure_count, p.created_at
          FROM playbooks p
@@ -100,7 +105,9 @@ fn gate_match(
          WHERE src.project_id = ?
            AND p.status = 'active'
            AND lower(p.trigger_keywords) LIKE '%' || lower(?) || '%'
-           AND lower(p.trigger_keywords) LIKE '%' || lower(?) || '%'",
+           AND lower(p.trigger_keywords) LIKE '%' || lower(?) || '%'
+           AND (NOT EXISTS (SELECT 1 FROM playbook_shares ps WHERE ps.playbook_id = p.id)
+                OR EXISTS (SELECT 1 FROM playbook_shares ps WHERE ps.playbook_id = p.id AND ps.visibility_state = 'shared'))",
     )?;
     let rows = stmt.query_map(params![project_id, fixture_key, brief_key], |r| {
         Ok(Candidate {
@@ -150,6 +157,7 @@ fn production_match(
         .collect::<Vec<_>>()
         .join(" ");
 
+    // Phase 5 story 5.8 / F-5.7: same share-visibility filter as gate_match.
     let mut stmt = conn.prepare(
         "SELECT p.id, p.title, p.content, p.trigger_keywords, p.success_count, p.failure_count, p.created_at
          FROM playbooks_fts
@@ -157,7 +165,9 @@ fn production_match(
          JOIN tasks src ON src.id = p.source_task_id
          WHERE playbooks_fts MATCH ?
            AND src.project_id = ?
-           AND p.status = 'active'",
+           AND p.status = 'active'
+           AND (NOT EXISTS (SELECT 1 FROM playbook_shares ps WHERE ps.playbook_id = p.id)
+                OR EXISTS (SELECT 1 FROM playbook_shares ps WHERE ps.playbook_id = p.id AND ps.visibility_state = 'shared'))",
     )?;
     let rows = stmt.query_map(params![fts_query, project_id], |r| {
         Ok(Candidate {
@@ -293,7 +303,7 @@ mod tests {
                 "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id,
                  created_at, updated_at, trigger_keywords, content, success_count, failure_count, avg_duration_ms,
                  avg_tool_calls, status, version)
-                 VALUES ('pb-1', NULL, 'Gate Hit', '', 1, 't1', 1, 1,
+                 VALUES ('pb-1', 'legacy-default', 'Gate Hit', '', 1, 't1', 1, 1,
                  '[\"fixture:phase2_overnight_default_path\", \"brief:hello world\"]',
                  'body', 2, 0, NULL, NULL, 'active', 1)",
                 [],
@@ -356,7 +366,7 @@ mod tests {
                     "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id,
                      created_at, updated_at, trigger_keywords, content, success_count, failure_count, avg_duration_ms,
                      avg_tool_calls, status, version)
-                     VALUES (?, NULL, ?, '', 1, 't1', 1, 1, ?, ?, ?, ?, NULL, NULL, 'active', 1)",
+                     VALUES (?, 'legacy-default', ?, '', 1, 't1', 1, 1, ?, ?, ?, ?, NULL, NULL, 'active', 1)",
                     params![id, title, kw, content, succ, fail],
                 )
                 .unwrap();
@@ -418,7 +428,7 @@ mod tests {
                 "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id,
                  created_at, updated_at, trigger_keywords, content, success_count, failure_count, avg_duration_ms,
                  avg_tool_calls, status, version)
-                 VALUES ('pb-active', NULL, 'Deploy active', '', 1, 't1', 1, 1,
+                 VALUES ('pb-active', 'legacy-default', 'Deploy active', '', 1, 't1', 1, 1,
                  '[\"deploy\"]', 'deploy checklist', 1, 0, NULL, NULL, 'active', 1)",
                 [],
             )
@@ -427,7 +437,7 @@ mod tests {
                 "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id,
                  created_at, updated_at, trigger_keywords, content, success_count, failure_count, avg_duration_ms,
                  avg_tool_calls, status, version)
-                 VALUES ('pb-archived', NULL, 'Deploy old', '', 1, 't1', 1, 1,
+                 VALUES ('pb-archived', 'legacy-default', 'Deploy old', '', 1, 't1', 1, 1,
                  '[\"deploy\"]', 'deploy checklist old', 10, 0, NULL, NULL, 'archived', 1)",
                 [],
             )
@@ -505,7 +515,7 @@ mod tests {
                 "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id,
                  created_at, updated_at, trigger_keywords, content, success_count, failure_count, avg_duration_ms,
                  avg_tool_calls, status, version)
-                 VALUES ('pb-top', NULL, 'Deploy gold runbook', '', 1, 't1', 1, 1,
+                 VALUES ('pb-top', 'legacy-default', 'Deploy gold runbook', '', 1, 't1', 1, 1,
                  '[\"deploy\", \"rollout\"]', 'deploy rollout checklist', 30, 5, NULL, NULL, 'active', 1)",
                 [],
             )
@@ -514,7 +524,7 @@ mod tests {
                 "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id,
                  created_at, updated_at, trigger_keywords, content, success_count, failure_count, avg_duration_ms,
                  avg_tool_calls, status, version)
-                 VALUES ('pb-mid', NULL, 'Deploy service', '', 1, 't1', 1, 1,
+                 VALUES ('pb-mid', 'legacy-default', 'Deploy service', '', 1, 't1', 1, 1,
                  '[\"deploy\"]', 'deploy service instructions', 10, 2, NULL, NULL, 'active', 1)",
                 [],
             )
@@ -523,7 +533,7 @@ mod tests {
                 "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id,
                  created_at, updated_at, trigger_keywords, content, success_count, failure_count, avg_duration_ms,
                  avg_tool_calls, status, version)
-                 VALUES ('pb-low', NULL, 'Service notes', '', 1, 't1', 1, 1,
+                 VALUES ('pb-low', 'legacy-default', 'Service notes', '', 1, 't1', 1, 1,
                  '[\"deploy\"]', 'service deployment references', 1, 0, NULL, NULL, 'active', 1)",
                 [],
             )
@@ -532,7 +542,7 @@ mod tests {
                 "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id,
                  created_at, updated_at, trigger_keywords, content, success_count, failure_count, avg_duration_ms,
                  avg_tool_calls, status, version)
-                 VALUES ('pb-archived', NULL, 'Deploy old', '', 1, 't1', 1, 1,
+                 VALUES ('pb-archived', 'legacy-default', 'Deploy old', '', 1, 't1', 1, 1,
                  '[\"deploy\"]', 'legacy deploy path', 999, 1, NULL, NULL, 'archived', 1)",
                 [],
             )
@@ -543,7 +553,7 @@ mod tests {
                 "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id,
                  created_at, updated_at, trigger_keywords, content, success_count, failure_count, avg_duration_ms,
                  avg_tool_calls, status, version)
-                 VALUES ('pb-foreign', NULL, 'Deploy foreign', '', 1, 't2', 1, 1,
+                 VALUES ('pb-foreign', 'legacy-default', 'Deploy foreign', '', 1, 't2', 1, 1,
                  '[\"deploy\"]', 'foreign project deploy', 50, 0, NULL, NULL, 'active', 1)",
                 [],
             )

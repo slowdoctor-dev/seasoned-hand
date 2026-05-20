@@ -197,7 +197,7 @@ mod tests {
                 "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id,
                  created_at, updated_at, trigger_keywords, content, success_count, failure_count, avg_duration_ms,
                  avg_tool_calls, status, version)
-                 VALUES ('pb-1', NULL, 'Deploy', '', 1, 't1', 1, 1, '[\"deploy\"]',
+                 VALUES ('pb-1', 'legacy-default', 'Deploy', '', 1, 't1', 1, 1, '[\"deploy\"]',
                  'checklist', 2, 1, NULL, NULL, 'active', 1)",
                 [],
             )

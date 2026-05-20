@@ -24,6 +24,13 @@ Phase 5-specific shortcuts/deferrals during implementation.
 ### #93 Optional fork-promotion governance (H3)
 - **Current state**: Revision-chain baseline shipped; optional governance mode deferred.
 - **Phase 5 expectation**: decide optional governance path for shared org playbooks.
+- **Closure (story 5.8)**: policy-surface baseline shipped. `playbook_shares.visibility_state`
+  has three states (`review`, `shared`, `suspended`); `PlaybookShareService::curator_auto_share`
+  routes high-confidence revisions to `shared`, low-confidence to `review`. Manual-publish-only
+  governance ("never auto-share, require operator approval") is a runtime configuration of the
+  same surface — set `archive_apply_min_confidence` above the maximum reachable confidence
+  (e.g. `1.01`) and every curator-created share lands in `review`. No additional code path
+  needed; this satisfies the architecture §6.2 OQ #6 Option B deferred-debt note. **CLOSED**.
 
 ### #94 Retrospective tiered model-by-size policy (H3)
 - **Current state**: Single summarizer profile baseline shipped.

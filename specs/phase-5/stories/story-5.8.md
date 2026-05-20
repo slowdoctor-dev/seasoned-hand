@@ -1,6 +1,6 @@
 # Story 5.8 — playbook_shares + visibility_state + curator integration
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 5.4, 5.5
 > **Phase**: 5
