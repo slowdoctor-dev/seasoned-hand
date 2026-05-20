@@ -14,6 +14,7 @@ pub mod deliverable;
 pub mod delivery;
 pub mod dispatch;
 pub mod events;
+pub mod handoff;
 pub mod intake;
 pub mod llm;
 pub mod matcher;

@@ -1,6 +1,6 @@
 # Story 5.9 — Task hand-off lifecycle (pause -> transfer -> resume)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 5.5, 5.6
 > **Phase**: 5
