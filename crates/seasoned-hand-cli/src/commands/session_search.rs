@@ -2,9 +2,11 @@
 
 use anyhow::Result;
 use clap::Subcommand;
+use seasoned_hand_core::auth::Role;
 use seasoned_hand_core::db;
 use seasoned_hand_core::events::session_search::{
-    SessionSearchQuery, search_session_events, summarize_hits_with_fallback,
+    SessionSearchQuery, allowed_visibility_levels_for_role, search_session_events,
+    summarize_hits_with_fallback,
 };
 use seasoned_hand_core::events::sqlite::SqliteEventStore;
 use seasoned_hand_core::router::SlotRouter;
@@ -54,6 +56,9 @@ pub async fn run(cmd: SessionCmd, json: bool) -> Result<()> {
             let query_for_sql = query.clone();
             let session_for_sql = session.clone();
             let event_type = r#type.as_deref().map(str_to_event_type).transpose()?;
+            let tenant_id =
+                std::env::var("SH_TENANT_ID").unwrap_or_else(|_| "legacy-default".to_string());
+            let role = org_role_from_env();
             let hits = pool
                 .with_conn(move |conn| {
                     search_session_events(
@@ -61,6 +66,10 @@ pub async fn run(cmd: SessionCmd, json: bool) -> Result<()> {
                         &query_for_sql,
                         &SessionSearchQuery {
                             session_id: Some(session_for_sql.clone()),
+                            tenant_id: Some(tenant_id.clone()),
+                            allowed_visibility_levels: Some(allowed_visibility_levels_for_role(
+                                role,
+                            )),
                             event_type,
                             source,
                             from_timestamp: from,
@@ -113,6 +122,19 @@ fn load_router() -> SlotRouter {
 fn str_to_event_type(s: &str) -> Result<seasoned_hand_core::events::EventType> {
     use std::str::FromStr;
     Ok(seasoned_hand_core::events::EventType::from_str(s)?)
+}
+
+fn org_role_from_env() -> Role {
+    match std::env::var("SH_ORG_ROLE")
+        .unwrap_or_else(|_| "admin".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "viewer" => Role::Viewer,
+        "user" => Role::User,
+        _ => Role::Admin,
+    }
 }
 
 #[cfg(test)]

@@ -95,12 +95,14 @@ impl EventStore for SqliteEventStore {
                         source,
                         data: draft.data,
                     };
-                    session_search::index_event_for_search(conn, &event)?;
                     // Story 5.14: tenant-safe projection write-time hook.
                     // Runs inside the same transaction; quarantine emission
                     // for `Failed` outcomes happens post-commit (below) since
                     // it requires a fresh `append` call.
                     let projection_outcome = visibility::apply(conn, &event);
+                    if matches!(projection_outcome, ProjectionOutcome::Inserted) {
+                        session_search::index_event_for_search(conn, &event)?;
+                    }
                     Ok((event, projection_outcome))
                 },
             )

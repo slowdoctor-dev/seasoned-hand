@@ -1,6 +1,6 @@
 # Story 5.15 — session_search_index RBAC predicates + redacted source
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 5.14
 > **Phase**: 5

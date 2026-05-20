@@ -2,13 +2,16 @@ use rusqlite::params;
 use sha2::{Digest, Sha256};
 
 use super::{Event, EventType};
+use crate::auth::Role as AuthRole;
 use crate::events::{EventStore, NewEvent};
-use crate::llm::{ChatCompletionRequest, LlmClient, Message, Role};
+use crate::llm::{ChatCompletionRequest, LlmClient, Message, Role as LlmRole};
 use crate::router::{SlotName, SlotRouter};
 
 #[derive(Debug, Clone, Default)]
 pub struct SessionSearchQuery {
     pub session_id: Option<String>,
+    pub tenant_id: Option<String>,
+    pub allowed_visibility_levels: Option<Vec<String>>,
     pub event_type: Option<EventType>,
     pub source: Option<String>,
     pub from_timestamp: Option<i64>,
@@ -39,17 +42,39 @@ pub struct SearchSummary {
 }
 
 pub fn index_event_for_search(conn: &rusqlite::Connection, event: &Event) -> rusqlite::Result<()> {
-    let searchable_text = searchable_text_for_event(event);
+    let projection = conn
+        .query_row(
+            "SELECT tenant_id, visibility_level, searchable_text
+             FROM tenant_event_view
+             WHERE event_id = ?",
+            params![event.id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .ok();
+    let Some((tenant_id, visibility_level, searchable_text)) = projection else {
+        // Story 5.15: projection-skipped events must also skip search indexing
+        // so session_search_index never references a missing tenant projection.
+        return Ok(());
+    };
     conn.execute(
-        "INSERT INTO session_search_index (event_id, session_id, timestamp, event_type, source, searchable_text)
-         VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO session_search_index
+           (event_id, session_id, timestamp, event_type, source, searchable_text, tenant_id, visibility_level)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             event.id,
             event.session_id,
             event.timestamp,
             event.event_type.as_str(),
             event.source,
-            searchable_text
+            searchable_text,
+            tenant_id,
+            visibility_level,
         ],
     )?;
     Ok(())
@@ -62,13 +87,30 @@ pub fn search_session_events(
 ) -> rusqlite::Result<Vec<EventHit>> {
     let mut sql = String::from(
         "SELECT i.event_id, i.session_id, i.timestamp, i.event_type, i.source,
-                snippet(session_search_fts, 0, '[', ']', ' … ', 16) AS snippet
+                snippet(session_search_fts, 2, '[', ']', ' … ', 16) AS snippet
          FROM session_search_fts f
          JOIN session_search_index i ON i.event_id = f.rowid
          WHERE session_search_fts MATCH ?",
     );
 
     let mut binds: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(query.to_string())];
+    if let Some(tenant_id) = &filters.tenant_id {
+        sql.push_str(" AND i.tenant_id = ?");
+        binds.push(Box::new(tenant_id.clone()));
+    }
+    if let Some(levels) = &filters.allowed_visibility_levels
+        && !levels.is_empty()
+    {
+        let placeholders = std::iter::repeat_n("?", levels.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        sql.push_str(" AND i.visibility_level IN (");
+        sql.push_str(&placeholders);
+        sql.push(')');
+        for level in levels {
+            binds.push(Box::new(level.clone()));
+        }
+    }
     if let Some(session_id) = &filters.session_id {
         sql.push_str(" AND i.session_id = ?");
         binds.push(Box::new(session_id.clone()));
@@ -110,6 +152,14 @@ pub fn search_session_events(
         hits.push(row?);
     }
     Ok(hits)
+}
+
+pub fn allowed_visibility_levels_for_role(role: AuthRole) -> Vec<String> {
+    match role {
+        AuthRole::Admin => vec!["viewer".into(), "user".into(), "admin".into()],
+        AuthRole::User => vec!["viewer".into(), "user".into()],
+        AuthRole::Viewer => vec!["viewer".into()],
+    }
 }
 
 pub async fn summarize_hits_with_fallback<S: EventStore>(
@@ -163,14 +213,14 @@ async fn summarize_hits(
         model: slot.model.clone(),
         messages: vec![
             Message {
-                role: Role::System,
+                role: LlmRole::System,
                 content: Some("Summarize session search hits in 4 bullet points max.".to_string()),
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
             },
             Message {
-                role: Role::User,
+                role: LlmRole::User,
                 content: Some(format!("query: {query}\n\nhits:\n{context}")),
                 name: None,
                 tool_calls: None,
@@ -329,3 +379,6 @@ fn join_parts(parts: &[String]) -> String {
 fn truncate_chars(input: String, cap: usize) -> String {
     input.chars().take(cap).collect()
 }
+
+#[cfg(test)]
+mod session_search_rbac_tests;
