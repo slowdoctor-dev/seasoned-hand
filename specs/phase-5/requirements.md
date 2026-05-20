@@ -216,7 +216,7 @@ Atomic-slice story is 5.2 (V013 + ADR-014 + ARCH v1.4 — same shape as Phase 4 
 | story_id | title | est | deps | status |
 |---|---|---:|---|---|
 | 5.1 | Phase 5 scaffolds + story map + baseline hooks | 0.5h | — | done |
-| 5.2 | Atomic slice: V013 + ADR-014 + ARCH v1.4 + tenant backfill | 3.0h | 5.1 | ready |
+| 5.2 | Atomic slice: V013 + ADR-014 + ARCH v1.4 + tenant backfill | 3.0h | 5.1 | done |
 | 5.3 | AuthContext resolver + Policy engine core | 3.0h | 5.2 | ready |
 | 5.4 | org/user/membership persistence + project_role_overrides | 2.5h | 5.2 | ready |
 | 5.5 | HTTP middleware RBAC enforcement | 2.0h | 5.3, 5.4 | ready |

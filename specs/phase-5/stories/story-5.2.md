@@ -1,6 +1,6 @@
 # Story 5.2 — Atomic slice: V013 + ADR-014 + ARCH v1.4 + tenant backfill
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 5.1
 > **Phase**: 5
