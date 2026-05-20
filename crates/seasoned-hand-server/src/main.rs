@@ -412,6 +412,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             state.notifications_sent.clone(),
             resolver,
         );
+        // Story 5.6: paired system-actor identity for notify writes (used by
+        // per-domain stories that wire authorize() into notification paths).
+        let notify_auth = seasoned_hand_core::auth::SystemAuth::for_worker(
+            std::env::var("SH_NOTIFY_ORGANIZATION_ID")
+                .unwrap_or_else(|_| "org-legacy-default".to_string()),
+            std::env::var("SH_NOTIFY_TENANT_ID").unwrap_or_else(|_| "legacy-default".to_string()),
+            "notify",
+        );
+        tracing::info!(
+            system_actor = %notify_auth.actor_user_id,
+            system_tenant = %notify_auth.tenant_id,
+            "notify worker spawned",
+        );
         let token = notify_shutdown.clone();
         tokio::spawn(async move {
             worker.run(redis, token).await;
@@ -506,9 +519,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let redis = std::sync::Arc::new(state.redis.clone());
         let token = verifier_shutdown.clone();
         let gate_token = verifier_shutdown.clone();
+        // Story 5.6: paired system-actor identity for verifier writes.
+        let verifier_auth = seasoned_hand_core::auth::SystemAuth::for_worker(
+            std::env::var("SH_VERIFIER_ORGANIZATION_ID")
+                .unwrap_or_else(|_| "org-legacy-default".to_string()),
+            std::env::var("SH_VERIFIER_TENANT_ID").unwrap_or_else(|_| "legacy-default".to_string()),
+            "verifier",
+        );
         tracing::info!(
             learning_enabled,
             rollback_on_fail = state.checkpoint_rollback_on_verifier_fail,
+            system_actor = %verifier_auth.actor_user_id,
+            system_tenant = %verifier_auth.tenant_id,
             "verifier worker + gate spawned",
         );
         Some(tokio::spawn(async move {
@@ -613,11 +635,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             executor,
         );
         let token = curator_shutdown.clone();
+        // Story 5.6: construct the curator worker's system-actor AuthContext.
+        // Per-domain stories (5.17 curator tenant boundaries) will thread this
+        // through `authorize(...)` for cross-tenant guards; here we capture it
+        // at the spawn boundary so log lines + future audit_log rows attribute
+        // every curator write to a stable system identity.
+        let curator_auth = seasoned_hand_core::auth::SystemAuth::for_worker(
+            std::env::var("SH_CURATOR_ORGANIZATION_ID")
+                .unwrap_or_else(|_| "org-legacy-default".to_string()),
+            std::env::var("SH_CURATOR_TENANT_ID").unwrap_or_else(|_| "legacy-default".to_string()),
+            "curator",
+        );
         tracing::info!(
             project_id = %config.project_id,
             interval_seconds = config.interval_seconds,
             backlog_threshold = config.backlog_threshold,
             auto_archive_enabled = config.auto_archive_enabled,
+            system_actor = %curator_auth.actor_user_id,
+            system_tenant = %curator_auth.tenant_id,
             "curator worker spawned",
         );
         Some(tokio::spawn(async move {
@@ -651,9 +686,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             RetentionConfig::for_project(retention_project_id.clone()),
         ));
         let scheduler = RetentionScheduler::new(job, std::time::Duration::from_secs(interval_secs));
+        // Story 5.6: paired system-actor identity for retention writes.
+        let retention_auth = seasoned_hand_core::auth::SystemAuth::for_worker(
+            std::env::var("SH_CURATOR_ORGANIZATION_ID")
+                .unwrap_or_else(|_| "org-legacy-default".to_string()),
+            std::env::var("SH_CURATOR_TENANT_ID").unwrap_or_else(|_| "legacy-default".to_string()),
+            "retention",
+        );
         tracing::info!(
             project_id = %retention_project_id,
             interval_seconds = interval_secs,
+            system_actor = %retention_auth.actor_user_id,
+            system_tenant = %retention_auth.tenant_id,
             "curator retention scheduler spawned",
         );
         Some(tokio::spawn(async move {
@@ -673,6 +717,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ttl_handle = {
         let cron = state.workspace_ttl_cron.clone();
         let token = ttl_shutdown.clone();
+        // Story 5.6: paired system-actor identity for ttl-cron writes.
+        let ttl_auth = seasoned_hand_core::auth::SystemAuth::for_worker(
+            std::env::var("SH_TTL_ORGANIZATION_ID")
+                .unwrap_or_else(|_| "org-legacy-default".to_string()),
+            std::env::var("SH_TTL_TENANT_ID").unwrap_or_else(|_| "legacy-default".to_string()),
+            "ttl",
+        );
+        tracing::info!(
+            system_actor = %ttl_auth.actor_user_id,
+            system_tenant = %ttl_auth.tenant_id,
+            "workspace ttl cron spawned",
+        );
         tokio::spawn(async move {
             cron.run(token).await;
         })

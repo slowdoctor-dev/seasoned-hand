@@ -220,7 +220,7 @@ Atomic-slice story is 5.2 (V013 + ADR-014 + ARCH v1.4 — same shape as Phase 4 
 | 5.3 | AuthContext resolver + Policy engine core | 3.0h | 5.2 | done |
 | 5.4 | org/user/membership persistence + project_role_overrides | 2.5h | 5.2 | done |
 | 5.5 | HTTP middleware RBAC enforcement | 2.0h | 5.3, 5.4 | done |
-| 5.6 | CLI + worker RBAC enforcement (hybrid defense) | 2.5h | 5.3, 5.4 | ready |
+| 5.6 | CLI + worker RBAC enforcement (hybrid defense) | 2.5h | 5.3, 5.4 | done |
 | 5.7 | sop_shares ACL + CLI surfaces | 2.5h | 5.4, 5.5 | ready |
 | 5.8 | playbook_shares + visibility_state + curator integration | 3.0h | 5.4, 5.5 | ready |
 | 5.9 | Task hand-off lifecycle (pause -> transfer -> resume) | 3.0h | 5.5, 5.6 | ready |

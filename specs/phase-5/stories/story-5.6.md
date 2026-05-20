@@ -1,6 +1,6 @@
 # Story 5.6 — CLI + worker RBAC enforcement (hybrid defense)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 5.3, 5.4
 > **Phase**: 5
