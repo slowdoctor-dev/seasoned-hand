@@ -498,5 +498,8 @@ impl ProjectRoleOverrideStore {
     }
 }
 
+pub mod deactivation;
+pub use deactivation::{DeactivationError, DeactivationOutcome, UserDeactivationService};
+
 #[cfg(test)]
 mod tests;

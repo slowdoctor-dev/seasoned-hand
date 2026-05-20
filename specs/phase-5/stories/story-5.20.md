@@ -1,6 +1,6 @@
 # Story 5.20 — User deactivation + mandatory reassignment
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 5.19, 5.9
 > **Phase**: 5
