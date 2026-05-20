@@ -1,6 +1,6 @@
 # Story 5.26 — phase5_cross_tenant_isolation_harness (NFR-5.1)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 5.5, 5.6, 5.17
 > **Phase**: 5
