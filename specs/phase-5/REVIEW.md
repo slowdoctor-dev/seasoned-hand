@@ -203,3 +203,54 @@ Verdict: **8/8 agree**, **0 disagree**.
 
 Analyst hardening saturates at iter-2. The Phase 5 Analyst package is ready for BMAD Architect
 dispatch on `specs/phase-5/architecture.md`.
+
+---
+
+## REVIEW iter-1 (Codex, 2026-05-20) — Architect pass
+
+> Date: 2026-05-20
+> Reviewer: Codex
+> Scope: Phase 5 architecture atomic slice
+> (`specs/phase-5/architecture.md`, ADR-014, ARCH v1.4 amendments, V013 migration skeleton)
+
+### Findings summary
+
+| # | Severity | Category | Title | Status |
+|---|---|---|---|---|
+| A-P5-IT1-F1 | M | atomic-slice integrity | V013/ADR/ARCH reconciliation needed in one commit | fixed inline |
+| A-P5-IT1-F2 | M | security carry-forward | Tenant event redaction boundary needed explicit chosen model | fixed inline |
+| A-P5-IT1-F3 | M | migration determinism | Tenant NULL->NOT NULL flip required deterministic backfill+validation contract | fixed inline |
+| A-P5-IT1-F4 | M | authorization drift risk | API/CLI/worker enforcement needed a shared policy contract | fixed inline |
+| A-P5-IT1-F5 | L | implementation determinism | Open-question resolutions needed explicit table of chosen options | fixed inline |
+
+No deferred debt added in this architect iter-1 document slice.
+
+### OQ resolution list (16/16)
+
+- OQ #1 -> B
+- OQ #2 -> A
+- OQ #3 -> B
+- OQ #4 -> C
+- OQ #5 -> B
+- OQ #6 -> B
+- OQ #7 -> C
+- OQ #8 -> C
+- OQ #9 -> C
+- OQ #10 -> C
+- OQ #11 -> C
+- OQ #12 -> B
+- OQ #13 -> B
+- OQ #14 -> B
+- OQ #15 -> B
+- OQ #16 -> B
+
+### Iter-1 conclusion
+
+Architect baseline landed as a complete first cut with all 16 open questions resolved and
+Phase 5's load-bearing boundaries pinned:
+
+- V013 data model and tenant flip posture,
+- centralized RBAC enforcement contract across HTTP/CLI/workers,
+- tenant-safe event redaction model,
+- curator tenant failure taxonomy carry-through,
+- acceptance harness contract mapped to F/NFR requirements.

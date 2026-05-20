@@ -1,7 +1,7 @@
 # Seasoned Hand — Architecture Specification
 
-> **Status**: v1.3 (Phase 4 story 4.2 reconciliation per ADR-013)
-> **Last updated**: 2026-05-18
+> **Status**: v1.4 (Phase 5 Architect reconciliation per ADR-014)
+> **Last updated**: 2026-05-20
 > **Owners**: Project lead
 >
 > **v1.2 amendments (ADR-012, 2026-05-18)**: §2.5 reconciled with Phase 3 V010:
@@ -17,6 +17,14 @@
 > `retrospective_citations`), and `curator_search_index` + `curator_search_fts` with
 > maintenance triggers (`curator_search_index_*`). §2.1 Skill taxonomy expanded to
 > include `curation_decision` events.
+>
+> **v1.4 amendments (ADR-014, 2026-05-20)**: §2.5 reconciled with Phase 5 V013:
+> multi-user org/user domain (`organizations`, `users`, `organization_memberships`,
+> `project_role_overrides`), immutable operation ledger (`audit_log`), per-user billing
+> rollups (`user_cost_ledger`), sharing ACL surfaces (`sop_shares`, `playbook_shares`),
+> and tenant-safe event projection (`tenant_event_view`). Phase 2-4 mutable tables tighten
+> `tenant_id` from nullable to NOT NULL with deterministic backfill and validation. §2.1
+> notes Phase 5 multi-user/audit event kinds.
 
 This is the **immutable architectural specification**. Changes require:
 1. PR with rationale
@@ -173,6 +181,9 @@ Append-only. Never UPDATE or DELETE. KV-cache friendly.
 
 `Skill` event payload sub-kinds are architecture-visible taxonomy:
 `match`, `injection`, `outcome`, `curation_decision` (added in v1.3).
+Phase 5 adds multi-user audit/ownership `Misc` kinds (for example:
+`task_handoff_completed`, `tenant_event_projection_failed`,
+`membership_role_changed`) while preserving append-only semantics.
 
 ### 2.2 Sessions
 
@@ -399,6 +410,30 @@ V011 also performs one-time backfill from V010:
 - seed revision-1 rows and active revision pointers,
 - seed `playbook_revision_outcomes` from existing counters,
 - rebuild `playbooks_fts` once post-backfill.
+
+### 2.5.2 Phase 5 (V013) extension surface
+
+V013 extends the learning/runtime schema for multi-user operation:
+
+- org/user identity and role graph:
+  - `organizations`
+  - `users`
+  - `organization_memberships`
+  - `project_role_overrides`
+- collaboration sharing ACL:
+  - `sop_shares`
+  - `playbook_shares`
+- immutable operator-grade audit ledger:
+  - `audit_log`
+- per-user cost rollups:
+  - `user_cost_ledger`
+- tenant-safe event projection:
+  - `tenant_event_view`
+- tenant tightening:
+  - all Phase 2-4 mutable `tenant_id` columns are NOT NULL after backfill and validation.
+
+V013 follows the same atomic-slice reconciliation rule as V010/V011:
+migration + successor ADR + ARCH version bump land together.
 
 ---
 
