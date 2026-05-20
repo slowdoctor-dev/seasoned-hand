@@ -48,6 +48,9 @@ impl DeliverableStore {
     pub async fn insert(&self, new: NewDeliverable) -> Result<String, DeliverableError> {
         let id = Uuid::new_v4().to_string();
         let now = now_micros();
+        let tenant_id = new
+            .tenant_id
+            .unwrap_or_else(|| "legacy-default".to_string());
         let manifest_text = serde_json::to_string(&new.provenance_manifest)?;
         let citations_text = match &new.citations {
             Some(c) => Some(serde_json::to_string(c)?),
@@ -67,7 +70,7 @@ impl DeliverableStore {
                     params![
                         id_clone,
                         new.task_id,
-                        new.tenant_id,
+                        tenant_id,
                         new.format,
                         new.source_content_path,
                         new.source_content_sha256,
@@ -111,6 +114,30 @@ impl DeliverableStore {
             .with_conn(move |conn| -> rusqlite::Result<Vec<RawRow>> {
                 let mut stmt = conn.prepare(SELECT_COLUMNS_BY_TASK)?;
                 stmt.query_map(params![tid], RawRow::from_row)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .await?;
+        raws.into_iter().map(RawRow::into_deliverable).collect()
+    }
+
+    pub async fn list_by_task_and_tenant(
+        &self,
+        task_id: &str,
+        tenant_id: &str,
+    ) -> Result<Vec<Deliverable>, DeliverableError> {
+        let tid = task_id.to_string();
+        let tenant_id = tenant_id.to_string();
+        let raws: Vec<RawRow> = self
+            .pool
+            .with_conn(move |conn| -> rusqlite::Result<Vec<RawRow>> {
+                let mut stmt = conn.prepare(
+                    "SELECT id, task_id, tenant_id, format, source_content_path, source_content_sha256, \
+                            rendered_content_path, rendered_content_sha256, content_size, citations, \
+                            provenance_manifest, created_at \
+                       FROM deliverables \
+                      WHERE task_id = ? AND tenant_id = ? ORDER BY created_at ASC",
+                )?;
+                stmt.query_map(params![tid, tenant_id], RawRow::from_row)?
                     .collect::<rusqlite::Result<Vec<_>>>()
             })
             .await?;

@@ -125,12 +125,12 @@ async fn seed_task(fx: &Fixture, status: TaskStatus, updated_at_micros: i64) -> 
     fx.pool
         .with_conn(move |conn| {
             conn.execute(
-                "INSERT INTO tasks (\
+                 "INSERT INTO tasks (\
                    id, project_id, tenant_id, title, brief, status, \
                    expected_due_at, completed_at, failure_reason, \
                    parent_task_id, schedule, skill_attached_event_id, \
                    created_at, updated_at\
-                 ) VALUES (?, ?, NULL, 't', NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)",
+                 ) VALUES (?, ?, 'legacy-default', 't', NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)",
                 rusqlite::params![
                     id_c,
                     project_id,

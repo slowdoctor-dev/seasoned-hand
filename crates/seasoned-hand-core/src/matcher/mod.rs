@@ -276,14 +276,14 @@ mod tests {
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO projects (id, status, title, created_at, updated_at)
-                 VALUES ('p1', 'active', 'P1', 1, 1)",
+                "INSERT INTO projects (id, tenant_id, status, title, created_at, updated_at)
+                 VALUES ('p1', 'legacy-default', 'active', 'P1', 1, 1)",
                 [],
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO tasks (id, project_id, status, title, created_at, updated_at)
-                 VALUES ('t1', 'p1', 'Running', 'Task 1', 1, 1)",
+                "INSERT INTO tasks (id, project_id, tenant_id, status, title, created_at, updated_at)
+                 VALUES ('t1', 'p1', 'legacy-default', 'Running', 'Task 1', 1, 1)",
                 [],
             )
             .unwrap();
@@ -334,14 +334,14 @@ mod tests {
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO projects (id, status, title, created_at, updated_at)
-                 VALUES ('p1', 'active', 'P1', 1, 1)",
+                "INSERT INTO projects (id, tenant_id, status, title, created_at, updated_at)
+                 VALUES ('p1', 'legacy-default', 'active', 'P1', 1, 1)",
                 [],
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO tasks (id, project_id, status, title, created_at, updated_at)
-                 VALUES ('t1', 'p1', 'Running', 'Task 1', 1, 1)",
+                "INSERT INTO tasks (id, project_id, tenant_id, status, title, created_at, updated_at)
+                 VALUES ('t1', 'p1', 'legacy-default', 'Running', 'Task 1', 1, 1)",
                 [],
             )
             .unwrap();
@@ -400,14 +400,14 @@ mod tests {
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO projects (id, status, title, created_at, updated_at)
-                 VALUES ('p1', 'active', 'P1', 1, 1)",
+                "INSERT INTO projects (id, tenant_id, status, title, created_at, updated_at)
+                 VALUES ('p1', 'legacy-default', 'active', 'P1', 1, 1)",
                 [],
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO tasks (id, project_id, status, title, created_at, updated_at)
-                 VALUES ('t1', 'p1', 'Running', 'Task 1', 1, 1)",
+                "INSERT INTO tasks (id, project_id, tenant_id, status, title, created_at, updated_at)
+                 VALUES ('t1', 'p1', 'legacy-default', 'Running', 'Task 1', 1, 1)",
                 [],
             )
             .unwrap();
@@ -472,26 +472,26 @@ mod tests {
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO projects (id, status, title, created_at, updated_at)
-                 VALUES ('p1', 'active', 'P1', 1, 1)",
+                "INSERT INTO projects (id, tenant_id, status, title, created_at, updated_at)
+                 VALUES ('p1', 'legacy-default', 'active', 'P1', 1, 1)",
                 [],
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO projects (id, status, title, created_at, updated_at)
-                 VALUES ('p2', 'active', 'P2', 1, 1)",
+                "INSERT INTO projects (id, tenant_id, status, title, created_at, updated_at)
+                 VALUES ('p2', 'legacy-default', 'active', 'P2', 1, 1)",
                 [],
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO tasks (id, project_id, status, title, created_at, updated_at)
-                 VALUES ('t1', 'p1', 'Running', 'Task 1', 1, 1)",
+                "INSERT INTO tasks (id, project_id, tenant_id, status, title, created_at, updated_at)
+                 VALUES ('t1', 'p1', 'legacy-default', 'Running', 'Task 1', 1, 1)",
                 [],
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO tasks (id, project_id, status, title, created_at, updated_at)
-                 VALUES ('t2', 'p2', 'Running', 'Task 2', 1, 1)",
+                "INSERT INTO tasks (id, project_id, tenant_id, status, title, created_at, updated_at)
+                 VALUES ('t2', 'p2', 'legacy-default', 'Running', 'Task 2', 1, 1)",
                 [],
             )
             .unwrap();

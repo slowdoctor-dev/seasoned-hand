@@ -366,13 +366,13 @@ mod tests {
             .unwrap();
             conn.execute(
                 "INSERT INTO projects (id, tenant_id, title, status, created_at, updated_at)
-                 VALUES (?, NULL, 'p', 'active', 1, 1)",
+                 VALUES (?, 'legacy-default', 'p', 'active', 1, 1)",
                 rusqlite::params![pid],
             )
             .unwrap();
             conn.execute(
                 "INSERT INTO tasks (id, project_id, tenant_id, title, brief, status, created_at, updated_at)
-                 VALUES (?, ?, NULL, 't', ?, 'running', 1, 1)",
+                 VALUES (?, ?, 'legacy-default', 't', ?, 'running', 1, 1)",
                 rusqlite::params![tid, pid, brief_json],
             )
             .unwrap();

@@ -86,6 +86,9 @@ impl ProjectStore {
     pub async fn insert(&self, new: NewProject) -> Result<String, ProjectError> {
         let id = Uuid::new_v4().to_string();
         let now = now_micros();
+        let tenant_id = new
+            .tenant_id
+            .unwrap_or_else(|| "legacy-default".to_string());
         let id_clone = id.clone();
         let res: Result<usize, rusqlite::Error> = self
             .pool
@@ -96,7 +99,7 @@ impl ProjectStore {
                      ) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     params![
                         id_clone,
-                        new.tenant_id,
+                        tenant_id,
                         new.title,
                         new.description,
                         ProjectStatus::Active.as_db_str(),
@@ -184,6 +187,69 @@ impl ProjectStore {
                               ORDER BY created_at DESC LIMIT ?",
                         )?;
                         stmt.query_map(params![limit], RawRow::from_row)?
+                            .collect::<rusqlite::Result<Vec<_>>>()?
+                    }
+                };
+                Ok(rows)
+            })
+            .await?;
+        raws.into_iter().map(RawRow::into_project).collect()
+    }
+
+    /// Tenant-scoped variant of [`Self::list`]. Phase 5 list endpoints
+    /// must enforce `tenant_id = :ctx.tenant_id`.
+    pub async fn list_by_tenant(
+        &self,
+        tenant_id: &str,
+        status: Option<ProjectStatus>,
+        cursor: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<Project>, ProjectError> {
+        let tenant_id = tenant_id.to_string();
+        let limit = limit.clamp(1, 200) as i64;
+        let status_str = status.map(|s| s.as_db_str().to_string());
+        let raws: Vec<RawRow> = self
+            .pool
+            .with_conn(move |conn| -> rusqlite::Result<Vec<RawRow>> {
+                let rows = match (status_str.as_deref(), cursor) {
+                    (Some(s), Some(c)) => {
+                        let mut stmt = conn.prepare(
+                            "SELECT id, tenant_id, title, description, status, created_at, updated_at \
+                               FROM projects \
+                              WHERE tenant_id = ? AND status = ? AND created_at < ? \
+                              ORDER BY created_at DESC LIMIT ?",
+                        )?;
+                        stmt.query_map(params![tenant_id, s, c, limit], RawRow::from_row)?
+                            .collect::<rusqlite::Result<Vec<_>>>()?
+                    }
+                    (Some(s), None) => {
+                        let mut stmt = conn.prepare(
+                            "SELECT id, tenant_id, title, description, status, created_at, updated_at \
+                               FROM projects \
+                              WHERE tenant_id = ? AND status = ? \
+                              ORDER BY created_at DESC LIMIT ?",
+                        )?;
+                        stmt.query_map(params![tenant_id, s, limit], RawRow::from_row)?
+                            .collect::<rusqlite::Result<Vec<_>>>()?
+                    }
+                    (None, Some(c)) => {
+                        let mut stmt = conn.prepare(
+                            "SELECT id, tenant_id, title, description, status, created_at, updated_at \
+                               FROM projects \
+                              WHERE tenant_id = ? AND created_at < ? \
+                              ORDER BY created_at DESC LIMIT ?",
+                        )?;
+                        stmt.query_map(params![tenant_id, c, limit], RawRow::from_row)?
+                            .collect::<rusqlite::Result<Vec<_>>>()?
+                    }
+                    (None, None) => {
+                        let mut stmt = conn.prepare(
+                            "SELECT id, tenant_id, title, description, status, created_at, updated_at \
+                               FROM projects \
+                              WHERE tenant_id = ? \
+                              ORDER BY created_at DESC LIMIT ?",
+                        )?;
+                        stmt.query_map(params![tenant_id, limit], RawRow::from_row)?
                             .collect::<rusqlite::Result<Vec<_>>>()?
                     }
                 };

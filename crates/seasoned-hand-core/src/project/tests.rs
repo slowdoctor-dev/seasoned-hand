@@ -27,7 +27,7 @@ async fn project_store_crud() {
     assert_eq!(row.title, "Q4 Planning");
     assert_eq!(row.description.as_deref(), Some("Draft Q4 goals"));
     assert_eq!(row.status, ProjectStatus::Active);
-    assert!(row.tenant_id.is_none());
+    assert_eq!(row.tenant_id.as_deref(), Some("legacy-default"));
 
     // Patch: rename only.
     store
@@ -393,7 +393,7 @@ async fn task_list_paginates_newest_first() {
                        expected_due_at, completed_at, failure_reason, \
                        parent_task_id, schedule, skill_attached_event_id, \
                        created_at, updated_at \
-                     ) VALUES (?, ?, NULL, 't', NULL, 'drafted', NULL, NULL, NULL, \
+                     ) VALUES (?, ?, 'legacy-default', 't', NULL, 'drafted', NULL, NULL, NULL, \
                               NULL, NULL, NULL, ?, ?)",
                     rusqlite::params![id, pid, i, i],
                 )

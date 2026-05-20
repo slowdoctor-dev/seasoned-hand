@@ -2,7 +2,7 @@
   "schema_version": 1,
   "task_id": "<redacted-id>",
   "project_id": "<redacted-id>",
-  "tenant_id": null,
+  "tenant_id": "legacy-default",
   "intake": {
     "channel": "email",
     "intake_id": "imap:phase2-overnight-abc123@phase2-overnight.example",

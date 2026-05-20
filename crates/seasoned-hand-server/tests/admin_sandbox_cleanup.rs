@@ -64,7 +64,7 @@ async fn build_harness(admin_token: Option<&str>) -> Harness {
                expected_due_at, completed_at, failure_reason, \
                parent_task_id, schedule, skill_attached_event_id, \
                created_at, updated_at\
-             ) VALUES (?, ?, NULL, 't', NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)",
+             ) VALUES (?, ?, 'legacy-default', 't', NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)",
             rusqlite::params![tid, pid, status_str, aged, aged],
         )
         .unwrap();

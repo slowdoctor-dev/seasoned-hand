@@ -101,8 +101,25 @@ impl ApiClient {
         format!("{}{path}", self.base_url)
     }
 
+    fn with_auth_headers(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let tenant_id =
+            std::env::var("SH_TENANT_ID").unwrap_or_else(|_| "legacy-default".to_string());
+        let org_id = std::env::var("SH_ORGANIZATION_ID")
+            .unwrap_or_else(|_| "org-legacy-default".to_string());
+        let actor_user_id =
+            std::env::var("SH_ACTOR_USER_ID").unwrap_or_else(|_| "user-cli-operator".to_string());
+        let role = std::env::var("SH_ORG_ROLE").unwrap_or_else(|_| "admin".to_string());
+        req.header("x-seasoned-hand-tenant-id", tenant_id)
+            .header("x-seasoned-hand-organization-id", org_id)
+            .header("x-seasoned-hand-actor-user-id", actor_user_id)
+            .header("x-seasoned-hand-org-role", role)
+    }
+
     pub async fn list_projects(&self) -> Result<Vec<Project>, ApiError> {
-        let resp = self.inner.get(self.url("/v1/projects")).send().await?;
+        let resp = self
+            .with_auth_headers(self.inner.get(self.url("/v1/projects")))
+            .send()
+            .await?;
         decode(resp).await
     }
 
@@ -112,8 +129,7 @@ impl ApiClient {
         description: Option<&str>,
     ) -> Result<Project, ApiError> {
         let resp = self
-            .inner
-            .post(self.url("/v1/projects"))
+            .with_auth_headers(self.inner.post(self.url("/v1/projects")))
             .json(&CreateProjectBody { title, description })
             .send()
             .await?;
@@ -122,8 +138,10 @@ impl ApiClient {
 
     pub async fn archive_project(&self, id: &str) -> Result<(), ApiError> {
         let resp = self
-            .inner
-            .post(self.url(&format!("/v1/projects/{id}/archive")))
+            .with_auth_headers(
+                self.inner
+                    .post(self.url(&format!("/v1/projects/{id}/archive"))),
+            )
             .send()
             .await?;
         decode_unit(resp).await
@@ -135,9 +153,10 @@ impl ApiClient {
         status: Option<&str>,
         limit: Option<usize>,
     ) -> Result<Vec<Task>, ApiError> {
-        let mut req = self
-            .inner
-            .get(self.url(&format!("/v1/projects/{project_id}/tasks")));
+        let mut req = self.with_auth_headers(
+            self.inner
+                .get(self.url(&format!("/v1/projects/{project_id}/tasks"))),
+        );
         let mut query: Vec<(&str, String)> = Vec::new();
         if let Some(s) = status {
             query.push(("status", s.to_string()));
@@ -154,8 +173,7 @@ impl ApiClient {
 
     pub async fn get_task(&self, id: &str) -> Result<Task, ApiError> {
         let resp = self
-            .inner
-            .get(self.url(&format!("/v1/tasks/{id}")))
+            .with_auth_headers(self.inner.get(self.url(&format!("/v1/tasks/{id}"))))
             .send()
             .await?;
         decode(resp).await
@@ -163,8 +181,7 @@ impl ApiClient {
 
     pub async fn pause_task(&self, id: &str, durable: bool) -> Result<(), ApiError> {
         let resp = self
-            .inner
-            .post(self.url(&format!("/v1/tasks/{id}/pause")))
+            .with_auth_headers(self.inner.post(self.url(&format!("/v1/tasks/{id}/pause"))))
             .json(&PauseBody {
                 durable: Some(durable),
             })
@@ -175,8 +192,7 @@ impl ApiClient {
 
     pub async fn resume_task(&self, id: &str) -> Result<(), ApiError> {
         let resp = self
-            .inner
-            .post(self.url(&format!("/v1/tasks/{id}/resume")))
+            .with_auth_headers(self.inner.post(self.url(&format!("/v1/tasks/{id}/resume"))))
             .send()
             .await?;
         decode_unit(resp).await
@@ -184,8 +200,7 @@ impl ApiClient {
 
     pub async fn cancel_task(&self, id: &str) -> Result<(), ApiError> {
         let resp = self
-            .inner
-            .post(self.url(&format!("/v1/tasks/{id}/cancel")))
+            .with_auth_headers(self.inner.post(self.url(&format!("/v1/tasks/{id}/cancel"))))
             .send()
             .await?;
         decode_unit(resp).await
@@ -193,8 +208,10 @@ impl ApiClient {
 
     pub async fn task_provenance(&self, id: &str) -> Result<serde_json::Value, ApiError> {
         let resp = self
-            .inner
-            .get(self.url(&format!("/v1/tasks/{id}/provenance")))
+            .with_auth_headers(
+                self.inner
+                    .get(self.url(&format!("/v1/tasks/{id}/provenance"))),
+            )
             .send()
             .await?;
         decode(resp).await
@@ -218,8 +235,8 @@ impl ApiClient {
             .timeout(client_timeout)
             .build()
             .map_err(ApiError::Transport)?;
-        let resp = inner
-            .post(self.url("/v1/intake/cli"))
+        let resp = self
+            .with_auth_headers(inner.post(self.url("/v1/intake/cli")))
             .json(&CliIntakeBody {
                 brief,
                 project_id,
@@ -241,8 +258,7 @@ impl ApiClient {
         metadata: serde_json::Value,
     ) -> Result<CliIntakeAck, ApiError> {
         let resp = self
-            .inner
-            .post(self.url("/v1/intake/cli"))
+            .with_auth_headers(self.inner.post(self.url("/v1/intake/cli")))
             .json(&CliIntakeBody {
                 brief,
                 project_id,
@@ -255,7 +271,7 @@ impl ApiClient {
     }
 
     pub async fn list_inbox(&self, project_id: Option<&str>) -> Result<Vec<InboxEntry>, ApiError> {
-        let mut req = self.inner.get(self.url("/v1/inbox"));
+        let mut req = self.with_auth_headers(self.inner.get(self.url("/v1/inbox")));
         if let Some(pid) = project_id {
             req = req.query(&[("project_id", pid)]);
         }
@@ -283,8 +299,10 @@ impl ApiClient {
             },
         };
         let resp = self
-            .inner
-            .post(self.url(&format!("/v1/briefings/{briefing_id}/confirm")))
+            .with_auth_headers(
+                self.inner
+                    .post(self.url(&format!("/v1/briefings/{briefing_id}/confirm"))),
+            )
             .json(&body)
             .send()
             .await?;
@@ -292,7 +310,10 @@ impl ApiClient {
     }
 
     pub async fn list_channels(&self) -> Result<serde_json::Value, ApiError> {
-        let resp = self.inner.get(self.url("/v1/channels")).send().await?;
+        let resp = self
+            .with_auth_headers(self.inner.get(self.url("/v1/channels")))
+            .send()
+            .await?;
         decode(resp).await
     }
 
@@ -301,9 +322,10 @@ impl ApiClient {
         name: &str,
         role: Option<&str>,
     ) -> Result<serde_json::Value, ApiError> {
-        let mut req = self
-            .inner
-            .post(self.url(&format!("/v1/channels/{name}/test")));
+        let mut req = self.with_auth_headers(
+            self.inner
+                .post(self.url(&format!("/v1/channels/{name}/test"))),
+        );
         if let Some(r) = role {
             req = req.query(&[("role", r)]);
         }

@@ -1,6 +1,6 @@
 # Story 5.5 — HTTP middleware RBAC enforcement
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 5.3, 5.4
 > **Phase**: 5

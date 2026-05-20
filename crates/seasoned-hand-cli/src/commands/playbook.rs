@@ -182,14 +182,14 @@ mod tests {
         let pool = db::open(&db_url).await.unwrap();
         pool.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO projects (id, status, title, created_at, updated_at)
-                 VALUES ('p1', 'active', 'P1', 1, 1)",
+                "INSERT INTO projects (id, tenant_id, status, title, created_at, updated_at)
+                 VALUES ('p1', 'legacy-default', 'active', 'P1', 1, 1)",
                 [],
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO tasks (id, project_id, status, title, created_at, updated_at)
-                 VALUES ('t1', 'p1', 'Running', 'Task 1', 1, 1)",
+                "INSERT INTO tasks (id, project_id, tenant_id, status, title, created_at, updated_at)
+                 VALUES ('t1', 'p1', 'legacy-default', 'running', 'Task 1', 1, 1)",
                 [],
             )
             .unwrap();

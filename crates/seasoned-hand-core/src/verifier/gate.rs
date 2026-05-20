@@ -1135,14 +1135,14 @@ mod tests {
         let tid = task_id.to_string();
         db.with_conn(move |conn| {
             conn.execute(
-                "INSERT INTO projects (id, status, title, created_at, updated_at)
-                 VALUES (?, 'active', 'P', 1, 1)",
+                "INSERT INTO projects (id, tenant_id, status, title, created_at, updated_at)
+                 VALUES (?, 'legacy-default', 'active', 'P', 1, 1)",
                 rusqlite::params![pid],
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO tasks (id, project_id, status, title, created_at, updated_at)
-                 VALUES (?, ?, 'Running', 'T', 1, 1)",
+                "INSERT INTO tasks (id, project_id, tenant_id, status, title, created_at, updated_at)
+                 VALUES (?, ?, 'legacy-default', 'Running', 'T', 1, 1)",
                 rusqlite::params![tid, pid],
             )
             .unwrap();
@@ -1317,14 +1317,14 @@ mod tests {
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO projects (id, status, title, created_at, updated_at)
-                 VALUES (?, 'active', 'Phase3 benchmark', 1, 1)",
+                "INSERT INTO projects (id, tenant_id, status, title, created_at, updated_at)
+                 VALUES (?, 'legacy-default', 'active', 'Phase3 benchmark', 1, 1)",
                 rusqlite::params![pid],
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO tasks (id, project_id, status, title, created_at, updated_at)
-                 VALUES (?, ?, 'Running', 'Benchmark task', 1, 1)",
+                "INSERT INTO tasks (id, project_id, tenant_id, status, title, created_at, updated_at)
+                 VALUES (?, ?, 'legacy-default', 'Running', 'Benchmark task', 1, 1)",
                 rusqlite::params![tid, pid],
             )
             .unwrap();

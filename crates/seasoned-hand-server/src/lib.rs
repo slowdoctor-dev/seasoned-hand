@@ -7,11 +7,12 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
+    middleware,
     response::IntoResponse,
-    routing::get,
+    routing::{MethodRouter, get},
 };
 use dashmap::DashMap;
 use seasoned_hand_core::agent::breaker::BreakerRegistry;
@@ -20,6 +21,7 @@ use seasoned_hand_core::agent::init::feature_list::FeatureList;
 use seasoned_hand_core::agent::init::progress;
 use seasoned_hand_core::agent::narrate::NarratorHook;
 use seasoned_hand_core::agent::{AgentRunner, AgentRunnerDeps};
+use seasoned_hand_core::auth::{Action, AuthContext, AuthResource, authorize};
 use seasoned_hand_core::browser::tracks::PostBrowserActionHook;
 use seasoned_hand_core::capability::ModelCapabilities;
 use seasoned_hand_core::channel::{
@@ -62,6 +64,7 @@ use seasoned_hand_core::verifier::{
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
+mod auth;
 pub mod initializer_spawner;
 pub mod ws;
 
@@ -821,6 +824,29 @@ struct ApiError {
 type ApiErrorResponse = (StatusCode, Json<ApiError>);
 type ApiResult<T> = Result<T, ApiErrorResponse>;
 
+fn with_auth(route: MethodRouter<AppState>, action: Action) -> MethodRouter<AppState> {
+    route
+        .route_layer(middleware::from_fn(auth::middleware::require_auth_context))
+        .layer(Extension(auth::middleware::RouteAction(action)))
+}
+
+fn authorize_in_handler(action: Action, ctx: &AuthContext) -> ApiResult<()> {
+    authorize(action, &AuthResource::default(), ctx).map_err(|err| match err {
+        seasoned_hand_core::auth::AuthError::MissingTenantContext => (
+            StatusCode::UNAUTHORIZED,
+            Json(ApiError {
+                error: "unauthorized_context".into(),
+            }),
+        ),
+        seasoned_hand_core::auth::AuthError::Unauthorized { .. } => (
+            StatusCode::FORBIDDEN,
+            Json(ApiError {
+                error: "forbidden_action".into(),
+            }),
+        ),
+    })
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct ProgressQuery {
     lines: Option<usize>,
@@ -829,10 +855,12 @@ struct ProgressQuery {
 async fn list_events(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Query(params): Query<EventsQueryParams>,
 ) -> Result<Json<Vec<seasoned_hand_core::events::Event>>, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskRead, &auth_ctx)?;
     let event_type = match params.event_type.as_deref() {
         Some(s) => Some(EventType::from_str(s).map_err(|_| {
             (
@@ -855,10 +883,14 @@ async fn list_events(
         .db
         .with_conn({
             let session_id = session_id.clone();
+            let tenant_id = auth_ctx.tenant_id.clone();
             move |conn| {
                 conn.query_row::<i64, _, _>(
-                    "SELECT 1 FROM sessions WHERE id = ?",
-                    [&session_id],
+                    "SELECT 1
+                       FROM sessions s
+                       JOIN projects p ON p.id = s.project_id
+                      WHERE s.id = ? AND p.tenant_id = ?",
+                    rusqlite::params![session_id, tenant_id],
                     |row| row.get(0),
                 )
                 .is_ok()
@@ -927,18 +959,25 @@ pub struct SessionsListParams {
 async fn list_sessions(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Query(params): Query<SessionsListParams>,
 ) -> Result<Json<Vec<SessionSummary>>, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskRead, &auth_ctx)?;
     let limit = params.limit.unwrap_or(50).clamp(1, 500) as i64;
+    let tenant_id = auth_ctx.tenant_id.clone();
     let sessions = state
         .db
         .with_conn(move |conn| -> rusqlite::Result<Vec<SessionSummary>> {
             let mut stmt = conn.prepare(
                 "SELECT id, created_at, updated_at, state, title, cost_cents, tool_calls \
-                 FROM sessions ORDER BY updated_at DESC LIMIT ?",
+                 FROM sessions
+                 WHERE project_id IN (
+                    SELECT id FROM tasks WHERE tenant_id = ?
+                 )
+                 ORDER BY updated_at DESC LIMIT ?",
             )?;
-            let rows = stmt.query_map([limit], |row| {
+            let rows = stmt.query_map(rusqlite::params![tenant_id, limit], |row| {
                 Ok(SessionSummary {
                     id: row.get(0)?,
                     created_at: row.get(1)?,
@@ -1253,9 +1292,15 @@ pub fn app(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/ws", get(ws::ws_upgrade))
         .route("/v1/cost", get(cost_snapshot))
-        .route("/v1/sessions", get(list_sessions))
+        .route(
+            "/v1/sessions",
+            with_auth(get(list_sessions), Action::TaskRead),
+        )
         .route("/v1/sessions/:id", get(get_session))
-        .route("/v1/sessions/:id/events", get(list_events))
+        .route(
+            "/v1/sessions/:id/events",
+            with_auth(get(list_events), Action::TaskRead),
+        )
         .route("/v1/sessions/:id/feature-list", get(get_feature_list))
         .route("/v1/sessions/:id/progress", get(get_progress))
         .route("/v1/workspace/:session_id/*sub_path", get(workspace_proxy))
@@ -1305,29 +1350,61 @@ pub fn app(state: AppState) -> Router {
         // multi-user will lift the constraint behind real auth.
         .route(
             "/v1/projects",
-            get(list_projects_handler).post(create_project_handler),
+            with_auth(get(list_projects_handler), Action::TaskRead),
+        )
+        .route(
+            "/v1/projects",
+            with_auth(
+                axum::routing::post(create_project_handler),
+                Action::TaskWrite,
+            ),
         )
         .route(
             "/v1/projects/:id/archive",
-            axum::routing::post(archive_project_handler),
+            with_auth(
+                axum::routing::post(archive_project_handler),
+                Action::TaskWrite,
+            ),
         )
-        .route("/v1/projects/:id/tasks", get(list_project_tasks_handler))
-        .route("/v1/tasks/:id", get(get_task_handler))
+        .route(
+            "/v1/projects/:id/tasks",
+            with_auth(get(list_project_tasks_handler), Action::TaskRead),
+        )
+        .route(
+            "/v1/tasks/:id",
+            with_auth(get(get_task_handler), Action::TaskRead),
+        )
         .route(
             "/v1/tasks/:id/deliverables",
-            get(list_task_deliverables_handler),
+            with_auth(get(list_task_deliverables_handler), Action::TaskRead),
         )
         .route(
             "/v1/tasks/:id/pause",
-            axum::routing::post(post_task_pause_handler),
+            with_auth(
+                axum::routing::post(post_task_pause_handler),
+                Action::TaskWrite,
+            ),
         )
         .route(
             "/v1/tasks/:id/resume",
-            axum::routing::post(post_task_resume_handler),
+            with_auth(
+                axum::routing::post(post_task_resume_handler),
+                Action::TaskWrite,
+            ),
         )
         .route(
             "/v1/tasks/:id/cancel",
-            axum::routing::post(post_task_cancel_handler),
+            with_auth(
+                axum::routing::post(post_task_cancel_handler),
+                Action::TaskWrite,
+            ),
+        )
+        .route(
+            "/v1/tasks/:id/handoff",
+            with_auth(
+                axum::routing::post(post_task_handoff_handler),
+                Action::TaskHandoff,
+            ),
         )
         // Story 2.21b: CLI intake / inbox / briefing-confirm surface
         // (loopback-only, same posture as the 2.21a routes above).
@@ -1970,16 +2047,16 @@ struct CreateProjectBody {
     title: String,
     #[serde(default)]
     description: Option<String>,
-    #[serde(default)]
-    tenant_id: Option<String>,
 }
 
 async fn list_projects_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Query(q): Query<ProjectsListQuery>,
 ) -> Result<Json<Vec<seasoned_hand_core::project::Project>>, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskRead, &auth_ctx)?;
     let status = match q.status.as_deref() {
         Some("active") => Some(seasoned_hand_core::project::ProjectStatus::Active),
         Some("archived") => Some(seasoned_hand_core::project::ProjectStatus::Archived),
@@ -1996,7 +2073,7 @@ async fn list_projects_handler(
     let limit = q.limit.unwrap_or(50);
     state
         .projects
-        .list(status, q.cursor, limit)
+        .list_by_tenant(&auth_ctx.tenant_id, status, q.cursor, limit)
         .await
         .map(Json)
         .map_err(|e| {
@@ -2013,10 +2090,12 @@ async fn list_projects_handler(
 async fn create_project_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Json(body): Json<CreateProjectBody>,
 ) -> Result<(StatusCode, Json<seasoned_hand_core::project::Project>), (StatusCode, Json<ApiError>)>
 {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskWrite, &auth_ctx)?;
     if body.title.trim().is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -2028,7 +2107,7 @@ async fn create_project_handler(
     let id = state
         .projects
         .insert(seasoned_hand_core::project::NewProject {
-            tenant_id: body.tenant_id,
+            tenant_id: Some(auth_ctx.tenant_id.clone()),
             title: body.title,
             description: body.description,
         })
@@ -2057,9 +2136,27 @@ async fn create_project_handler(
 async fn archive_project_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskWrite, &auth_ctx)?;
+    let project = state.projects.get(&id).await.map_err(|_| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "project_not_found".into(),
+            }),
+        )
+    })?;
+    if project.tenant_id.as_deref() != Some(auth_ctx.tenant_id.as_str()) {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "project_not_found".into(),
+            }),
+        ));
+    }
     match state
         .projects
         .set_status(&id, seasoned_hand_core::project::ProjectStatus::Archived)
@@ -2094,10 +2191,12 @@ struct TasksListQuery {
 async fn list_project_tasks_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Path(project_id): Path<String>,
     Query(q): Query<TasksListQuery>,
 ) -> Result<Json<Vec<seasoned_hand_core::project::Task>>, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskRead, &auth_ctx)?;
     let status = match q.status.as_deref() {
         Some(s) => match seasoned_hand_core::project::TaskStatus::from_db_str(s) {
             Ok(st) => Some(st),
@@ -2115,7 +2214,7 @@ async fn list_project_tasks_handler(
     let limit = q.limit.unwrap_or(50);
     state
         .tasks
-        .list_by_project(&project_id, status, q.cursor, limit)
+        .list_by_project_and_tenant(&project_id, &auth_ctx.tenant_id, status, q.cursor, limit)
         .await
         .map(Json)
         .map_err(|e| {
@@ -2132,11 +2231,23 @@ async fn list_project_tasks_handler(
 async fn get_task_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Json<seasoned_hand_core::project::Task>, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskRead, &auth_ctx)?;
     match state.tasks.get(&id).await {
-        Ok(task) => Ok(Json(task)),
+        Ok(task) => {
+            if task.tenant_id.as_deref() != Some(auth_ctx.tenant_id.as_str()) {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(ApiError {
+                        error: "task_not_found".into(),
+                    }),
+                ));
+            }
+            Ok(Json(task))
+        }
         Err(seasoned_hand_core::project::TaskError::NotFound(_)) => Err((
             StatusCode::NOT_FOUND,
             Json(ApiError {
@@ -2168,9 +2279,11 @@ struct TaskDeliverablesResponse {
 async fn list_task_deliverables_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Path(task_id): Path<String>,
 ) -> Result<Json<TaskDeliverablesResponse>, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskRead, &auth_ctx)?;
     state.tasks.get(&task_id).await.map_err(|e| match e {
         seasoned_hand_core::project::TaskError::NotFound(_) => (
             StatusCode::NOT_FOUND,
@@ -2190,7 +2303,7 @@ async fn list_task_deliverables_handler(
     })?;
     let deliverables = state
         .deliverables
-        .list_by_task(&task_id)
+        .list_by_task_and_tenant(&task_id, &auth_ctx.tenant_id)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "list_task_deliverables");
@@ -2217,10 +2330,12 @@ struct TaskPauseBody {
 async fn post_task_pause_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Path(task_id): Path<String>,
     body: Option<Json<TaskPauseBody>>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskWrite, &auth_ctx)?;
     // Confirm the task exists so the 404 path mirrors `get_task_handler`
     // before we touch session state.
     state.tasks.get(&task_id).await.map_err(|e| match e {
@@ -2255,9 +2370,11 @@ async fn post_task_pause_handler(
 async fn post_task_resume_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Path(task_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskWrite, &auth_ctx)?;
     state.tasks.get(&task_id).await.map_err(|e| match e {
         seasoned_hand_core::project::TaskError::NotFound(_) => (
             StatusCode::NOT_FOUND,
@@ -2289,9 +2406,11 @@ async fn post_task_resume_handler(
 async fn post_task_cancel_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Path(task_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskWrite, &auth_ctx)?;
     // Drive the Task state machine first — Phase 2 widened
     // `legal_transitions` so Drafted/Briefed/Confirmed/Running/Paused
     // all → Cancelled. Terminal task → 409 wrong_state. NotFound → 404.
@@ -2345,6 +2464,24 @@ async fn post_task_cancel_handler(
         }
     }
     Ok(StatusCode::ACCEPTED)
+}
+
+#[derive(Debug, Deserialize)]
+struct TaskHandoffBody {
+    to_user_id: String,
+}
+
+async fn post_task_handoff_handler(
+    State(_state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
+    Path(_task_id): Path<String>,
+    Json(body): Json<TaskHandoffBody>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
+    authorize_in_handler(Action::TaskHandoff, &auth_ctx)?;
+    let _ = body.to_user_id;
+    Ok(StatusCode::NOT_IMPLEMENTED)
 }
 
 fn map_lifecycle_result(
@@ -2915,6 +3052,13 @@ mod tests {
         let outcome = list_sessions(
             State(state),
             axum::extract::ConnectInfo(remote),
+            Extension(AuthContext {
+                tenant_id: "legacy-default".into(),
+                organization_id: "org-legacy-default".into(),
+                actor_user_id: "user-test".into(),
+                org_role: seasoned_hand_core::auth::Role::Admin,
+                project_override_role: None,
+            }),
             Query(SessionsListParams { limit: None }),
         )
         .await;
@@ -2988,6 +3132,13 @@ mod tests {
             list_events(
                 State(state.clone()),
                 axum::extract::ConnectInfo(remote),
+                Extension(AuthContext {
+                    tenant_id: "legacy-default".into(),
+                    organization_id: "org-legacy-default".into(),
+                    actor_user_id: "user-test".into(),
+                    org_role: seasoned_hand_core::auth::Role::Admin,
+                    project_override_role: None,
+                }),
                 Path("any".into()),
                 Query(EventsQueryParams {
                     after_id: None,

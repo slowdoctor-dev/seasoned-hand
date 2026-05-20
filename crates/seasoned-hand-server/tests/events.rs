@@ -7,12 +7,39 @@ use seasoned_hand_server::{AppState, app};
 use serde_json::json;
 use tokio::net::TcpListener;
 
+fn auth_client() -> reqwest::Client {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        "x-seasoned-hand-tenant-id",
+        "legacy-default".parse().unwrap(),
+    );
+    headers.insert(
+        "x-seasoned-hand-organization-id",
+        "org-legacy-default".parse().unwrap(),
+    );
+    headers.insert(
+        "x-seasoned-hand-actor-user-id",
+        "user-admin".parse().unwrap(),
+    );
+    headers.insert("x-seasoned-hand-org-role", "admin".parse().unwrap());
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .unwrap()
+}
+
 async fn boot() -> (String, AppState) {
     let pool = db::open(":memory:").await.unwrap();
     pool.with_conn(|conn| {
         conn.execute(
-            "INSERT INTO sessions (id, created_at, updated_at, state) \
-             VALUES ('s1', 1, 1, 'RUNNING')",
+            "INSERT INTO projects (id, tenant_id, title, status, created_at, updated_at) \
+             VALUES ('p1', 'legacy-default', 'proj', 'active', 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, project_id, created_at, updated_at, state) \
+             VALUES ('s1', 'p1', 1, 1, 'RUNNING')",
             [],
         )
         .unwrap();
@@ -50,6 +77,7 @@ async fn boot() -> (String, AppState) {
 #[tokio::test]
 async fn list_events_returns_appended_events() {
     let (base, state) = boot().await;
+    let client = auth_client();
     state
         .events
         .append(NewEvent {
@@ -71,7 +99,9 @@ async fn list_events_returns_appended_events() {
         .await
         .unwrap();
 
-    let resp = reqwest::get(format!("{base}/v1/sessions/s1/events"))
+    let resp = client
+        .get(format!("{base}/v1/sessions/s1/events"))
+        .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -86,6 +116,7 @@ async fn list_events_returns_appended_events() {
 #[tokio::test]
 async fn list_events_filters_by_type() {
     let (base, state) = boot().await;
+    let client = auth_client();
     for t in [EventType::Message, EventType::Action, EventType::Action] {
         state
             .events
@@ -98,7 +129,9 @@ async fn list_events_filters_by_type() {
             .await
             .unwrap();
     }
-    let resp = reqwest::get(format!("{base}/v1/sessions/s1/events?type=Action"))
+    let resp = client
+        .get(format!("{base}/v1/sessions/s1/events?type=Action"))
+        .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -109,7 +142,10 @@ async fn list_events_filters_by_type() {
 #[tokio::test]
 async fn list_events_404_for_unknown_session() {
     let (base, _state) = boot().await;
-    let resp = reqwest::get(format!("{base}/v1/sessions/nope/events"))
+    let client = auth_client();
+    let resp = client
+        .get(format!("{base}/v1/sessions/nope/events"))
+        .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -120,7 +156,10 @@ async fn list_events_404_for_unknown_session() {
 #[tokio::test]
 async fn list_events_400_for_unknown_type() {
     let (base, _state) = boot().await;
-    let resp = reqwest::get(format!("{base}/v1/sessions/s1/events?type=Bogus"))
+    let client = auth_client();
+    let resp = client
+        .get(format!("{base}/v1/sessions/s1/events?type=Bogus"))
+        .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
