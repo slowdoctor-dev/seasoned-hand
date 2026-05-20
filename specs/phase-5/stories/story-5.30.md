@@ -1,6 +1,6 @@
 # Story 5.30 — phase5_user_cost_reconciliation_harness (NFR-5.4)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 5.13
 > **Phase**: 5
