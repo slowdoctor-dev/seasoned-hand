@@ -339,3 +339,44 @@ edits that tighten the spec rather than reshape it.
 Hand-off to Codex iter-3: please grade these 5 fixes (ACK/PUSHBACK/EXPAND). If iter-3 finds zero
 new residuals, Architect pass saturates and we move to **BMAD PM persona** on
 `specs/phase-5/stories/`. PM is mine per the iter-2 dispatch contract.
+
+---
+
+## REVIEW iter-3 (Codex, 2026-05-20) — Architect pass saturation
+
+### A) Grade Claude iter-2 findings (A-P5-IT2-F1..F5)
+
+Verdict: **5/5 agree**, **0 disagree**.
+
+- `A-P5-IT2-F1` (M): **ACK**. The V013 skeleton now explicitly lists the
+  `session_search_index` ALTER requirement, preventing PM/story-stage omission.
+- `A-P5-IT2-F2` (M): **ACK**. New §7.1 correctly pins
+  `events -> tenant_event_view(redaction) -> session_search_index` flow and the
+  quarantine skip behavior; this closes the prior ambiguity between §7 and §10.
+- `A-P5-IT2-F3` (L): **ACK**. ADR-014 now names the `legacy-default` sentinel literal, aligning
+  ADR text with architecture §3.5.
+- `A-P5-IT2-F4` (L): **ACK**. §12 invitation scope now explicitly stays CLI-only in Phase 5 and
+  defers email/magic-link infrastructure to Phase 6.
+- `A-P5-IT2-F5` (L): **ACK**. §9 now names concrete cost sources (`sessions.cost_cents` +
+  Action-event tool counts) and avoids implicit schema creep.
+
+### B) Independent re-audit (post-iter-2)
+
+- Checked consistency across:
+  - `specs/phase-5/architecture.md`
+  - `specs/01-architecture/decisions/ADR-014-phase5-v013-tenant-rbac.md`
+  - `migrations/V013__phase5_tenant_rbac_audit.sql`
+- Verified OQ resolutions remain complete (16/16) and still map to requirement intents.
+- Verified no new drift between migration contract text and architecture sections introduced by
+  iter-2 fixes.
+
+### C) New findings
+
+- **New M+ findings**: 0
+- **New L findings**: 0
+- **Inline fixes required**: none
+- **New DEBT seeded**: none
+
+### Iter-3 conclusion
+
+Architect pass is saturated at iter-3. Phase 5 is ready for BMAD PM story breakdown dispatch.
