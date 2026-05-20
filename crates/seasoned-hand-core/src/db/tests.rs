@@ -235,7 +235,7 @@ async fn migration_v012_creates_curator_decisions_summary() {
             "INSERT INTO curator_decisions_summary (
                  id, tenant_id, project_id, week_start, week_end, decision_type,
                  decision_count, mean_confidence, created_at
-             ) VALUES ('s1', NULL, 'proj-a', 0, 6048, 'merge', 5, 0.8, 0)",
+             ) VALUES ('s1', 'legacy-default', 'proj-a', 0, 6048, 'merge', 5, 0.8, 0)",
             [],
         )
         .unwrap();
@@ -243,7 +243,7 @@ async fn migration_v012_creates_curator_decisions_summary() {
             "INSERT INTO curator_decisions_summary (
                  id, tenant_id, project_id, week_start, week_end, decision_type,
                  decision_count, mean_confidence, created_at
-             ) VALUES ('s2', NULL, 'proj-a', 0, 6048, 'merge', 1, 0.9, 0)",
+             ) VALUES ('s2', 'legacy-default', 'proj-a', 0, 6048, 'merge', 1, 0.9, 0)",
             [],
         );
         assert!(
@@ -516,8 +516,8 @@ fn migration_v011_backfill_from_v010_rows() {
 
     // Trigger correctness smoke for the new FTS surface.
     conn.execute(
-        "INSERT INTO curator_search_index (project_id, source_type, source_id, searchable_text, created_at)
-         VALUES ('proj-1', 'decision', 'd1', 'hello retention world', 10)",
+        "INSERT INTO curator_search_index (tenant_id, project_id, source_type, source_id, searchable_text, created_at)
+         VALUES ('legacy-default', 'proj-1', 'decision', 'd1', 'hello retention world', 10)",
         [],
     )
     .unwrap();

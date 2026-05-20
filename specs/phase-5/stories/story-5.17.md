@@ -1,6 +1,6 @@
 # Story 5.17 — Curator tenant boundaries + failure taxonomy
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 5.2, 5.4
 > **Phase**: 5

@@ -245,7 +245,7 @@ fn compact_and_prune(
                  id, tenant_id, project_id, week_start, week_end, decision_type,
                  decision_count, mean_confidence, created_at
              )
-             VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             VALUES (?1, 'legacy-default', ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(project_id, week_start, week_end, decision_type) DO UPDATE
              SET decision_count = decision_count + excluded.decision_count,
                  mean_confidence = CASE
@@ -417,9 +417,17 @@ mod tests {
                      id, tenant_id, project_id, cycle_id, decision_type, subject_kind,
                      subject_id, confidence, rationale_json, evidence_json, status,
                      failure_category, created_at
-                 ) VALUES (?1, NULL, ?2, ?3, ?4, 'playbook', 'subj-x', ?5, '{}', '{}',
-                           'applied', NULL, ?6)",
-                params![id_for_move, pid, cid, dtype, confidence, created_at],
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'playbook', 'subj-x', ?6, '{}', '{}',
+                           'applied', NULL, ?7)",
+                params![
+                    id_for_move,
+                    "legacy-default",
+                    pid,
+                    cid,
+                    dtype,
+                    confidence,
+                    created_at
+                ],
             )
             .expect("seed decision");
             Ok::<(), CuratorWorkerError>(())
@@ -449,7 +457,7 @@ mod tests {
                 "INSERT INTO weekly_retrospectives (
                      id, tenant_id, project_id, week_start, week_end, content,
                      citation_coverage, generation_status, created_at
-                 ) VALUES (?1, NULL, ?2, ?3, ?4, 'narrative', 1.0, 'success', ?5)",
+                 ) VALUES (?1, 'legacy-default', ?2, ?3, ?4, 'narrative', 1.0, 'success', ?5)",
                 params![retro_clone, pid, week_start, week_end, retro_created_at],
             )
             .expect("seed retrospective");
@@ -457,7 +465,7 @@ mod tests {
                 "INSERT INTO retrospective_citations (
                      id, tenant_id, retrospective_id, claim_index, citation_kind,
                      citation_ref, snippet
-                 ) VALUES (?1, NULL, ?2, 0, 'event', 'evt-1', 'snippet')",
+                 ) VALUES (?1, 'legacy-default', ?2, 0, 'event', 'evt-1', 'snippet')",
                 params![citation_clone, retro_clone],
             )
             .expect("seed citation");
@@ -475,7 +483,7 @@ mod tests {
                 "INSERT INTO curator_search_index (
                      tenant_id, project_id, source_type, source_id, searchable_text,
                      created_at
-                 ) VALUES (NULL, ?1, 'playbook', 'subj-x', 'hello world', ?2)",
+                 ) VALUES ('legacy-default', ?1, 'playbook', 'subj-x', 'hello world', ?2)",
                 params![pid, created_at],
             )
             .expect("seed search row");

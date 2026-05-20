@@ -2,6 +2,8 @@
 //! refs: /specs/phase-4/architecture.md §2.1, §2.2, §2.3, §4.1, §4.2, §6.5, §7
 
 pub mod retention;
+#[cfg(test)]
+mod tenant_boundaries_tests;
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
@@ -106,6 +108,8 @@ pub enum CuratorFailureCategory {
     OutOfMemory,
     SqliteBusy,
     SlotUnavailable,
+    TenantUnresolved,
+    CrossTenantRef,
 }
 
 impl CuratorFailureCategory {
@@ -118,6 +122,8 @@ impl CuratorFailureCategory {
             CuratorFailureCategory::OutOfMemory => "out_of_memory",
             CuratorFailureCategory::SqliteBusy => "sqlite_busy",
             CuratorFailureCategory::SlotUnavailable => "slot_unavailable",
+            CuratorFailureCategory::TenantUnresolved => "tenant_unresolved",
+            CuratorFailureCategory::CrossTenantRef => "cross_tenant_ref",
         }
     }
 }
@@ -333,6 +339,7 @@ pub struct ConsolidationApplyResult {
     pub applied: u32,
     pub queued_for_review: u32,
     pub failures: u32,
+    pub quarantines: Vec<CuratorQuarantineRecord>,
 }
 
 #[async_trait]
@@ -948,7 +955,7 @@ impl WorkPatternExtractor for SqliteWorkPatternExtractor {
                         "INSERT INTO curator_decisions (
                             id, tenant_id, project_id, cycle_id, decision_type, subject_kind,
                             subject_id, confidence, rationale_json, evidence_json, status, failure_category, created_at
-                         ) VALUES (?1, NULL, ?2, ?3, 'recommendation', ?4, ?5, ?6, ?7, ?8, 'applied', NULL, ?9)",
+                        ) VALUES (?1, 'legacy-default', ?2, ?3, 'recommendation', ?4, ?5, ?6, ?7, ?8, 'applied', NULL, ?9)",
                         rusqlite::params![
                             recommendation_id,
                             project_id,
@@ -1162,7 +1169,7 @@ impl KnowledgeDatasourceWriter for SqliteKnowledgeDatasourceWriter {
                         conn.execute(
                             "INSERT OR IGNORE INTO knowledge_items (
                                 id, tenant_id, project_id, revision_id, source_task_id, key, value, confidence, evidence_json, created_at
-                             ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                            ) VALUES (?1, 'legacy-default', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                             rusqlite::params![
                                 kid,
                                 project_id,
@@ -1204,7 +1211,7 @@ impl KnowledgeDatasourceWriter for SqliteKnowledgeDatasourceWriter {
                             "INSERT OR IGNORE INTO curator_decisions (
                                 id, tenant_id, project_id, cycle_id, decision_type, subject_kind, subject_id,
                                 confidence, rationale_json, evidence_json, status, failure_category, created_at
-                             ) VALUES (?1, NULL, ?2, ?3, 'knowledge_write', 'knowledge', ?4, ?5, ?6, ?7, ?8, NULL, ?9)",
+                            ) VALUES (?1, 'legacy-default', ?2, ?3, 'knowledge_write', 'knowledge', ?4, ?5, ?6, ?7, ?8, NULL, ?9)",
                             rusqlite::params![
                                 did,
                                 project_id,
@@ -1247,7 +1254,7 @@ impl KnowledgeDatasourceWriter for SqliteKnowledgeDatasourceWriter {
                                 "INSERT OR IGNORE INTO datasource_items (
                                     id, tenant_id, project_id, revision_id, source_task_id, source_type,
                                     source_ref, trust_level, confidence, evidence_json, created_at
-                                 ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                                ) VALUES (?1, 'legacy-default', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                                 rusqlite::params![
                                     ds_id,
                                     project_id,
@@ -1273,7 +1280,7 @@ impl KnowledgeDatasourceWriter for SqliteKnowledgeDatasourceWriter {
                                 "INSERT OR IGNORE INTO curator_decisions (
                                     id, tenant_id, project_id, cycle_id, decision_type, subject_kind, subject_id,
                                     confidence, rationale_json, evidence_json, status, failure_category, created_at
-                                 ) VALUES (?1, NULL, ?2, ?3, 'datasource_write', 'datasource', ?4, ?5, ?6, ?7, ?8, NULL, ?9)",
+                                ) VALUES (?1, 'legacy-default', ?2, ?3, 'datasource_write', 'datasource', ?4, ?5, ?6, ?7, ?8, NULL, ?9)",
                                 rusqlite::params![
                                     did,
                                     project_id,
@@ -1394,15 +1401,26 @@ impl ConsolidationEngine for SqliteConsolidationEngine {
             .with_conn(move |conn| {
                 conn.execute_batch("BEGIN IMMEDIATE;")?;
                 let now = now_micros()?;
+                let worker_tenant = project_tenant_id(conn, &project_id)?
+                    .filter(|t| !t.trim().is_empty())
+                    .unwrap_or_else(|| "legacy-default".to_string());
                 for decision in &decisions {
                     let target_revision = decision.target_revision_id.as_deref().unwrap_or("");
-                    if !validate_decision_scope(conn, &project_id, target_revision, &decision.subject_revision_ids)?
-                    {
-                        conn.execute_batch("ROLLBACK;")?;
-                        return Err(CuratorWorkerError::Executor(format!(
-                            "project_scope_violation: decision {} references revisions outside project {}",
-                            decision.decision_id, project_id
-                        )));
+                    if let Some(scope_error) = validate_decision_scope(
+                        conn,
+                        &project_id,
+                        &worker_tenant,
+                        target_revision,
+                        &decision.subject_revision_ids,
+                    )? {
+                        result.failures = result.failures.saturating_add(1);
+                        result.quarantines.push(CuratorQuarantineRecord {
+                            decision_id: decision.decision_id.clone(),
+                            failure_category: scope_error.failure_category,
+                            retry_count: 0,
+                            detail: scope_error.detail,
+                        });
+                        continue;
                     }
                     let status = if decision.requires_review {
                         "queued_review"
@@ -1413,9 +1431,10 @@ impl ConsolidationEngine for SqliteConsolidationEngine {
                         "INSERT INTO curator_decisions (
                             id, tenant_id, project_id, cycle_id, decision_type, subject_kind,
                             subject_id, confidence, rationale_json, evidence_json, status, failure_category, created_at
-                         ) VALUES (?1, NULL, ?2, ?3, ?4, 'revision', ?5, ?6, ?7, ?8, ?9, NULL, ?10)",
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, 'revision', ?6, ?7, ?8, ?9, ?10, NULL, ?11)",
                         rusqlite::params![
                             decision.decision_id,
+                            &worker_tenant,
                             project_id,
                             cycle_id,
                             decision.kind.as_str(),
@@ -1436,9 +1455,10 @@ impl ConsolidationEngine for SqliteConsolidationEngine {
                         conn.execute(
                             "INSERT INTO curator_review_queue (
                                 id, tenant_id, decision_id, project_id, queue_reason, severity, state, reviewer, reviewer_note, resolved_at, created_at
-                             ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, 'pending', NULL, NULL, NULL, ?6)",
+                             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', NULL, NULL, NULL, ?7)",
                             rusqlite::params![
                                 format!("rq-{}", uuid::Uuid::new_v4()),
+                                &worker_tenant,
                                 decision.decision_id,
                                 project_id,
                                 format!("low_confidence_{:.2}", decision.confidence),
@@ -1476,38 +1496,95 @@ impl ConsolidationEngine for SqliteConsolidationEngine {
     }
 }
 
+struct DecisionScopeError {
+    failure_category: CuratorFailureCategory,
+    detail: String,
+}
+
 fn validate_decision_scope(
     conn: &rusqlite::Connection,
     project_id: &str,
+    worker_tenant: &str,
     target_revision: &str,
     subject_revision_ids: &[String],
-) -> Result<bool, CuratorWorkerError> {
+) -> Result<Option<DecisionScopeError>, CuratorWorkerError> {
+    if worker_tenant.trim().is_empty() {
+        return Ok(Some(DecisionScopeError {
+            failure_category: CuratorFailureCategory::TenantUnresolved,
+            detail: format!(
+                "tenant_unresolved: worker tenant missing while validating project={project_id}"
+            ),
+        }));
+    }
     if !target_revision.is_empty()
-        && !revision_belongs_to_project(conn, target_revision, project_id)?
+        && let Some(err) =
+            validate_revision_scope(conn, target_revision, project_id, worker_tenant)?
     {
-        return Ok(false);
+        return Ok(Some(err));
     }
     for revision_id in subject_revision_ids {
-        if !revision_id.is_empty() && !revision_belongs_to_project(conn, revision_id, project_id)? {
-            return Ok(false);
+        if revision_id.is_empty() {
+            continue;
+        }
+        if let Some(err) = validate_revision_scope(conn, revision_id, project_id, worker_tenant)? {
+            return Ok(Some(err));
         }
     }
-    Ok(true)
+    Ok(None)
 }
 
-fn revision_belongs_to_project(
+fn validate_revision_scope(
     conn: &rusqlite::Connection,
     revision_id: &str,
     project_id: &str,
-) -> Result<bool, CuratorWorkerError> {
-    let found: Option<i64> = conn
+    worker_tenant: &str,
+) -> Result<Option<DecisionScopeError>, CuratorWorkerError> {
+    let found: Option<String> = conn
         .query_row(
-            "SELECT 1 FROM playbook_revisions WHERE id = ?1 AND source_project_id = ?2",
+            "SELECT tenant_id
+             FROM playbook_revisions
+             WHERE id = ?1 AND source_project_id = ?2",
             rusqlite::params![revision_id, project_id],
             |row| row.get(0),
         )
         .optional()?;
-    Ok(found.is_some())
+    let Some(target_tenant) = found else {
+        return Ok(Some(DecisionScopeError {
+            failure_category: CuratorFailureCategory::CrossTenantRef,
+            detail: format!(
+                "cross_tenant_ref: revision {revision_id} is outside project {project_id}"
+            ),
+        }));
+    };
+    if target_tenant.trim().is_empty() {
+        return Ok(Some(DecisionScopeError {
+            failure_category: CuratorFailureCategory::TenantUnresolved,
+            detail: format!("tenant_unresolved: revision {revision_id} has empty tenant_id"),
+        }));
+    }
+    if target_tenant != worker_tenant {
+        return Ok(Some(DecisionScopeError {
+            failure_category: CuratorFailureCategory::CrossTenantRef,
+            detail: format!(
+                "cross_tenant_ref: revision {revision_id} tenant {target_tenant} != worker tenant {worker_tenant}"
+            ),
+        }));
+    }
+    Ok(None)
+}
+
+fn project_tenant_id(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+) -> Result<Option<String>, CuratorWorkerError> {
+    let tenant: Option<String> = conn
+        .query_row(
+            "SELECT tenant_id FROM projects WHERE id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(tenant)
 }
 
 #[derive(Clone, Debug)]
@@ -1927,6 +2004,7 @@ impl CuratorCycleExecutor for ProductionCuratorCycleExecutor {
                 ConsolidationApplyResult::default()
             }
         };
+        quarantines.extend(apply_result.quarantines.iter().cloned());
 
         let patterns = match self.work_pattern_extractor.extract(project_id).await {
             Ok(rows) => rows,
@@ -2228,7 +2306,7 @@ async fn persist_retrospective(
             "INSERT INTO weekly_retrospectives (
                 id, tenant_id, project_id, week_start, week_end, content,
                 citation_coverage, generation_status, created_at
-            ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ) VALUES (?1, 'legacy-default', ?2, ?3, ?4, ?5, ?6, ?7, ?8)
             ON CONFLICT(project_id, week_start, week_end) DO UPDATE SET
                 id = excluded.id,
                 content = excluded.content,
@@ -2251,7 +2329,7 @@ async fn persist_retrospective(
             conn.execute(
                 "INSERT INTO retrospective_citations (
                     id, tenant_id, retrospective_id, claim_index, citation_kind, citation_ref, snippet
-                ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, NULL)",
+                ) VALUES (?1, 'legacy-default', ?2, ?3, ?4, ?5, NULL)",
                 rusqlite::params![
                     format!("rc-{}", uuid::Uuid::new_v4()),
                     retrospective_id,
@@ -2300,7 +2378,7 @@ async fn persist_conflict(
             "INSERT INTO sop_conflicts (
                 id, tenant_id, project_id, left_revision_id, right_revision_id,
                 structural_score, semantic_score, severity, status, evidence_json, created_at
-             ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, 'open', ?8, ?9)",
+             ) VALUES (?1, 'legacy-default', ?2, ?3, ?4, ?5, ?6, ?7, 'open', ?8, ?9)",
             rusqlite::params![
                 finding.conflict_id,
                 project_id,
@@ -2464,7 +2542,7 @@ fn apply_merge(
             id, tenant_id, playbook_id, revision_no, parent_revision_id, title, trigger_keywords,
             content, source_task_id, source_project_id, author_type, change_kind, confidence,
             created_at, superseded_at
-        ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, 'curator', 'merge', ?9, ?10, NULL)",
+        ) VALUES (?1, 'legacy-default', ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, 'curator', 'merge', ?9, ?10, NULL)",
         rusqlite::params![
             new_id,
             target_playbook,
@@ -2667,6 +2745,28 @@ impl ProductionCuratorWorker {
         trigger: CuratorTrigger,
         backlog_count: u32,
     ) -> Result<CuratorCycleResult, CuratorWorkerError> {
+        let worker_tenant = self.resolve_worker_tenant().await?;
+        if worker_tenant.trim().is_empty() {
+            let session_id = format!("curator:{}", self.config.project_id);
+            self.ensure_session(&session_id).await?;
+            self.events
+                .append(NewEvent {
+                    session_id,
+                    event_type: EventType::Misc,
+                    source: "curator".to_string(),
+                    data: json!({
+                        "kind": "curator_cycle_refused",
+                        "project_id": self.config.project_id,
+                        "failure_category": "tenant_unresolved",
+                        "detail": "worker auth context tenant is unresolved"
+                    }),
+                })
+                .await?;
+            return Err(CuratorWorkerError::Executor(
+                "tenant_unresolved: curator cycle refused".to_string(),
+            ));
+        }
+
         let session_id = format!("curator:{}", self.config.project_id);
         self.ensure_session(&session_id).await?;
         self.events
@@ -2818,6 +2918,22 @@ impl ProductionCuratorWorker {
                     rusqlite::params![session_id, now_micros],
                 )?;
                 Ok::<_, CuratorWorkerError>(())
+            })
+            .await
+    }
+
+    async fn resolve_worker_tenant(&self) -> Result<String, CuratorWorkerError> {
+        let project_id = self.config.project_id.clone();
+        self.db
+            .with_conn(move |conn| {
+                let tenant: Option<String> = conn
+                    .query_row(
+                        "SELECT tenant_id FROM projects WHERE id = ?1",
+                        [project_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                Ok::<_, CuratorWorkerError>(tenant.unwrap_or_else(|| "legacy-default".to_string()))
             })
             .await
     }
@@ -3135,13 +3251,13 @@ mod tests {
 
             conn.execute(
                 "INSERT INTO playbook_revisions (id, tenant_id, playbook_id, revision_no, parent_revision_id, title, trigger_keywords, content, source_task_id, source_project_id, author_type, change_kind, confidence, created_at, superseded_at)
-                 VALUES ('rev-l-1', NULL, 'pb-l', 1, NULL, 'Left rev', '[\"refund\",\"stripe\"]', 'Handle stripe refund policy and customer email.', NULL, ?, 'extractor', 'extract', 1.0, 1, NULL)",
+                 VALUES ('rev-l-1', 'legacy-default', 'pb-l', 1, NULL, 'Left rev', '[\"refund\",\"stripe\"]', 'Handle stripe refund policy and customer email.', NULL, ?, 'extractor', 'extract', 1.0, 1, NULL)",
                 [project_id],
             )
             .expect("insert left revision");
             conn.execute(
                 "INSERT INTO playbook_revisions (id, tenant_id, playbook_id, revision_no, parent_revision_id, title, trigger_keywords, content, source_task_id, source_project_id, author_type, change_kind, confidence, created_at, superseded_at)
-                 VALUES ('rev-r-1', NULL, 'pb-r', 1, NULL, 'Right rev', '[\"refund\",\"billing\"]', 'Refund workflow for billing disputes and stripe chargebacks.', NULL, ?, 'extractor', 'extract', 1.0, 1, NULL)",
+                 VALUES ('rev-r-1', 'legacy-default', 'pb-r', 1, NULL, 'Right rev', '[\"refund\",\"billing\"]', 'Refund workflow for billing disputes and stripe chargebacks.', NULL, ?, 'extractor', 'extract', 1.0, 1, NULL)",
                 [project_id],
             )
             .expect("insert right revision");
@@ -3290,7 +3406,7 @@ mod tests {
             .expect("insert keep playbook");
             conn.execute(
                 "INSERT INTO playbook_revisions (id, tenant_id, playbook_id, revision_no, parent_revision_id, title, trigger_keywords, content, source_task_id, source_project_id, author_type, change_kind, confidence, created_at, superseded_at)
-                 VALUES ('rev-k-1', NULL, 'pb-k', 1, NULL, 'Keep rev', '[\"docs\"]', 'Documentation workflow', NULL, 'proj-consolidate', 'extractor', 'extract', 1.0, 1, NULL)",
+                 VALUES ('rev-k-1', 'legacy-default', 'pb-k', 1, NULL, 'Keep rev', '[\"docs\"]', 'Documentation workflow', NULL, 'proj-consolidate', 'extractor', 'extract', 1.0, 1, NULL)",
                 [],
             )
             .expect("insert keep revision");
@@ -3379,7 +3495,7 @@ mod tests {
             conn.execute(
                 "INSERT INTO playbook_revision_outcomes (
                     revision_id, tenant_id, success_count, failure_count, decayed_success, decayed_failure, last_outcome_at
-                 ) VALUES ('rev-l-1', NULL, 7, 2, 0, 0, NULL)",
+                 ) VALUES ('rev-l-1', 'legacy-default', 7, 2, 0, 0, NULL)",
                 [],
             )
             .expect("seed outcomes");
@@ -3486,12 +3602,16 @@ mod tests {
         })
         .await;
 
-        let error = engine
+        let apply = engine
             .apply("proj-a", "cycle-cross-project", &[decision])
             .await
-            .expect_err("cross-project decision must be rejected");
-        let message = error.to_string();
-        assert!(message.contains("project_scope_violation"));
+            .expect("cross-project decision is quarantined, not fatal");
+        assert_eq!(apply.failures, 1);
+        assert_eq!(apply.quarantines.len(), 1);
+        assert_eq!(
+            apply.quarantines[0].failure_category,
+            CuratorFailureCategory::CrossTenantRef
+        );
 
         db.with_conn(|conn| {
             let rows: i64 = conn
@@ -4175,14 +4295,14 @@ mod tests {
             conn.execute(
                 "INSERT INTO playbook_revision_outcomes (
                     revision_id, tenant_id, success_count, failure_count, decayed_success, decayed_failure, last_outcome_at
-                 ) VALUES ('rev-l-1', NULL, 1, 5, 0, 0, NULL)",
+                 ) VALUES ('rev-l-1', 'legacy-default', 1, 5, 0, 0, NULL)",
                 [],
             )
             .expect("seed outcomes left");
             conn.execute(
                 "INSERT INTO playbook_revision_outcomes (
                     revision_id, tenant_id, success_count, failure_count, decayed_success, decayed_failure, last_outcome_at
-                 ) VALUES ('rev-r-1', NULL, 4, 1, 0, 0, NULL)",
+                 ) VALUES ('rev-r-1', 'legacy-default', 4, 1, 0, 0, NULL)",
                 [],
             )
             .expect("seed outcomes right");
@@ -4294,7 +4414,7 @@ mod tests {
                 "INSERT INTO datasource_items (
                     id, tenant_id, project_id, revision_id, source_task_id, source_type, source_ref, trust_level, confidence, evidence_json, created_at
                  ) VALUES (
-                    'ds-prev-1', NULL, 'proj-kd', 'rev-r-1', 'task-kd-0', 'url',
+                    'ds-prev-1', 'legacy-default', 'proj-kd', 'rev-r-1', 'task-kd-0', 'url',
                     'https://docs.example.com/refund', 'l0', 0.60, '{}', 1
                  )",
                 [],
@@ -4305,7 +4425,7 @@ mod tests {
                     id, tenant_id, project_id, left_revision_id, right_revision_id,
                     structural_score, semantic_score, severity, status, evidence_json, created_at
                  ) VALUES (
-                    'conf-kd-1', NULL, 'proj-kd', 'rev-l-1', 'rev-r-1',
+                    'conf-kd-1', 'legacy-default', 'proj-kd', 'rev-l-1', 'rev-r-1',
                     0.8, 0.8, 'high', 'open', '{}', 2
                  )",
                 [],
@@ -4484,7 +4604,7 @@ mod tests {
                     id, tenant_id, project_id, cycle_id, decision_type, subject_kind, subject_id,
                     confidence, rationale_json, evidence_json, status, failure_category, created_at
                  ) VALUES (
-                    'cd-pa', NULL, 'proj-a', 'cycle-a', 'archive', 'revision', 'rev-a',
+                    'cd-pa', 'legacy-default', 'proj-a', 'cycle-a', 'archive', 'revision', 'rev-a',
                     0.52, '{}', '{}', 'queued_review', NULL, 1
                  )",
                 [],
@@ -4495,7 +4615,7 @@ mod tests {
                     id, tenant_id, project_id, cycle_id, decision_type, subject_kind, subject_id,
                     confidence, rationale_json, evidence_json, status, failure_category, created_at
                  ) VALUES (
-                    'cd-pb', NULL, 'proj-b', 'cycle-b', 'archive', 'revision', 'rev-b',
+                    'cd-pb', 'legacy-default', 'proj-b', 'cycle-b', 'archive', 'revision', 'rev-b',
                     0.52, '{}', '{}', 'queued_review', NULL, 1
                  )",
                 [],
@@ -4505,7 +4625,7 @@ mod tests {
                 "INSERT INTO curator_review_queue (
                     id, tenant_id, decision_id, project_id, queue_reason, severity, state, reviewer, reviewer_note, resolved_at, created_at
                  ) VALUES (
-                    'rq-pa', NULL, 'cd-pa', 'proj-a', 'test', 'high', 'pending', NULL, NULL, NULL, 1
+                    'rq-pa', 'legacy-default', 'cd-pa', 'proj-a', 'test', 'high', 'pending', NULL, NULL, NULL, 1
                  )",
                 [],
             )
@@ -4514,7 +4634,7 @@ mod tests {
                 "INSERT INTO curator_review_queue (
                     id, tenant_id, decision_id, project_id, queue_reason, severity, state, reviewer, reviewer_note, resolved_at, created_at
                  ) VALUES (
-                    'rq-pb', NULL, 'cd-pb', 'proj-b', 'test', 'high', 'pending', NULL, NULL, NULL, 1
+                    'rq-pb', 'legacy-default', 'cd-pb', 'proj-b', 'test', 'high', 'pending', NULL, NULL, NULL, 1
                  )",
                 [],
             )
@@ -4640,7 +4760,7 @@ mod tests {
             .expect("insert keep playbook for taxonomy");
             conn.execute(
                 "INSERT INTO playbook_revisions (id, tenant_id, playbook_id, revision_no, parent_revision_id, title, trigger_keywords, content, source_task_id, source_project_id, author_type, change_kind, confidence, created_at, superseded_at)
-                 VALUES ('rev-k-1', NULL, 'pb-k', 1, NULL, 'Keep rev', '[\"docs\"]', 'Documentation workflow', NULL, 'proj-taxonomy', 'extractor', 'extract', 1.0, 1, NULL)",
+                 VALUES ('rev-k-1', 'legacy-default', 'pb-k', 1, NULL, 'Keep rev', '[\"docs\"]', 'Documentation workflow', NULL, 'proj-taxonomy', 'extractor', 'extract', 1.0, 1, NULL)",
                 [],
             )
             .expect("insert keep revision for taxonomy");
@@ -5031,7 +5151,7 @@ mod tests {
                 "INSERT INTO playbook_revision_outcomes (revision_id, tenant_id,
                     success_count, failure_count, decayed_success, decayed_failure,
                     last_outcome_at)
-                 VALUES ('rev-l-1', NULL, 5, 1, 4.5, 0.9, 100)",
+                 VALUES ('rev-l-1', 'legacy-default', 5, 1, 4.5, 0.9, 100)",
                 [],
             )
             .expect("insert left outcome");
@@ -5039,7 +5159,7 @@ mod tests {
                 "INSERT INTO playbook_revision_outcomes (revision_id, tenant_id,
                     success_count, failure_count, decayed_success, decayed_failure,
                     last_outcome_at)
-                 VALUES ('rev-r-1', NULL, 8, 3, 7.2, 2.8, 200)",
+                 VALUES ('rev-r-1', 'legacy-default', 8, 3, 7.2, 2.8, 200)",
                 [],
             )
             .expect("insert right outcome");
@@ -5049,7 +5169,7 @@ mod tests {
                 "INSERT INTO playbook_revision_outcomes (revision_id, tenant_id,
                     success_count, failure_count, decayed_success, decayed_failure,
                     last_outcome_at)
-                 VALUES ('rev-l-1', NULL, 99, 99, 0.0, 0.0, 999)",
+                 VALUES ('rev-l-1', 'legacy-default', 99, 99, 0.0, 0.0, 999)",
                 [],
             );
             assert!(
@@ -5231,7 +5351,7 @@ mod tests {
             conn.execute(
                 "INSERT INTO curator_search_index (
                     row_id, tenant_id, project_id, source_type, source_id, searchable_text, created_at
-                 ) VALUES (?, NULL, ?, ?, ?, ?, ?)",
+                 ) VALUES (?, 'legacy-default', ?, ?, ?, ?, ?)",
                 rusqlite::params![row_id, project_id, source_type, source_id, text, created_at],
             )
             .expect("insert curator_search_index row");
@@ -5445,7 +5565,7 @@ mod tests {
                     id, tenant_id, project_id, cycle_id, decision_type, subject_kind,
                     subject_id, confidence, rationale_json, evidence_json, status,
                     failure_category, created_at
-                 ) VALUES (?, NULL, ?, 'cycle-rq-test', 'merge', 'revision',
+                 ) VALUES (?, 'legacy-default', ?, 'cycle-rq-test', 'merge', 'revision',
                     'rev-dummy', 0.5, '{}', '{}', 'queued_review', NULL, ?)",
                 rusqlite::params![decision_id, project_id, created_at],
             )
@@ -5454,7 +5574,7 @@ mod tests {
                 "INSERT INTO curator_review_queue (
                     id, tenant_id, decision_id, project_id, queue_reason, severity,
                     state, reviewer, reviewer_note, resolved_at, created_at
-                 ) VALUES (?, NULL, ?, ?, 'low_confidence_0.50', 'medium', ?, NULL, ?, NULL, ?)",
+                 ) VALUES (?, 'legacy-default', ?, ?, 'low_confidence_0.50', 'medium', ?, NULL, ?, NULL, ?)",
                 rusqlite::params![
                     queue_id,
                     decision_id,
@@ -5806,7 +5926,7 @@ mod tests {
                 .expect("seed active playbook");
                 conn.execute(
                     "INSERT INTO playbook_revisions (id, tenant_id, playbook_id, revision_no, parent_revision_id, title, trigger_keywords, content, source_task_id, source_project_id, author_type, change_kind, confidence, created_at, superseded_at)
-                     VALUES (?, NULL, ?, 1, NULL, 'Active rev', '[\"deploy\"]', 'Active deployment workflow', NULL, ?, 'extractor', 'extract', 0.9, 1, NULL)",
+                     VALUES (?, 'legacy-default', ?, 1, NULL, 'Active rev', '[\"deploy\"]', 'Active deployment workflow', NULL, ?, 'extractor', 'extract', 0.9, 1, NULL)",
                     rusqlite::params![rev, pb, pid_clone],
                 )
                 .expect("seed active revision");
@@ -5822,7 +5942,7 @@ mod tests {
                 .expect("seed stale playbook");
                 conn.execute(
                     "INSERT INTO playbook_revisions (id, tenant_id, playbook_id, revision_no, parent_revision_id, title, trigger_keywords, content, source_task_id, source_project_id, author_type, change_kind, confidence, created_at, superseded_at)
-                     VALUES (?, NULL, ?, 1, NULL, 'Stale rev', '[\"stale\"]', 'Stale legacy workflow', NULL, ?, 'extractor', 'extract', 0.4, 1, NULL)",
+                     VALUES (?, 'legacy-default', ?, 1, NULL, 'Stale rev', '[\"stale\"]', 'Stale legacy workflow', NULL, ?, 'extractor', 'extract', 0.4, 1, NULL)",
                     rusqlite::params![rev, pb, pid_clone],
                 )
                 .expect("seed stale revision");

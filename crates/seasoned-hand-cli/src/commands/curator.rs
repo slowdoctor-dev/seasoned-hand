@@ -366,7 +366,7 @@ mod tests {
                     id, tenant_id, project_id, cycle_id, decision_type, subject_kind, subject_id, confidence,
                     rationale_json, evidence_json, status, failure_category, created_at
                 ) VALUES (
-                    'cd-1', NULL, 'p1', 'cycle-1', 'merge', 'revision', 'rev-1', 0.4,
+                    'cd-1', 'legacy-default', 'p1', 'cycle-1', 'merge', 'revision', 'rev-1', 0.4,
                     '{}', '{}', 'queued_review', NULL, 1
                 )",
                 [],
@@ -376,7 +376,7 @@ mod tests {
                 "INSERT INTO curator_review_queue (
                     id, tenant_id, decision_id, project_id, queue_reason, severity, state, reviewer, reviewer_note, resolved_at, created_at
                 ) VALUES (
-                    'rq-1', NULL, 'cd-1', 'p1', 'low_confidence', 'high', 'pending', NULL, NULL, NULL, 1
+                    'rq-1', 'legacy-default', 'cd-1', 'p1', 'low_confidence', 'high', 'pending', NULL, NULL, NULL, 1
                 )",
                 [],
             )
