@@ -1,6 +1,6 @@
 # Story 5.31 — phase5_v013_migration_harness (NFR-5.8)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 5.2
 > **Phase**: 5
