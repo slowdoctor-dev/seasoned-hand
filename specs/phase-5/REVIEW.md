@@ -154,3 +154,52 @@ EXPAND), do an independent re-audit of the post-fix Analyst output, and
 either close iter-2 with no new findings or surface them. After iter-2
 saturates, BMAD Architect persona takes over on
 `/specs/phase-5/architecture.md`.
+
+---
+
+## REVIEW iter-2 (Codex, 2026-05-20) — Analyst pass
+
+### A) Grade Claude iter-1 findings (F1-F8)
+
+Verdict: **8/8 agree**, **0 disagree**.
+
+- `P5-IT1-F1` (M): **ACK**. Naming `phase5_cross_tenant_isolation_harness` and
+  enumerating API/CLI/worker surfaces removes a real acceptance ambiguity.
+- `P5-IT1-F2` (M): **ACK**. Broadening NFR-5.7 to global strict-config scope aligns
+  requirements with DEBT #91 closure intent and F-5.18.
+- `P5-IT1-F3` (M): **ACK**. Explicit Curator tenant failure taxonomy mirrors the
+  Phase 4 F-4.22 hardening lesson and prevents PM-side re-derivation drift.
+- `P5-IT1-F4` (M): **ACK**. Adding the ≤60 min CI budget makes the 5-person
+  acceptance harness operational, not aspirational.
+- `P5-IT1-F5` (L): **ACK**. SECURITY_REVIEW iter-3 quote + OPEN_QUESTIONS §10 route
+  tightens traceability.
+- `P5-IT1-F6` (L): **ACK**. INPUTS now correctly commits to ARCH v1.4 + successor
+  ADR atomic-slice discipline (ADR-012/013 pattern).
+- `P5-IT1-F7` (L): **ACK**. Explicitly scoping F-5.10 to tracking-only prevents PM
+  scope creep into cap-enforcement policy.
+- `P5-IT1-F8` (L): **ACK**. Referencing commit `41c16a0` correctly carries forward
+  the canonical sandbox `session_id` guard contract.
+
+### B) Independent re-audit (post-fix)
+
+- `requirements.md` consistency: checked NFR/F/acceptance/debt alignment after iter-1 edits.
+  No contradictions found.
+- ROADMAP coverage: all 7 Phase 5 deliverables map to >=1 F-number (`F-5.1/2/3/4/5/6/7/8/9/10`).
+- Security carry-forward: Phase 4 observation is now explicit in `F-5.12`, and debt carry-in
+  `#S-1` is reflected in acceptance criterion #6.
+- Phase 4 carry-forward debt mapping (`#76/#91/#92/#93/#94/#96/#97`): present in both
+  `requirements.md` and `DEBT.md` with clear expected disposition.
+- INPUTS discipline: v1.4/ADR-014 atomic-slice expectation is now explicit and consistent with
+  prior-phase reconciliation pattern.
+
+### C) New findings
+
+- **New M+ findings**: 0
+- **New L findings**: 0
+- **Inline fixes required**: none
+- **New DEBT seeded**: none
+
+### Iter-2 conclusion
+
+Analyst hardening saturates at iter-2. The Phase 5 Analyst package is ready for BMAD Architect
+dispatch on `specs/phase-5/architecture.md`.
