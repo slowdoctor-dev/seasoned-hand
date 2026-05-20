@@ -506,6 +506,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let redis = std::sync::Arc::new(state.redis.clone());
         let token = verifier_shutdown.clone();
         let gate_token = verifier_shutdown.clone();
+        tracing::info!(
+            learning_enabled,
+            rollback_on_fail = state.checkpoint_rollback_on_verifier_fail,
+            "verifier worker + gate spawned",
+        );
         Some(tokio::spawn(async move {
             let worker_task = tokio::spawn(async move {
                 if let Err(error) = worker.run(true, redis, token).await {
@@ -608,6 +613,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             executor,
         );
         let token = curator_shutdown.clone();
+        tracing::info!(
+            project_id = %config.project_id,
+            interval_seconds = config.interval_seconds,
+            backlog_threshold = config.backlog_threshold,
+            auto_archive_enabled = config.auto_archive_enabled,
+            "curator worker spawned",
+        );
         Some(tokio::spawn(async move {
             if let Err(error) = worker.run(token).await {
                 tracing::error!(%error, "curator worker exited with error");
@@ -636,9 +648,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let job = std::sync::Arc::new(CuratorRetentionJob::new(
             state.db.clone(),
             state.events.clone(),
-            RetentionConfig::for_project(retention_project_id),
+            RetentionConfig::for_project(retention_project_id.clone()),
         ));
         let scheduler = RetentionScheduler::new(job, std::time::Duration::from_secs(interval_secs));
+        tracing::info!(
+            project_id = %retention_project_id,
+            interval_seconds = interval_secs,
+            "curator retention scheduler spawned",
+        );
         Some(tokio::spawn(async move {
             scheduler.run(retention_shutdown).await;
         }))

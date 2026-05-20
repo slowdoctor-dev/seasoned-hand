@@ -503,7 +503,10 @@ impl Initializer {
             .first()
             .and_then(|c| c.message.content.clone())
             .unwrap_or_default();
-        serde_json::from_str(&content).map_err(|_| crate::llm::LlmError::MissingChoice)
+        // Use the `?` conversion via `LlmError::JsonParse(#[from] serde_json::Error)`
+        // so the parse failure surfaces with line/column instead of being
+        // masked as MissingChoice (observability hardening iter-2).
+        Ok(serde_json::from_str(&content)?)
     }
 
     async fn emit_fallback(&self, session_id: &str, reason: &str) -> Result<(), InitError> {
