@@ -47,6 +47,11 @@ coverage/
 tmp/
 *.tmp
 
+# Playwright MCP scratch output (screenshots + snapshots + console logs the
+# hardening loop writes into the repo root)
+.playwright-mcp/
+/iter*.png
+
 # Personal overrides
 .claude/CLAUDE.local.md
 .claude/scheduled_tasks.lock

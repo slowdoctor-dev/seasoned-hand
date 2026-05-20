@@ -58,7 +58,7 @@ export function EditorTab({ sessionId }: Props) {
   if (sessionId === null) {
     return (
       <p className="text-sm text-gray-500">
-        Select a task on the left to view its workspace.
+        Select a task to view its workspace.
       </p>
     );
   }

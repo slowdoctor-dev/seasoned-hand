@@ -40,6 +40,12 @@ export function ProjectList({ activeProjectId, onSelect }: Props) {
       .catch((e: unknown) => {
         if (cancelled) return;
         setError(e instanceof Error ? e.message : String(e));
+        // Setting `projects` to an empty array drops the
+        // simultaneously-rendered "Loading…" row so the user sees a
+        // single error state instead of two stacked status messages.
+        // The synthetic `Archive (legacy)` row below still renders from
+        // its hardcoded entry.
+        setProjects([]);
       });
     return () => {
       cancelled = true;

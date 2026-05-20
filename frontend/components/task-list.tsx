@@ -44,7 +44,7 @@ export function TaskList({
       <aside className="h-full overflow-auto p-4">
         <h2 className="mb-2 font-semibold">Tasks</h2>
         <p className="text-sm text-gray-500">
-          Select a project on the left to see its tasks.
+          Select a project above to see its tasks.
         </p>
       </aside>
     );

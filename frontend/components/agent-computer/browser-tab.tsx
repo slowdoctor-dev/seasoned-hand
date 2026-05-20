@@ -41,7 +41,7 @@ export function BrowserTab({ sessionId, events }: Props) {
   if (sessionId === null) {
     return (
       <p className="text-sm text-gray-500">
-        Select a task on the left to view its browser.
+        Select a task to view its browser.
       </p>
     );
   }

@@ -120,7 +120,7 @@ export function TerminalTab({ sessionId }: Props) {
   if (state.kind === "no_session") {
     return (
       <p className="text-sm text-gray-500">
-        Select a task on the left to view its terminal.
+        Select a task to view its terminal.
       </p>
     );
   }

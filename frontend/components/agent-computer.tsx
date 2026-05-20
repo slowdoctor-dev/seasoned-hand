@@ -78,8 +78,14 @@ export function AgentComputer({ sessionId, taskId, events, eventIndex }: Props) 
   }, [active, sessionId]);
 
   return (
-    <aside className="flex h-full flex-col border-l">
-      <nav className="flex border-b">
+    <aside className="flex h-full flex-col overflow-hidden border-l">
+      {/* Tab strip can overflow the right panel's narrow default width
+          (~430 px) — 7 labels at `text-sm` total ~500 px. Use a horizontal
+          scroller so the parent `aside` keeps its own scrollbars hidden
+          and the panel below stays full-bleed. `flex-shrink-0` on the
+          tabs keeps each button at its natural width (no mid-label
+          truncation). */}
+      <nav className="flex flex-none overflow-x-auto whitespace-nowrap border-b [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {TABS.map((t) => {
           const isActive = active === t.id;
           return (
@@ -88,7 +94,7 @@ export function AgentComputer({ sessionId, taskId, events, eventIndex }: Props) 
               type="button"
               disabled={t.disabled}
               onClick={() => !t.disabled && setActive(t.id)}
-              className={`relative flex-1 px-2 py-2 text-sm ${
+              className={`relative flex-none px-3 py-2 text-sm ${
                 t.disabled
                   ? "cursor-not-allowed text-gray-400"
                   : isActive

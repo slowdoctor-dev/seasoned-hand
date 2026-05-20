@@ -61,7 +61,7 @@ export function DeliverablesTab({ taskId }: Props) {
   if (taskId === null) {
     return (
       <p className="text-sm text-gray-500">
-        Pick a task on the left to view its deliverables.
+        Pick a task to view its deliverables.
       </p>
     );
   }
