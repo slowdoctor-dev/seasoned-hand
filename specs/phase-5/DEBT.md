@@ -40,9 +40,15 @@ Phase 5-specific shortcuts/deferrals during implementation.
   7 core unit tests + 5 server integration tests + 3 CLI integration tests pin
   the contract.
 
-### #92 Adaptive auto-archive thresholds (H3)
+### #92 Adaptive auto-archive thresholds (H3) — DEFERRED TO PHASE 6 via story 5.25
 - **Current state**: Static per-project thresholds shipped; adaptive policy deferred.
 - **Phase 5 expectation**: close or explicitly defer with evidence-backed rationale.
+- **Phase 5 disposition (story 5.25)**: keep static thresholds. Adaptive policy requires
+  production telemetry (per-project archive-recommendation accept/reject rates over weeks)
+  that doesn't exist in the synthetic warm-loop benchmark. Phase 6 owners must drive this
+  with the dogfood corpus from DEBT #76's eval set (same data-source pivot). Explicit metrics
+  gate for full closure: archive-recommend acceptance rate within ±5pp of the static baseline
+  across at least 3 projects with ≥30 decisions each.
 
 ### #93 Optional fork-promotion governance (H3)
 - **Current state**: Revision-chain baseline shipped; optional governance mode deferred.
@@ -55,13 +61,28 @@ Phase 5-specific shortcuts/deferrals during implementation.
   (e.g. `1.01`) and every curator-created share lands in `review`. No additional code path
   needed; this satisfies the architecture §6.2 OQ #6 Option B deferred-debt note. **CLOSED**.
 
-### #94 Retrospective tiered model-by-size policy (H3)
+### #94 Retrospective tiered model-by-size policy (H3) — DEFERRED TO PHASE 6 via story 5.25
 - **Current state**: Single summarizer profile baseline shipped.
 - **Phase 5 expectation**: close or defer with cost/quality threshold criteria.
+- **Phase 5 disposition (story 5.25)**: keep single summarizer profile. Tiered model-by-size
+  routing requires cost/quality measurement on real retrospectives that span the size range
+  (currently most retrospectives fit in the small-model envelope). Phase 6 must drive this
+  with the named retrospective harness from Phase 5 story 5.28 — once that harness has 30+
+  runs across distinct size buckets, the cost/quality threshold can be calibrated.
+  Explicit gate for full closure: ≥15% cost reduction at constant quality on the medium-bucket
+  vs current single-profile baseline.
 
-### #96 Curator rationale schema evolution tooling (H3)
+### #96 Curator rationale schema evolution tooling (H3) — CLOSED 2026-05-21 via story 5.25
 - **Current state**: Structured rationale exists; schema-evolution tooling deferred.
 - **Phase 5 expectation**: add compatibility/versioning tooling baseline.
+- **Closed by**: story 5.25 added `crate::curator::rationale::SchemaVersion` (V1 = Phase 4
+  flat shape, V2 = Phase 5 wrapped envelope `{"schema_version": 2, "data": {...}}`) plus
+  per-version `validate()` + `wrap_v2()` helpers. Both production write sites in
+  `crate::curator::mod.rs` now wrap with V2; readers go through `SchemaVersion::detect`
+  so V1 (Phase 4 rows) and V2 (Phase 5+ rows) are both readable. Unknown future versions
+  (e.g. V3) fall back to V1 detection so older binaries don't crash on forward-evolved
+  payloads — they just don't pretend to understand the new shape. 9 unit tests pin the
+  contract; architecture §13 amendment paragraph documents the versioning model.
 
 ### #97 Per-crate dependency justification discipline (H3) — CLOSED 2026-05-21 via story 5.23
 - **Current state**: Documentation discipline deferred.

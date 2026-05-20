@@ -1,6 +1,7 @@
 //! Curator worker runtime for Phase 4.
 //! refs: /specs/phase-4/architecture.md §2.1, §2.2, §2.3, §4.1, §4.2, §6.5, §7
 
+pub mod rationale;
 pub mod retention;
 #[cfg(test)]
 mod tenant_boundaries_tests;
@@ -982,12 +983,16 @@ impl WorkPatternExtractor for SqliteWorkPatternExtractor {
                     };
                     let confidence = (0.35 + (pattern.score * 0.45)).clamp(0.0, 0.80);
                     let recommendation_id = format!("rec-{}", uuid::Uuid::new_v4());
-                    let rationale_json = json!({
+                    // Story 5.25: wrap the rationale payload in the V2
+                    // envelope. Readers MUST go through `rationale::
+                    // SchemaVersion::detect` so V1 (Phase 4 flat) and
+                    // V2 (Phase 5+ wrapped) rows are both readable.
+                    let rationale_json = rationale::SchemaVersion::wrap_v2(json!({
                         "policy_version":"phase4_story_4_8",
                         "pattern_key":pattern.pattern_key,
                         "score":pattern.score,
                         "subject_kind":subject_kind
-                    });
+                    }));
                     let evidence_json = json!({
                         "pattern_id":pattern.pattern_id,
                         "evidence":pattern.evidence_json
@@ -1414,7 +1419,9 @@ impl ConsolidationEngine for SqliteConsolidationEngine {
                 ],
                 target_revision_id: Some(candidate.left_revision_id.clone()),
                 confidence,
-                rationale_json: json!({
+                // Story 5.25: V2-wrapped rationale envelope (see
+                // `rationale::SchemaVersion` doc comment).
+                rationale_json: rationale::SchemaVersion::wrap_v2(json!({
                     "project_id": project_id,
                     "fts_norm": candidate.fts_norm,
                     "embedding_cosine": candidate.embedding_cosine,
@@ -1422,7 +1429,7 @@ impl ConsolidationEngine for SqliteConsolidationEngine {
                     "deterministic_floor": candidate.deterministic_floor,
                     "llm_contribution": candidate.llm_contribution,
                     "policy": "q12.2_hybrid_q12.3_revision_chain_q12.19_confidence_band"
-                }),
+                })),
                 requires_review,
             });
         }

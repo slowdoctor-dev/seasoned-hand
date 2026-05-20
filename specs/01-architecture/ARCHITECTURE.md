@@ -693,3 +693,30 @@ Every PR must pass:
 - This spec: v1.0 (initial)
 - Bumped on breaking architectural changes
 - Each phase spec: independent versioning
+
+### 13.1 Curator rationale envelope contract (Phase 5 story 5.25)
+
+`curator_decisions.rationale_json` payloads carry an outer envelope so
+readers can dispatch on schema version without parsing the inner data:
+
+```json
+{"schema_version": 2, "data": { ...decision-type-specific payload... }}
+```
+
+Versioning rules:
+
+- **V1** (Phase 4): flat object, no envelope. The whole JSON IS the
+  data. Detected by absence of an integer `schema_version` key. Readers
+  MUST tolerate V1 rows forever — no migration.
+- **V2** (Phase 5+): wrapped envelope with `schema_version: 2` and an
+  inner `data` object. Every new write uses V2.
+- **Future versions** (V3+): readers that don't know the version fall
+  back to V1 detection, which validates the row as "well-formed object"
+  but doesn't pretend to understand the inner shape. This keeps older
+  binaries safe in the face of forward-evolved payloads.
+
+Implementation:
+[`seasoned_hand_core::curator::rationale::SchemaVersion`](../../crates/seasoned-hand-core/src/curator/rationale.rs).
+Both production write sites (`MinerExtractionEngine::run_once` pattern
+recommendations + `ProductionConsolidationEngine::propose` duplicate
+candidates) wrap with `SchemaVersion::wrap_v2`. Closes Phase 5 DEBT #96.

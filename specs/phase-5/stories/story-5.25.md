@@ -1,6 +1,6 @@
 # Story 5.25 — Curator rationale schema versioning + DEBT #92/#93/#94/#96 decisions
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 5.17
 > **Phase**: 5
