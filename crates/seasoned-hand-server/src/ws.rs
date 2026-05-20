@@ -496,14 +496,21 @@ async fn handle_command(
             let runner = state.runner.clone();
             let resume_session = session_id.clone();
             tokio::spawn(async move {
-                let _ = runner
+                if let Err(error) = runner
                     .resume(RunRequest {
-                        session_id: resume_session,
+                        session_id: resume_session.clone(),
                         input: String::new(),
                         max_steps: 24,
                         cost_cap_cents: None,
                     })
-                    .await;
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %resume_session,
+                        %error,
+                        "ws: spawned runner.resume() failed",
+                    );
+                }
             });
             let _ = tx.send(ServerEnvelope::Ack {
                 id: Uuid::new_v4().to_string(),
