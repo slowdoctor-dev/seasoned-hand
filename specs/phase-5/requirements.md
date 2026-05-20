@@ -224,7 +224,7 @@ Atomic-slice story is 5.2 (V013 + ADR-014 + ARCH v1.4 — same shape as Phase 4 
 | 5.7 | sop_shares ACL + CLI surfaces | 2.5h | 5.4, 5.5 | done |
 | 5.8 | playbook_shares + visibility_state + curator integration | 3.0h | 5.4, 5.5 | done |
 | 5.9 | Task hand-off lifecycle (pause -> transfer -> resume) | 3.0h | 5.5, 5.6 | done |
-| 5.10 | audit_log writer + admin read API | 2.5h | 5.4, 5.5 | ready |
+| 5.10 | audit_log writer + admin read API | 2.5h | 5.4, 5.5 | done |
 | 5.11 | Hand-off audit emission + handoff CLI | 2.0h | 5.9, 5.10 | ready |
 | 5.12 | user_cost_ledger nearline writer | 2.5h | 5.4 | ready |
 | 5.13 | user_cost reconciliation job + drift alarm | 2.0h | 5.12 | ready |

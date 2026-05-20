@@ -1,6 +1,6 @@
 # Story 5.10 — audit_log writer + admin read API
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 5.4, 5.5
 > **Phase**: 5
