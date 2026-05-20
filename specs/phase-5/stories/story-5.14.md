@@ -1,6 +1,6 @@
 # Story 5.14 — tenant_event_view projection + write-time redaction hook
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 5.2
 > **Phase**: 5

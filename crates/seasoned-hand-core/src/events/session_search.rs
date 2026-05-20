@@ -214,7 +214,7 @@ fn query_hash(query: &str) -> String {
     format!("{:x}", Sha256::digest(query.as_bytes()))
 }
 
-fn searchable_text_for_event(event: &Event) -> String {
+pub(crate) fn searchable_text_for_event(event: &Event) -> String {
     match event.event_type {
         EventType::Message => {
             let role = field_string(&event.data, &["role"]);

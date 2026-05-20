@@ -9,6 +9,7 @@ use rusqlite::OptionalExtension;
 use super::{Event, EventError, EventQuery, EventStore, EventType, NewEvent};
 use crate::db::DbPool;
 use crate::events::session_search;
+use crate::events::visibility::{self, ProjectionOutcome};
 use crate::pubsub::RedisPool;
 
 pub struct SqliteEventStore {
@@ -65,38 +66,86 @@ impl EventStore for SqliteEventStore {
         let source = draft.source.clone();
         let type_str = draft.event_type.as_str();
 
-        let event = self
+        let (event, projection_outcome) = self
             .pool
-            .with_conn(move |conn| -> Result<Event, EventError> {
-                let exists: Option<i64> = conn
-                    .query_row(
-                        "SELECT 1 FROM sessions WHERE id = ?",
-                        [&session_id],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                if exists.is_none() {
-                    return Err(EventError::SessionNotFound(session_id.clone()));
-                }
+            .with_conn(
+                move |conn| -> Result<(Event, ProjectionOutcome), EventError> {
+                    let exists: Option<i64> = conn
+                        .query_row(
+                            "SELECT 1 FROM sessions WHERE id = ?",
+                            [&session_id],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    if exists.is_none() {
+                        return Err(EventError::SessionNotFound(session_id.clone()));
+                    }
 
-                let id: i64 = conn.query_row(
-                    "INSERT INTO events (session_id, timestamp, type, source, data) \
+                    let id: i64 = conn.query_row(
+                        "INSERT INTO events (session_id, timestamp, type, source, data) \
                      VALUES (?, ?, ?, ?, ?) RETURNING id",
-                    rusqlite::params![&session_id, timestamp, type_str, &source, &data_text],
-                    |row| row.get(0),
-                )?;
-                let event = Event {
-                    id,
-                    session_id,
-                    timestamp,
-                    event_type,
-                    source,
-                    data: draft.data,
-                };
-                session_search::index_event_for_search(conn, &event)?;
-                Ok(event)
-            })
+                        rusqlite::params![&session_id, timestamp, type_str, &source, &data_text],
+                        |row| row.get(0),
+                    )?;
+                    let event = Event {
+                        id,
+                        session_id,
+                        timestamp,
+                        event_type,
+                        source,
+                        data: draft.data,
+                    };
+                    session_search::index_event_for_search(conn, &event)?;
+                    // Story 5.14: tenant-safe projection write-time hook.
+                    // Runs inside the same transaction; quarantine emission
+                    // for `Failed` outcomes happens post-commit (below) since
+                    // it requires a fresh `append` call.
+                    let projection_outcome = visibility::apply(conn, &event);
+                    Ok((event, projection_outcome))
+                },
+            )
             .await?;
+
+        // Post-commit quarantine emission. We do this BEFORE the redis
+        // publish so a downstream subscriber sees the projection-failed
+        // signal in order with the original event.
+        if let ProjectionOutcome::Failed { reason } = &projection_outcome {
+            let quarantine = NewEvent {
+                session_id: event.session_id.clone(),
+                event_type: EventType::Misc,
+                source: format!("{}_internal", visibility::PROJECTION_INTERNAL_SOURCE),
+                data: serde_json::json!({
+                    "kind": "tenant_event_projection_failed",
+                    "event_id": event.id,
+                    "reason": reason,
+                }),
+            };
+            // Append directly via the pool — the projection hook checks
+            // the source prefix and skips itself, so this recursive call
+            // is bounded to one level.
+            let q_session = quarantine.session_id.clone();
+            let q_data = serde_json::to_string(&quarantine.data)?;
+            let q_source = quarantine.source.clone();
+            let q_type = quarantine.event_type.as_str();
+            let q_ts = now_micros()?;
+            let _: Result<i64, EventError> = self
+                .pool
+                .with_conn(move |conn| {
+                    Ok(conn.query_row(
+                        "INSERT INTO events (session_id, timestamp, type, source, data)
+                         VALUES (?, ?, ?, ?, ?) RETURNING id",
+                        rusqlite::params![&q_session, q_ts, q_type, &q_source, &q_data],
+                        |row| row.get(0),
+                    )?)
+                })
+                .await;
+            tracing::warn!(
+                event_id = event.id,
+                session_id = %event.session_id,
+                reason = %reason,
+                "tenant_event_view projection failed; quarantine event emitted",
+            );
+        }
 
         if let Some(redis) = &self.redis {
             match serde_json::to_string(&event) {

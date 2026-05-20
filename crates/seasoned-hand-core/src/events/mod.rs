@@ -128,6 +128,7 @@ pub mod payload;
 pub mod session_search;
 pub mod sqlite;
 pub mod truncation;
+pub mod visibility;
 
 #[cfg(test)]
 mod tests;

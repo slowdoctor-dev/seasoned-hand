@@ -228,7 +228,7 @@ Atomic-slice story is 5.2 (V013 + ADR-014 + ARCH v1.4 — same shape as Phase 4 
 | 5.11 | Hand-off audit emission + handoff CLI | 2.0h | 5.9, 5.10 | done |
 | 5.12 | user_cost_ledger nearline writer | 2.5h | 5.4 | done |
 | 5.13 | user_cost reconciliation job + drift alarm | 2.0h | 5.12 | done |
-| 5.14 | tenant_event_view projection + write-time redaction hook | 3.0h | 5.2 | ready |
+| 5.14 | tenant_event_view projection + write-time redaction hook | 3.0h | 5.2 | done |
 | 5.15 | session_search_index RBAC predicates + redacted source | 3.0h | 5.14 | ready |
 | 5.16 | events::visibility module + admin raw-event route | 2.5h | 5.14, 5.5 | ready |
 | 5.17 | Curator tenant boundaries + failure taxonomy | 3.0h | 5.2, 5.4 | ready |

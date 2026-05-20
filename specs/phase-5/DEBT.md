@@ -47,10 +47,14 @@ Phase 5-specific shortcuts/deferrals during implementation.
 
 ## Additional carry-forward from cross-phase security review
 
-### #S-1 Tenant-scoped event redaction policy unresolved (NEW carry-in)
+### #S-1 Tenant-scoped event redaction policy unresolved (NEW carry-in) — CLOSED 2026-05-20 via story 5.14
 - **Source**: `specs/SECURITY_REVIEW.md` iter-3 observation (2026-05-20).
 - **Current state**: Action/Observation events may carry raw tool args/outputs.
 - **Phase 5 expectation**: resolve via explicit tenant-visible redaction/access policy and tests.
+- **Closed by**: story 5.14 (`crate::events::visibility` write-time redaction hook on every
+  `SqliteEventStore::append`). Every event now gets a `tenant_event_view` row with PII patterns
+  (PEM keys, IPv6, Authorization headers, etc.) stripped via `verifier::extraction::redact_pii`.
+  Stories 5.15/5.16 layer RBAC predicates + admin raw-event route on top of the projection.
 
 ## Expected disposition in Phase 5 close-out
 
