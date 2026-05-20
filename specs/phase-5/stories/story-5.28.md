@@ -1,6 +1,6 @@
 # Story 5.28 — phase5_handoff_lifecycle_harness + phase5_curator_tenant_failure_harness
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 5.9, 5.17
 > **Phase**: 5

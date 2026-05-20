@@ -242,7 +242,7 @@ Atomic-slice story is 5.2 (V013 + ADR-014 + ARCH v1.4 — same shape as Phase 4 
 | 5.25 | Curator rationale schema versioning + DEBT #92/#93/#94/#96 decisions | 2.5h | 5.17 | done |
 | 5.26 | phase5_cross_tenant_isolation_harness (NFR-5.1) | 3.0h | 5.5, 5.6, 5.17 | done |
 | 5.27 | phase5_rbac_matrix_harness (NFR-5.2) | 2.0h | 5.5, 5.6 | done |
-| 5.28 | phase5_handoff_lifecycle_harness + phase5_curator_tenant_failure_harness | 3.0h | 5.9, 5.17 | ready |
+| 5.28 | phase5_handoff_lifecycle_harness + phase5_curator_tenant_failure_harness | 3.0h | 5.9, 5.17 | done |
 | 5.29 | phase5_event_redaction_visibility_harness + phase5_search_rbac_harness | 3.0h | 5.14, 5.15 | ready |
 | 5.30 | phase5_user_cost_reconciliation_harness (NFR-5.4) | 2.0h | 5.13 | ready |
 | 5.31 | phase5_v013_migration_harness (NFR-5.8) | 2.5h | 5.2 | ready |
