@@ -1,6 +1,6 @@
 # Story 5.33 — Phase 5 acceptance gate + close-out
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 5.2-5.32
 > **Phase**: 5

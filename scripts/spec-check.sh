@@ -112,6 +112,28 @@ check "Phase 4 curator + retention spec hook" \
 check "Phase 5 dependency addendum present" \
   "grep -q 'Phase 5 dependency addendum' specs/01-architecture/ARCHITECTURE.md"
 
+# Check 10: Phase 5 close-out hook (story 5.33). Pins the load-bearing
+# Phase 5 schema + module surface so a future refactor can't silently
+# unwind the multi-user + RBAC + audit layer.
+check "Phase 5 close-out spec hook" \
+  "[ -f migrations/V013__phase5_tenant_rbac_audit.sql ] \
+   && grep -q 'CREATE TABLE IF NOT EXISTS organizations' migrations/V013__phase5_tenant_rbac_audit.sql \
+   && grep -q 'CREATE TABLE IF NOT EXISTS users' migrations/V013__phase5_tenant_rbac_audit.sql \
+   && grep -q 'CREATE TABLE IF NOT EXISTS organization_memberships' migrations/V013__phase5_tenant_rbac_audit.sql \
+   && grep -q 'CREATE TABLE IF NOT EXISTS audit_log' migrations/V013__phase5_tenant_rbac_audit.sql \
+   && grep -q 'CREATE TABLE IF NOT EXISTS user_cost_ledger' migrations/V013__phase5_tenant_rbac_audit.sql \
+   && grep -q 'CREATE TABLE IF NOT EXISTS tenant_event_view' migrations/V013__phase5_tenant_rbac_audit.sql \
+   && [ -f crates/seasoned-hand-core/src/auth/policy.rs ] \
+   && [ -f crates/seasoned-hand-core/src/audit/ledger.rs ] \
+   && [ -f crates/seasoned-hand-core/src/events/visibility.rs ] \
+   && [ -f crates/seasoned-hand-core/src/billing/user_cost.rs ] \
+   && [ -f crates/seasoned-hand-core/src/handoff/task.rs ] \
+   && [ -f crates/seasoned-hand-core/src/org/deactivation.rs ] \
+   && [ -f crates/seasoned-hand-core/src/config/strict.rs ] \
+   && grep -Eq 'v1\\.4' specs/01-architecture/ARCHITECTURE.md \
+   && [ -f specs/phase-5/architecture.md ] \
+   && [ -f specs/phase-5/requirements.md ]"
+
 echo ""
 echo "=== Results ==="
 echo "Pass: $PASS"

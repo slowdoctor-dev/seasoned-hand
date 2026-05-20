@@ -182,11 +182,14 @@ This mirrors how Seasoned Hand itself works (recursive principle).
 
 ## 13. Current state
 
-- **Phase**: 4 complete → Phase 5 starting
+- **Phase**: 5 complete → Phase 6 starting
 - **Branch**: main
-- **Next milestone**: Phase 5 architecture pass (BMAD Architect on
-  `/specs/phase-5/architecture.md`) → multi-user + organization
-  surface; flip `tenant_id` NULL → NOT NULL default.
+- **Next milestone**: Phase 6 architecture pass (BMAD Architect on
+  `/specs/phase-6/architecture.md`) → open-source release surface:
+  documentation polish, contributor onboarding flow, marketplace-style
+  artifact exchange decisions, and the carry-forward dogfood-driven
+  retunes for FTS5 weights (DEBT #76 successor) and curator adaptive
+  policies (DEBT #92 / #94 successors).
 
 Check status: `just status` (or `git log --oneline` + `CHANGELOG.md`)
 

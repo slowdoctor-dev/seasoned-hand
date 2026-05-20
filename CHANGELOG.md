@@ -10,10 +10,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Pending decisions
-- Multi-tenant DB strategy
-- Auth method (API key vs OAuth)
 - Default cloud sandbox provider
 - Telemetry opt-in approach
+- Phase 6 scope finalization (open-source release polish + marketplace)
+
+---
+
+## [0.5.0] — 2026-05-21
+
+Phase 5 release: Multi-User + Organization. 33 stories shipped (5.1–5.33).
+Spec references: `/specs/phase-5/requirements.md`, `/specs/phase-5/architecture.md`,
+ADR-014 (V013 tenant-RBAC reconciliation).
+
+### Added
+- Multi-user core domain: `crate::org` exposes `OrganizationStore`,
+  `UserStore`, `MembershipStore`, `ProjectRoleOverrideStore`, and
+  `UserDeactivationService` for the mandatory-reassignment lifecycle.
+  V013 bootstraps the `org-legacy-default` / `user-legacy-admin`
+  sentinel triple so audit + cost + share FKs always resolve.
+- RBAC policy engine: `crate::auth::policy::authorize` enforces the
+  §4.3 matrix (admin/user/viewer × 8 actions) with project-role
+  override precedence. `SystemAuth::for_worker` + `for_cli_operator`
+  give every worker spawn a tenant-pinned admin identity.
+- Audit log surface: `crate::audit::AuditLogger` writes the
+  immutable `audit_log` table + dual-writes a Misc
+  `audit_logged` event per OQ §8 Option C. HTTP `GET /v1/audit` +
+  CLI `seasoned-hand audit list` admin-only.
+- Task hand-off lifecycle: `crate::handoff::TaskHandoffService`
+  enforces the Drafted/Briefed/Confirmed/Paused → direct,
+  Running → MustPauseFirst, terminal → TerminalState state machine
+  with optimistic concurrency (`expected_updated_at`) and per-handoff
+  audit + Misc `task_paused_for_handoff` event emission.
+- Per-user cost ledger: `crate::billing::user_cost::NearlineWriter`
+  (1h cron) + `ReconciliationJob` (24h cron with current+previous
+  month) keep `user_cost_ledger` per `(tenant, user, month_yyyymm)`
+  reconciling within NFR-5.4's ±0.5% drift budget.
+- Tenant-aware event redaction (closes Phase 4 SECURITY_REVIEW
+  iter-3 carry-in / DEBT #S-1): `crate::events::visibility::apply`
+  runs as a write-time hook on every `SqliteEventStore::append`,
+  emits a redacted `tenant_event_view` row keyed by `(event_id,
+  tenant_id, visibility_level)`. `visibility::query` (any role) +
+  `visibility::query_raw` (admin + Action::EventRawRead + audit_log
+  row) gate read access.
+- Session-search RBAC: `session_search_index` gains `tenant_id` +
+  `visibility_level` columns + index; queries enforce
+  `(tenant_id = caller, visibility_level IN allowed_set)` at the DB
+  layer per arch §10.
+- Sharing services: `crate::sharing::sop` + `crate::sharing::playbook`
+  with optimistic concurrency on `share` / `unshare` /
+  `update_visibility_state`. `playbook_shares.visibility_state`
+  ∈ (review, shared, suspended); curator auto-shares high-confidence
+  revisions and the matcher only surfaces `shared` rows.
+- Curator tenant boundaries + failure taxonomy (F-5.14): every curator
+  SQL query gains `tenant_id = :tenant`; F-5.14 emits the three
+  deterministic categories (`curator_cycle_refused/tenant_unresolved`,
+  `curator_decision_quarantined/tenant_unresolved`,
+  `curator_decision_quarantined/cross_tenant_ref`).
+- Curator rationale schema versioning (closes DEBT #96):
+  `SchemaVersion::wrap_v2` envelopes new payloads as
+  `{"schema_version": 2, "data": {...}}`; readers tolerate V1
+  (Phase 4 flat) + V2 + future versions via fallback-to-V1 detection.
+- Global strict-config harmonization (closes DEBT #91):
+  `crate::config::strict` hosts `parse_{bool,u32,u64,f32}_strict` +
+  `env_*_or_default` helpers shared across server + CLI + workers.
+  SH_LEARNING_ENABLED + SEASONED_HAND_ROLLBACK_ON_VERIFIER_FAIL now
+  fail-fast on invalid values.
+- FTS5 named weight constants (partial close DEBT #76):
+  `crate::search::fts_weights` exposes per-table column-weight
+  structs; uniform-1.0 today, full retune deferred to Phase 6 per
+  documented dogfood procedure (`specs/phase-5/dogfood_fts_retune.md`).
+- 7 named NFR acceptance harnesses (story 5.26–5.32) + composite
+  5-actor benchmark, all under their per-spec CI budgets.
+- 7 schema migrations: V013 (tenant + RBAC + audit + cost + projection
+  bootstrap), V014 (projects/tasks/deliverables NOT NULL), V015
+  (skills NOT NULL), V016 (playbooks NOT NULL + FTS trigger recreate),
+  V017 (tasks.owner_user_id), V018 (session_search_index RBAC columns
+  + FTS rebuild), V019 (11 curator tables NOT NULL), V020
+  (intake/delivery/notifications NOT NULL).
+
+### Changed
+- Architecture document advanced to v1.4 with ADR-014 reconciliation
+  notes for §2.5 event schema, §3.2 tenant chain, §4 RBAC matrix,
+  §13.1 rationale envelope contract.
+- Phase baseline status advanced to `Phase 5 complete → Phase 6
+  starting` in `BASELINE.md` and `AGENTS.md` §13.
+- `scripts/spec-check.sh` now checks Phase 5 close-out hooks (V013
+  schema + auth/audit/visibility/billing/handoff/org modules +
+  ARCHITECTURE v1.4) as Check #10, plus the Phase 5 dependency
+  addendum (Check #9, DEBT #97).
+- AuthContext now mandatory at every service boundary;
+  `MissingTenantContext` is the fail-closed error.
+
+### Closed (DEBT close-out matrix)
+- `#S-1` (tenant-scoped event redaction) — CLOSED via story 5.14
+- `#91` (global strict-config harmonization) — CLOSED via story 5.22
+- `#93` (optional fork-promotion governance) — CLOSED via story 5.8
+- `#96` (curator rationale schema evolution tooling) — CLOSED via story 5.25
+- `#97` (per-crate dependency justification) — CLOSED via story 5.23
+- `#76` (FTS5 weight retune) — PARTIAL CLOSED via story 5.24
+  (named-constants surface landed; full retune deferred to Phase 6
+  per documented dogfood eval procedure)
+- `#92` (adaptive auto-archive thresholds) — DEFERRED TO PHASE 6 via
+  story 5.25 (needs production telemetry; ±5pp gate criterion documented)
+- `#94` (retrospective tiered model-by-size) — DEFERRED TO PHASE 6
+  via story 5.25 (needs cost/quality measurement from named
+  retrospective harness; ≥15% cost reduction gate)
+
+### Fixed
+- 27 fixture files updated to set explicit `tenant_id` so the
+  V014-V020 NOT NULL flips don't break the test corpus.
 
 ---
 

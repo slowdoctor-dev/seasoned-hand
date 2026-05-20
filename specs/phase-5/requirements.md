@@ -247,7 +247,7 @@ Atomic-slice story is 5.2 (V013 + ADR-014 + ARCH v1.4 — same shape as Phase 4 
 | 5.30 | phase5_user_cost_reconciliation_harness (NFR-5.4) | 2.0h | 5.13 | done |
 | 5.31 | phase5_v013_migration_harness (NFR-5.8) | 2.5h | 5.2 | done |
 | 5.32 | phase5_team_simulation_benchmark (5-actor, ≤60 min CI budget) | 3.0h | 5.26-5.31 | done |
-| 5.33 | Phase 5 acceptance gate + close-out | 2.5h | 5.2-5.32 | ready |
+| 5.33 | Phase 5 acceptance gate + close-out | 2.5h | 5.2-5.32 | done |
 
 ## 5. Acceptance criteria (Phase-level)
 
