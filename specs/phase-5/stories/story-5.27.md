@@ -1,6 +1,6 @@
 # Story 5.27 — phase5_rbac_matrix_harness (NFR-5.2)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 5.5, 5.6
 > **Phase**: 5
