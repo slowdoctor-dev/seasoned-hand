@@ -233,6 +233,25 @@ missing. Scope includes at minimum:
 
 SQLite implementation pattern uses create-copy-rename for tables where direct ALTER is insufficient.
 
+**Per-domain flip schedule (story-level execution plan)**: per §3.1 OQ #1 Option B's "where
+needed" qualifier, V013 itself ships only Step A (the new tables + tenant backfill +
+`legacy-default` sentinel bootstrap + session_search_index ALTER). Step B (the
+create-copy-rename NOT NULL flips) lands per-domain inside the story that owns the table's
+write path, so each story bundles the test-fixture migration with its production change:
+
+| Story | Tables flipped |
+|---|---|
+| 5.5  HTTP middleware RBAC | `projects`, `tasks`, `deliverables` |
+| 5.7  sop_shares | `skills` (if first writer lands in this phase) |
+| 5.8  playbook_shares | `playbooks` |
+| 5.17 Curator tenant boundaries | all 11 V011/V012 curator tables |
+| 5.19 User invitation CLI | `intake_events`, `delivery_events`, `notifications_sent` |
+
+The backfill in V013 guarantees every existing row already carries a `tenant_id`, so the
+per-domain create-copy-rename is purely schema work without further data movement. Story 5.31
+(`phase5_v013_migration_harness`) verifies post-V013 NULL-row count = 0 across all tables;
+story 5.33 close-out asserts every flip has actually landed before Phase 5 ships.
+
 ### 3.5 Backfill defaults and integrity checks
 
 Backfill policy:

@@ -25,6 +25,7 @@ ConsolidationEngine consults the share state when surfacing playbooks to other u
       (NFR-5.5 consistency budget).
 - [ ] DEBT #93 closure note: optional manual-publish-only mode is a runtime flag, not the
       default.
+- [ ] **V013 deferred NOT NULL flip** for playbooks: apply the create-copy-rename pattern (architecture §3.4 schedule) in the same slice as this story's production change; update test fixtures to set explicit `tenant_id` where they previously relied on the column being nullable.
 
 ## Verification
 

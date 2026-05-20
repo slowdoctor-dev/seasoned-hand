@@ -30,6 +30,7 @@ also re-calls `authorize(...)` for defense-in-depth (the §4.2 hybrid pattern).
 - [ ] Integration test: HTTP POST `/v1/tasks/handoff` from viewer role → 403.
 - [ ] Integration test: forged tenant_id in request context → list endpoint returns 0 rows
       from other tenants.
+- [ ] **V013 deferred NOT NULL flip** for projects/tasks/deliverables: apply the create-copy-rename pattern (architecture §3.4 schedule) in the same slice as this story's production change; update test fixtures to set explicit `tenant_id` where they previously relied on the column being nullable.
 
 ## Verification
 

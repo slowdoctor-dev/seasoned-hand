@@ -22,6 +22,7 @@ remains out-of-scope (Phase 6+, per §12 explicit pin).
   - prints display name + login token for admin to share out-of-band.
 - [ ] `seasoned-hand user list --org <slug>` shows current org members.
 - [ ] Caller must have admin role (RBAC enforced via 5.6).
+- [ ] **V013 deferred NOT NULL flip** for intake_events/delivery_events/notifications_sent: apply the create-copy-rename pattern (architecture §3.4 schedule) in the same slice as this story's production change; update test fixtures to set explicit `tenant_id` where they previously relied on the column being nullable.
 
 ## Verification
 

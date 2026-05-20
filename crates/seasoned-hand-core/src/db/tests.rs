@@ -254,6 +254,144 @@ async fn migration_v012_creates_curator_decisions_summary() {
     .await;
 }
 
+#[tokio::test]
+async fn migration_v013_creates_phase5_multiuser_tables_and_backfills() {
+    let pool = open(":memory:").await.unwrap();
+    pool.with_conn(|conn| {
+        let table_exists = |name: &str| -> bool {
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
+                [name],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+                == 1
+        };
+        let column_is_not_null = |table: &str, col: &str| -> bool {
+            let mut stmt = conn
+                .prepare(&format!("PRAGMA table_info('{table}')"))
+                .unwrap();
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(1)?, row.get::<_, i64>(3)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            rows.iter()
+                .find(|(name, _)| name == col)
+                .map(|(_, notnull)| *notnull == 1)
+                .unwrap_or(false)
+        };
+
+        // 1) Every new Phase 5 table exists.
+        for t in [
+            "organizations",
+            "users",
+            "organization_memberships",
+            "project_role_overrides",
+            "sop_shares",
+            "playbook_shares",
+            "audit_log",
+            "user_cost_ledger",
+            "tenant_event_view",
+        ] {
+            assert!(table_exists(t), "Phase 5 table {t} missing");
+        }
+
+        // 2) Per-table NOT NULL flips are explicitly deferred to per-domain
+        //    stories (5.5 / 5.7 / 5.8 / 5.17 / 5.19) per the OQ #1 Option B
+        //    two-step migration posture. This test only asserts that the
+        //    BACKFILL ran: every existing row now has a non-NULL `tenant_id`,
+        //    routed either to the canonical parent's tenant or to the
+        //    `legacy-default` sentinel.
+        // (Empty test DB has no rows to count; the assertion is meaningful
+        //  on a populated DB, which is exercised by
+        //  `phase5_v013_migration_harness` in story 5.31. Here we just confirm
+        //  the migration applied without error.)
+        let _ = column_is_not_null; // silence dead-code lint until 5.5 lands.
+
+        // 3) Sentinel org + user + membership exist for legacy-tagged rows to FK against.
+        let sentinel_org: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM organizations WHERE id='org-legacy-default' AND tenant_id='legacy-default'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sentinel_org, 1, "legacy-default org sentinel must exist");
+        let sentinel_user: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM users WHERE id='user-legacy-admin' AND tenant_id='legacy-default'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sentinel_user, 1, "legacy-default admin user must exist");
+        let sentinel_membership: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM organization_memberships
+                 WHERE id='membership-legacy-admin' AND role='admin' AND is_primary=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            sentinel_membership, 1,
+            "legacy-default admin membership must exist with is_primary=1"
+        );
+
+        // 4) session_search_index extended with tenant_id + visibility_level.
+        let has_tenant = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('session_search_index') WHERE name='tenant_id'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(has_tenant, 1);
+        let has_vis = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('session_search_index') WHERE name='visibility_level'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(has_vis, 1);
+
+        // 5) Phase 5 partial unique index for primary memberships.
+        let has_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name='idx_membership_primary_per_user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_idx, 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn migration_v013_idempotent_via_embedded_runner() {
+    let pool = open(":memory:").await.unwrap();
+    // V013 already ran during open(); re-running must no-op.
+    pool.with_conn(|conn| run_migrations(conn).expect("idempotent V013 re-run"))
+        .await;
+    pool.with_conn(|conn| {
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM organizations WHERE id='org-legacy-default'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "sentinel org survives idempotent re-run");
+    })
+    .await;
+}
+
 #[test]
 fn migration_v011_backfill_from_v010_rows() {
     use rusqlite::Connection;

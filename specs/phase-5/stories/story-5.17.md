@@ -24,6 +24,7 @@ failure taxonomy: `tenant_unresolved` quarantine, `cross_tenant_ref` rejection, 
   - `Misc{kind:"curator_decision_quarantined", failure_category:"cross_tenant_ref", ...}`
   - `Misc{kind:"curator_cycle_refused", failure_category:"tenant_unresolved", ...}`
 - [ ] Tests cover all three failure modes.
+- [ ] **V013 deferred NOT NULL flip** for all 11 V011/V012 curator tables: apply the create-copy-rename pattern (architecture §3.4 schedule) in the same slice as this story's production change; update test fixtures to set explicit `tenant_id` where they previously relied on the column being nullable.
 
 ## Verification
 

@@ -23,6 +23,7 @@ already created by V013. Add service layer + CLI commands.
 - [ ] Tests: viewer cannot escalate own permission; admin can override any grant.
 - [ ] Shared-permission visibility propagates within 5 seconds p95 for authorized users
       (NFR-5.5 consistency budget).
+- [ ] **V013 deferred NOT NULL flip** for skills (if first writer lands): apply the create-copy-rename pattern (architecture §3.4 schedule) in the same slice as this story's production change; update test fixtures to set explicit `tenant_id` where they previously relied on the column being nullable.
 
 ## Verification
 
