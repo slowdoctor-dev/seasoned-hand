@@ -21,6 +21,8 @@ ConsolidationEngine consults the share state when surfacing playbooks to other u
       `review` until admin approval via review queue.
 - [ ] Matcher only surfaces playbooks where `playbook_shares.visibility_state='shared'` AND
       tenant + role gates pass.
+- [ ] Share/unshare visibility propagates within 5 seconds p95 for authorized users
+      (NFR-5.5 consistency budget).
 - [ ] DEBT #93 closure note: optional manual-publish-only mode is a runtime flag, not the
       default.
 
@@ -33,6 +35,6 @@ cargo test -p seasoned-hand-core curator::sharing_integration
 
 ## Refs
 
-- requirements: F-5.7
+- requirements: F-5.7, F-5.23, NFR-5.5
 - architecture: §6.2
 - debt closed: #93 (close — policy surface; manual-only mode optional)

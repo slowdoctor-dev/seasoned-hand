@@ -380,3 +380,52 @@ Verdict: **5/5 agree**, **0 disagree**.
 ### Iter-3 conclusion
 
 Architect pass is saturated at iter-3. Phase 5 is ready for BMAD PM story breakdown dispatch.
+
+---
+
+## REVIEW iter-4 (Codex, 2026-05-20) — PM pass
+
+### A) Grade PM iter-1 output (`123b744`)
+
+Coverage/dependency quality is strong overall:
+
+- Story count/size target met (33 stories, mostly 1-3h, clear load-bearing decomposition).
+- Story 5.2 preserves atomic-slice discipline (V013 + ADR-014 + ARCH v1.4 + backfill/integrity).
+- Harness coverage is explicit for all 8 architecture §15 harnesses.
+- Carry-forward debt set (#76/#91/#92/#93/#94/#96/#97/#S-1) is mapped to closure stories.
+
+### B) Independent re-audit findings
+
+| # | Severity | Category | Title | Status |
+|---|---|---|---|---|
+| P5-PM-IT2-F1 | M | coverage mapping | `F-5.23` had no explicit story mapping in refs | fixed inline |
+| P5-PM-IT2-F2 | M | NFR mapping | `NFR-5.5` had no explicit story mapping | fixed inline |
+
+#### P5-PM-IT2-F1 (M, FIXED) — `F-5.23` mapping gap
+
+The PM story set implemented org-scoped CLI surfaces in practice, but refs did not explicitly map
+`F-5.23`. Added explicit `F-5.23` refs to relevant CLI/share stories:
+
+- `story-5.7.md`
+- `story-5.8.md`
+- `story-5.11.md`
+- `story-5.19.md`
+
+#### P5-PM-IT2-F2 (M, FIXED) — `NFR-5.5` mapping gap
+
+No story explicitly carried `NFR-5.5` (5-second share/permission visibility consistency). Added
+acceptance criteria and refs in sharing stories:
+
+- `story-5.7.md` (SOP share visibility propagation budget)
+- `story-5.8.md` (playbook share visibility propagation budget)
+
+### C) Dependency graph and harness checks
+
+- No dangling dependency IDs found in the requirements §4 table.
+- Bundled harness stories (5.28, 5.29) still cover all architecture §15 harness names.
+- 5.32 benchmark depends on the full harness block (5.26-5.31) and remains coherent.
+
+### Iter-4 conclusion
+
+Two M-severity mapping gaps were fixed inline. PM pass is now consistent on F/NFR/debt/harness
+coverage and ready for execute-story dispatch (starting with 5.2 as planned).

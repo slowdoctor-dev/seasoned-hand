@@ -21,6 +21,8 @@ already created by V013. Add service layer + CLI commands.
       + `seasoned-hand sop unshare ...`.
 - [ ] Default-create policy: SOP owner gets `owner` row automatically.
 - [ ] Tests: viewer cannot escalate own permission; admin can override any grant.
+- [ ] Shared-permission visibility propagates within 5 seconds p95 for authorized users
+      (NFR-5.5 consistency budget).
 
 ## Verification
 
@@ -30,5 +32,5 @@ cargo test -p seasoned-hand-core sharing::sop::tests
 
 ## Refs
 
-- requirements: F-5.6
+- requirements: F-5.6, F-5.23, NFR-5.5
 - architecture: §6.1

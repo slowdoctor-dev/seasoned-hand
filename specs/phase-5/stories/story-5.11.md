@@ -29,5 +29,5 @@ cargo test -p seasoned-hand-core handoff::audit_integration
 
 ## Refs
 
-- requirements: F-5.8, F-5.9, NFR-5.3
+- requirements: F-5.8, F-5.9, F-5.23, NFR-5.3
 - architecture: §5, §4.3

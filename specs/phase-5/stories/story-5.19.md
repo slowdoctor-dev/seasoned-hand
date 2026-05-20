@@ -31,5 +31,5 @@ cargo test -p seasoned-hand-cli user_invite
 
 ## Refs
 
-- requirements: F-5.21
+- requirements: F-5.21, F-5.23
 - architecture: §12
