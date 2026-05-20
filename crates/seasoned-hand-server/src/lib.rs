@@ -56,6 +56,7 @@ use seasoned_hand_core::pubsub::RedisPool;
 use seasoned_hand_core::router::{SlotName, SlotRouter};
 use seasoned_hand_core::sandbox::SandboxClient;
 use seasoned_hand_core::search::SearchClient;
+use seasoned_hand_core::sharing::sop::{SopPermission, SopShareError, SopShareService};
 use seasoned_hand_core::tools::builtin::all_with_task_deliver;
 use seasoned_hand_core::verifier::{
     VerificationStore,
@@ -1406,6 +1407,24 @@ pub fn app(state: AppState) -> Router {
                 Action::TaskHandoff,
             ),
         )
+        .route(
+            "/v1/sops/:id/shares",
+            with_auth(get(list_sop_shares_handler), Action::SopShare),
+        )
+        .route(
+            "/v1/sops/:id/shares",
+            with_auth(
+                axum::routing::post(post_sop_share_handler),
+                Action::SopShare,
+            ),
+        )
+        .route(
+            "/v1/sops/:id/shares",
+            with_auth(
+                axum::routing::delete(delete_sop_share_handler),
+                Action::SopShare,
+            ),
+        )
         // Story 2.21b: CLI intake / inbox / briefing-confirm surface
         // (loopback-only, same posture as the 2.21a routes above).
         .route(
@@ -2471,6 +2490,52 @@ struct TaskHandoffBody {
     to_user_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct SopShareBody {
+    user_email: String,
+    permission: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SopUnshareBody {
+    user_email: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SopShareDto {
+    id: String,
+    tenant_id: String,
+    sop_id: String,
+    subject_type: String,
+    subject_id: String,
+    subject_email: Option<String>,
+    permission: String,
+    granted_by_user_id: String,
+    created_at: i64,
+    updated_at: i64,
+}
+
+impl From<seasoned_hand_core::sharing::sop::SopShareRow> for SopShareDto {
+    fn from(value: seasoned_hand_core::sharing::sop::SopShareRow) -> Self {
+        Self {
+            id: value.id,
+            tenant_id: value.tenant_id,
+            sop_id: value.sop_id,
+            subject_type: value.subject_type,
+            subject_id: value.subject_id,
+            subject_email: value.subject_email,
+            permission: match value.permission {
+                SopPermission::Viewer => "viewer".into(),
+                SopPermission::Editor => "editor".into(),
+                SopPermission::Owner => "owner".into(),
+            },
+            granted_by_user_id: value.granted_by_user_id,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        }
+    }
+}
+
 async fn post_task_handoff_handler(
     State(_state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
@@ -2482,6 +2547,118 @@ async fn post_task_handoff_handler(
     authorize_in_handler(Action::TaskHandoff, &auth_ctx)?;
     let _ = body.to_user_id;
     Ok(StatusCode::NOT_IMPLEMENTED)
+}
+
+async fn post_sop_share_handler(
+    State(state): State<AppState>,
+    Extension(auth_ctx): Extension<AuthContext>,
+    Path(sop_id): Path<String>,
+    Json(body): Json<SopShareBody>,
+) -> ApiResult<(StatusCode, Json<SopShareDto>)> {
+    authorize_in_handler(Action::SopShare, &auth_ctx)?;
+    let permission = parse_sop_permission(&body.permission)?;
+    let service = SopShareService::new(state.db.clone());
+    let row = service
+        .share(&auth_ctx, &sop_id, &body.user_email, permission)
+        .await
+        .map_err(map_sop_share_error)?;
+    Ok((StatusCode::OK, Json(SopShareDto::from(row))))
+}
+
+async fn delete_sop_share_handler(
+    State(state): State<AppState>,
+    Extension(auth_ctx): Extension<AuthContext>,
+    Path(sop_id): Path<String>,
+    Json(body): Json<SopUnshareBody>,
+) -> ApiResult<StatusCode> {
+    authorize_in_handler(Action::SopShare, &auth_ctx)?;
+    let service = SopShareService::new(state.db.clone());
+    let deleted = service
+        .unshare(&auth_ctx, &sop_id, &body.user_email)
+        .await
+        .map_err(map_sop_share_error)?;
+    if !deleted {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "share_not_found".into(),
+            }),
+        ));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_sop_shares_handler(
+    State(state): State<AppState>,
+    Extension(auth_ctx): Extension<AuthContext>,
+    Path(sop_id): Path<String>,
+) -> ApiResult<Json<Vec<SopShareDto>>> {
+    authorize_in_handler(Action::SopShare, &auth_ctx)?;
+    let service = SopShareService::new(state.db.clone());
+    let rows = service
+        .list_for_sop(&auth_ctx, &sop_id)
+        .await
+        .map_err(map_sop_share_error)?;
+    let out = rows.into_iter().map(SopShareDto::from).collect();
+    Ok(Json(out))
+}
+
+fn parse_sop_permission(value: &str) -> ApiResult<SopPermission> {
+    match value {
+        "viewer" => Ok(SopPermission::Viewer),
+        "editor" => Ok(SopPermission::Editor),
+        "owner" => Ok(SopPermission::Owner),
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "invalid_permission".into(),
+            }),
+        )),
+    }
+}
+
+fn map_sop_share_error(err: SopShareError) -> ApiErrorResponse {
+    match err {
+        SopShareError::Auth(seasoned_hand_core::auth::AuthError::MissingTenantContext) => (
+            StatusCode::UNAUTHORIZED,
+            Json(ApiError {
+                error: "unauthorized_context".into(),
+            }),
+        ),
+        SopShareError::Auth(seasoned_hand_core::auth::AuthError::Unauthorized { .. }) => (
+            StatusCode::FORBIDDEN,
+            Json(ApiError {
+                error: "forbidden_action".into(),
+            }),
+        ),
+        SopShareError::SopNotFound(_) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "sop_not_found".into(),
+            }),
+        ),
+        SopShareError::UserNotFound(_) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "user_not_found".into(),
+            }),
+        ),
+        SopShareError::InvalidPermission(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: "invalid_permission_db".into(),
+            }),
+        ),
+        SopShareError::Db(error) => {
+            tracing::error!(%error, "sop_share db error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            )
+        }
+    }
 }
 
 fn map_lifecycle_result(

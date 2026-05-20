@@ -1,6 +1,6 @@
 # Story 5.7 — sop_shares ACL + CLI surfaces
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 5.4, 5.5
 > **Phase**: 5

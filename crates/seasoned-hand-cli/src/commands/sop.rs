@@ -1,9 +1,11 @@
 //! `seasoned-hand sop <create|edit|list|show|delete>`.
 
+use crate::client::ApiClient;
 use anyhow::{Result, anyhow};
 use clap::Subcommand;
 use rusqlite::{OptionalExtension, params};
 use seasoned_hand_core::db;
+use seasoned_hand_core::sharing::sop::SopShareService;
 use seasoned_hand_core::time::now_micros;
 use serde::Serialize;
 
@@ -33,6 +35,22 @@ pub enum SopCmd {
     Show { id: String },
     /// Hard-delete one SOP by id.
     Delete { id: String },
+    /// Share an SOP with a user.
+    Share {
+        sop_id: String,
+        #[arg(long = "user")]
+        user_email: String,
+        #[arg(long)]
+        permission: String,
+    },
+    /// Remove SOP sharing from a user.
+    Unshare {
+        sop_id: String,
+        #[arg(long = "user")]
+        user_email: String,
+    },
+    /// List share rows for an SOP.
+    Shares { sop_id: String },
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -46,7 +64,7 @@ struct SopRow {
     updated_at: i64,
 }
 
-pub async fn run(cmd: SopCmd, json: bool) -> Result<()> {
+pub async fn run(cmd: SopCmd, client: &ApiClient, json: bool) -> Result<()> {
     let pool = db::open(&database_url()).await?;
 
     match cmd {
@@ -57,6 +75,7 @@ pub async fn run(cmd: SopCmd, json: bool) -> Result<()> {
             enforced,
         } => {
             let now = now_micros();
+            let sop_id = id.clone();
             pool.with_conn(move |conn| -> Result<()> {
                 conn.execute(
                     "INSERT INTO sops (id, title, content, version, enforced, created_at, updated_at)
@@ -66,6 +85,13 @@ pub async fn run(cmd: SopCmd, json: bool) -> Result<()> {
                 Ok(())
             })
             .await?;
+            let tenant_id =
+                std::env::var("SH_TENANT_ID").unwrap_or_else(|_| "legacy-default".to_string());
+            let owner_user_id = std::env::var("SH_ACTOR_USER_ID")
+                .unwrap_or_else(|_| "user-cli-operator".to_string());
+            SopShareService::new(pool.clone())
+                .ensure_default_owner(&tenant_id, &sop_id, &owner_user_id)
+                .await?;
             if json {
                 println!("{}", serde_json::json!({"created": true}));
             } else {
@@ -227,6 +253,46 @@ pub async fn run(cmd: SopCmd, json: bool) -> Result<()> {
                 println!("deleted sop");
             }
         }
+        SopCmd::Share {
+            sop_id,
+            user_email,
+            permission,
+        } => {
+            let row = client.sop_share(&sop_id, &user_email, &permission).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&row)?);
+            } else {
+                println!(
+                    "shared {} -> {} ({})",
+                    row.sop_id,
+                    row.subject_email.unwrap_or(row.subject_id),
+                    row.permission
+                );
+            }
+        }
+        SopCmd::Unshare { sop_id, user_email } => {
+            client.sop_unshare(&sop_id, &user_email).await?;
+            if json {
+                println!("{}", serde_json::json!({"unshared": true}));
+            } else {
+                println!("unshared {sop_id} from {user_email}");
+            }
+        }
+        SopCmd::Shares { sop_id } => {
+            let rows = client.sop_list_shares(&sop_id).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            } else {
+                for row in rows {
+                    println!(
+                        "{}\t{}\t{}",
+                        row.subject_email.unwrap_or(row.subject_id),
+                        row.permission,
+                        row.granted_by_user_id
+                    );
+                }
+            }
+        }
     }
 
     Ok(())
@@ -257,7 +323,27 @@ mod tests {
         // SAFETY: tests in this module run as one process; we set and remove env
         // around this test's calls only.
         unsafe { std::env::set_var("SH_DATABASE_URL", &db_url) };
+        unsafe { std::env::set_var("SH_TENANT_ID", "legacy-default") };
+        unsafe { std::env::set_var("SH_ACTOR_USER_ID", "user-cli-operator") };
 
+        let pool = db::open(&db_url).await.unwrap();
+        pool.with_conn(|conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO organizations (id, tenant_id, slug, display_name, status, created_at, updated_at)
+                 VALUES ('org-legacy-default', 'legacy-default', 'legacy', 'Legacy Org', 'active', 1, 1)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT OR IGNORE INTO users (id, tenant_id, email, display_name, status, created_at, updated_at)
+                 VALUES ('user-cli-operator', 'legacy-default', 'cli@example.test', 'CLI Operator', 'active', 1, 1)",
+                [],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .unwrap();
+
+        let client = ApiClient::new("http://127.0.0.1:3000");
         run(
             SopCmd::Create {
                 id: "sop-1".into(),
@@ -265,6 +351,7 @@ mod tests {
                 content: "Use checklist".into(),
                 enforced: true,
             },
+            &client,
             true,
         )
         .await
@@ -277,12 +364,12 @@ mod tests {
                 content: Some("Use checklist and verify".into()),
                 enforced: Some(false),
             },
+            &client,
             true,
         )
         .await
         .unwrap();
 
-        let pool = db::open(&db_url).await.unwrap();
         let row = pool
             .with_conn(|conn| {
                 conn.query_row(
@@ -305,11 +392,11 @@ mod tests {
         assert_eq!(row.2, 2);
         assert_eq!(row.3, 0);
 
-        run(SopCmd::List, true).await.unwrap();
-        run(SopCmd::Show { id: "sop-1".into() }, true)
+        run(SopCmd::List, &client, true).await.unwrap();
+        run(SopCmd::Show { id: "sop-1".into() }, &client, true)
             .await
             .unwrap();
-        run(SopCmd::Delete { id: "sop-1".into() }, true)
+        run(SopCmd::Delete { id: "sop-1".into() }, &client, true)
             .await
             .unwrap();
 
@@ -322,6 +409,10 @@ mod tests {
             })
             .await;
         assert_eq!(exists, 0);
-        unsafe { std::env::remove_var("SH_DATABASE_URL") };
+        unsafe {
+            std::env::remove_var("SH_DATABASE_URL");
+            std::env::remove_var("SH_TENANT_ID");
+            std::env::remove_var("SH_ACTOR_USER_ID");
+        };
     }
 }

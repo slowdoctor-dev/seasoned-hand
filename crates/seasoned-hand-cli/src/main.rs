@@ -107,7 +107,7 @@ async fn main() -> ExitCode {
         Commands::Inbox(cmd) => commands::inbox::run(cmd, &client, cli.json).await,
         Commands::Channel(cmd) => commands::channel::run(cmd, &client, cli.json).await,
         Commands::Curator(cmd) => commands::curator::run(cmd, cli.json).await,
-        Commands::Sop(cmd) => commands::sop::run(cmd, cli.json).await,
+        Commands::Sop(cmd) => commands::sop::run(cmd, &client, cli.json).await,
         Commands::Playbook(cmd) => commands::playbook::run(cmd, cli.json).await,
         Commands::Session(cmd) => commands::session_search::run(cmd, cli.json).await,
         Commands::Init => commands::init::run(cli.json),

@@ -74,6 +74,32 @@ pub struct InboxEntry {
     pub created_at: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SopShareEntry {
+    pub id: String,
+    pub tenant_id: String,
+    pub sop_id: String,
+    pub subject_type: String,
+    pub subject_id: String,
+    #[serde(default)]
+    pub subject_email: Option<String>,
+    pub permission: String,
+    pub granted_by_user_id: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct SopShareBody<'a> {
+    user_email: &'a str,
+    permission: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct SopUnshareBody<'a> {
+    user_email: &'a str,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "action", rename_all = "lowercase")]
 pub enum BriefingConfirmRequest {
@@ -312,6 +338,49 @@ impl ApiClient {
     pub async fn list_channels(&self) -> Result<serde_json::Value, ApiError> {
         let resp = self
             .with_auth_headers(self.inner.get(self.url("/v1/channels")))
+            .send()
+            .await?;
+        decode(resp).await
+    }
+
+    pub async fn sop_share(
+        &self,
+        sop_id: &str,
+        user_email: &str,
+        permission: &str,
+    ) -> Result<SopShareEntry, ApiError> {
+        let resp = self
+            .with_auth_headers(
+                self.inner
+                    .post(self.url(&format!("/v1/sops/{sop_id}/shares"))),
+            )
+            .json(&SopShareBody {
+                user_email,
+                permission,
+            })
+            .send()
+            .await?;
+        decode(resp).await
+    }
+
+    pub async fn sop_unshare(&self, sop_id: &str, user_email: &str) -> Result<(), ApiError> {
+        let resp = self
+            .with_auth_headers(
+                self.inner
+                    .delete(self.url(&format!("/v1/sops/{sop_id}/shares"))),
+            )
+            .json(&SopUnshareBody { user_email })
+            .send()
+            .await?;
+        decode_unit(resp).await
+    }
+
+    pub async fn sop_list_shares(&self, sop_id: &str) -> Result<Vec<SopShareEntry>, ApiError> {
+        let resp = self
+            .with_auth_headers(
+                self.inner
+                    .get(self.url(&format!("/v1/sops/{sop_id}/shares"))),
+            )
             .send()
             .await?;
         decode(resp).await
