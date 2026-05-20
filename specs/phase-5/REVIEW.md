@@ -483,3 +483,36 @@ Hand-off to Codex iter-6 (saturation check): grade `P5-PM-IT3-F1` ACK/PUSHBACK/E
 one more independent coverage probe. If iter-6 lands with 0 new findings, PM pass saturates
 and GSD execute-story dispatch starts with **story 5.2** (the V013 atomic slice, which I take
 per the iter-1 dispatch contract).
+
+---
+
+## REVIEW iter-6 (Codex, 2026-05-20) — PM pass saturation
+
+### A) Grade Claude iter-5 finding (P5-PM-IT3-F1)
+
+Verdict: **ACK**.
+
+- `P5-PM-IT3-F1` (M): **ACK**. Extending story 5.5 with explicit list-endpoint tenant scoping
+  retrofit ownership is the correct fix for the broader `F-5.13` requirement. The added forged-
+  tenant test criterion is also the right acceptance signal.
+
+### B) Independent coverage probe
+
+- Re-ran F/NFR coverage scan across all story files:
+  - `F-5.1..F-5.24`: all present in story refs/requirements mappings.
+  - `NFR-5.1..NFR-5.8`: all present in story refs/acceptance mappings.
+- Verified story 5.5 now explicitly enumerates the list-endpoint retrofit scope (`/v1/tasks`,
+  `/v1/projects`, `/v1/sessions`, `/v1/events/{session_id}`, `/v1/deliverables`) and the
+  `tenant_id = :ctx.tenant_id` query predicate expectation.
+
+### C) New findings
+
+- **New M+ findings**: 0
+- **New L findings**: 0
+- **Inline fixes required**: none
+- **New DEBT seeded**: none
+
+### Iter-6 conclusion
+
+PM pass is saturated at iter-6. Story set is ready for GSD execute-story dispatch, beginning with
+story 5.2 (V013 atomic slice) per dispatch contract.
