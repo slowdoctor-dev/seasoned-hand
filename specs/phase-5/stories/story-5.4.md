@@ -1,6 +1,6 @@
 # Story 5.4 — org/user/membership persistence + project_role_overrides
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 5.2
 > **Phase**: 5

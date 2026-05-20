@@ -18,6 +18,7 @@ pub mod intake;
 pub mod llm;
 pub mod matcher;
 pub mod notify;
+pub mod org;
 pub mod plan;
 pub mod project;
 pub mod provenance;
