@@ -1,6 +1,6 @@
 # Story 5.29 — phase5_event_redaction_visibility_harness + phase5_search_rbac_harness
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 5.14, 5.15
 > **Phase**: 5
