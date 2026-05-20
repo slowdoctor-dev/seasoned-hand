@@ -104,6 +104,14 @@ check "Phase 4 curator + retention spec hook" \
    && [ -f specs/phase-4/architecture.md ] \
    && [ -f specs/phase-4/requirements.md ]"
 
+# Check 9: Phase 5 per-crate dependency justification (story 5.23 /
+# closes DEBT #97). Asserts the ARCHITECTURE.md §1 addendum block
+# carries an explicit Phase 5 entry. Future stories that add a
+# workspace dependency must extend the block; this gate prevents
+# silent dep additions from accumulating.
+check "Phase 5 dependency addendum present" \
+  "grep -q 'Phase 5 dependency addendum' specs/01-architecture/ARCHITECTURE.md"
+
 echo ""
 echo "=== Results ==="
 echo "Pass: $PASS"

@@ -146,6 +146,15 @@ tracks "where we are in the task" and prevents goal drift. See ADR-010.
 > (installed at session-create time per phase-2/DEBT.md #2).
 > Phase 3 learning addendum: `unicode-normalization 0.1`
 > (NFD normalization for matcher, F-3.4 / story 3.5).
+>
+> **Phase 5 dependency addendum** (story 5.23 / F-5.20 / closes Phase 5
+> DEBT #97): zero net-new Rust dependencies. Multi-user + organization,
+> RBAC, audit log, hand-off lifecycle, per-user cost ledger,
+> tenant-aware event redaction, optimistic concurrency, and global
+> strict-config harmonization all built on the Phase 0-4 crate set.
+> Any future story that adds a workspace dependency must extend this
+> addendum with a one-line justification per crate; `scripts/spec-check.sh`
+> enforces the existence of this addendum block as a discipline gate.
 
 ---
 

@@ -49,10 +49,17 @@ Phase 5-specific shortcuts/deferrals during implementation.
 - **Current state**: Structured rationale exists; schema-evolution tooling deferred.
 - **Phase 5 expectation**: add compatibility/versioning tooling baseline.
 
-### #97 Per-crate dependency justification discipline (H3)
+### #97 Per-crate dependency justification discipline (H3) — CLOSED 2026-05-21 via story 5.23
 - **Current state**: Documentation discipline deferred.
 - **Phase 5 expectation**: close by enforcing per-crate justification + ARCH §1 addendum updates for
   net-new dependencies.
+- **Closed by**: story 5.23 added a Phase 5 dependency addendum block to
+  `specs/01-architecture/ARCHITECTURE.md` §1 (Phase 5 introduced zero net-new
+  workspace dependencies — multi-user / RBAC / audit / cost / redaction / OCC
+  all built on the Phase 0-4 crate set). `scripts/spec-check.sh` Check #9
+  enforces the existence of the addendum block as a discipline gate; any
+  future story that adds a workspace dependency must extend the addendum
+  with a per-crate justification or the gate fails.
 
 ## Additional carry-forward from cross-phase security review
 

@@ -1,6 +1,6 @@
 # Story 5.23 — Per-crate dependency justification (closes DEBT #97)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 1 hour
 > **Dependencies**: 5.1
 > **Phase**: 5
