@@ -8,10 +8,24 @@ Phase 5-specific shortcuts/deferrals during implementation.
 
 ## Inherited carry-forward targets from Phase 4
 
-### #76 FTS5 weighting retune (PARTIAL)
+### #76 FTS5 weighting retune (PARTIAL) — PARTIAL CLOSED 2026-05-21 via story 5.24
 - **Current state**: Seed weights landed; production telemetry-guided retune not fully closed.
 - **Phase 5 expectation**: close or re-baseline with measured relevance outcomes in multi-user
   corpus.
+- **Partial closure (story 5.24)**: Phase 5 lacks the production dogfood corpus needed for a
+  meaningful retune (warm-loop benchmark's synthetic queries don't exercise the title/keyword/
+  content balance the way real operator queries do). Per the story carve-out, partial close
+  with explicit successor:
+  - `crates/seasoned-hand-core/src/search/fts_weights.rs` now exposes named column-weight
+    constants for `playbooks_fts`, `session_search_fts`, and `curator_search_fts` (all
+    uniform 1.0 today — matches FTS5 default rank, preserves the Phase 4 warm-loop benchmark
+    precision@3 floor). Future retunes touch one place rather than scattered `bm25()`
+    literals across the matcher / session_search / curator queries.
+  - `specs/phase-5/dogfood_fts_retune.md` documents the full measurement procedure (eval set
+    requirements, relevance metric, grid-search shape, acceptance gate).
+  - **Successor**: Phase 6 ROADMAP must carry "FTS5 weight retune with dogfood corpus" once
+    Phase 6 architecture lands. Full close requires precision@3 ≥+3pp on a 50-query dogfood
+    eval set per index + no regression on the warm-loop benchmark.
 
 ### #91 Global config strict-parse harmonization (PARTIAL) — CLOSED 2026-05-21 via story 5.22
 - **Current state**: Curator scope closed in story 4.14; non-curator config families remain mixed.

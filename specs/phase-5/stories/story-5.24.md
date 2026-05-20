@@ -1,6 +1,6 @@
 # Story 5.24 — FTS5 weight retune (closes/partial DEBT #76)
 
-> **Status**: ready
+> **Status**: done (partial close — see DEBT #76 successor pointer)
 > **Estimated**: 2.5 hours
 > **Dependencies**: 5.15
 > **Phase**: 5

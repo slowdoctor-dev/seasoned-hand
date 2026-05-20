@@ -1,5 +1,11 @@
 //! Web search clients. Phase 0 ships Brave; Tavily reserved for Phase 1.
 //! refs: /specs/phase-0/architecture.md §4.3
+//!
+//! Phase 5 story 5.24: this module also exposes `fts_weights` — the
+//! named-constants surface for the three internal FTS5 tables'
+//! column weights (playbooks / session_search / curator_search).
+
+pub mod fts_weights;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
