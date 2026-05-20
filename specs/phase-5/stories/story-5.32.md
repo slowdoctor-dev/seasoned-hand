@@ -1,6 +1,6 @@
 # Story 5.32 — phase5_team_simulation_benchmark (5-actor, ≤60 min CI budget)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 3 hours
 > **Dependencies**: 5.26-5.31
 > **Phase**: 5
