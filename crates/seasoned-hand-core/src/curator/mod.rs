@@ -2619,8 +2619,9 @@ impl ProductionCuratorWorker {
     }
 
     pub async fn run(&self, cancel: CancellationToken) -> Result<(), CuratorWorkerError> {
+        let project_id = self.config.project_id.as_str();
         if !self.config.enabled {
-            tracing::info!("curator worker disabled");
+            tracing::info!(project_id, "curator worker disabled");
             return Ok(());
         }
         let interval = Duration::from_secs(self.config.interval_seconds.max(1));
@@ -2631,14 +2632,14 @@ impl ProductionCuratorWorker {
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => {
-                    tracing::info!("curator worker shutdown requested");
+                    tracing::info!(project_id, "curator worker shutdown requested");
                     return Ok(());
                 }
                 _ = ticker.tick() => {
                     let backlog = match self.backlog_probe.pending_count(&self.config.project_id).await {
                         Ok(count) => count,
                         Err(error) => {
-                            tracing::warn!(%error, "curator backlog probe failed");
+                            tracing::warn!(project_id, %error, "curator backlog probe failed");
                             continue;
                         }
                     };
@@ -2648,7 +2649,13 @@ impl ProductionCuratorWorker {
                         CuratorTrigger::IntervalTick
                     };
                     if let Err(error) = self.run_once(trigger, backlog).await {
-                        tracing::warn!(%error, "curator cycle failed");
+                        tracing::warn!(
+                            project_id,
+                            trigger = trigger.as_str(),
+                            backlog,
+                            %error,
+                            "curator cycle failed",
+                        );
                     }
                 }
             }

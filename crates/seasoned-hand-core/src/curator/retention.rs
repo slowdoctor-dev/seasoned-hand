@@ -338,6 +338,7 @@ impl RetentionScheduler {
     }
 
     pub async fn run(self, shutdown: CancellationToken) {
+        let project_id = self.job.config().project_id.clone();
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => return,
@@ -363,9 +364,17 @@ impl RetentionScheduler {
                                     );
                                 }
                             }
-                            Err(error) => tracing::error!(%error, "curator retention cycle failed"),
+                            Err(error) => tracing::error!(
+                                project_id = %project_id,
+                                %error,
+                                "curator retention cycle failed",
+                            ),
                         },
-                        Err(error) => tracing::error!(%error, "curator retention clock failure"),
+                        Err(error) => tracing::error!(
+                            project_id = %project_id,
+                            %error,
+                            "curator retention clock failure",
+                        ),
                     }
                 }
             }
