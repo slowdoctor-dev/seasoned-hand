@@ -39,7 +39,10 @@ From `specs/01-architecture/ARCHITECTURE.md` v1.3:
 - V011 curator schema is baseline reality; tenant forward-compat columns are present and nullable.
 - 12-slot model routing stays fixed-shape unless a successor ADR explicitly changes it.
 
-Phase 5 is expected to tighten tenant semantics (nullable -> NOT NULL) and may require ARCH v1.4.
+Phase 5 WILL tighten tenant semantics (nullable -> NOT NULL) and WILL bump ARCH to v1.4 via a
+successor ADR (likely ADR-014). This mirrors the Phase 4 atomic-slice discipline (ADR-013 → ARCH
+v1.3 in story 4.2); Phase 5 will land V013 migration + ADR-014 + ARCH v1.4 amendments in the same
+slice. See OPEN_QUESTIONS §16 for the Architect-resolution detail.
 
 ## 4. Schema reality and migration gap
 
@@ -80,11 +83,15 @@ Phase 5 headline schema move:
 
 ## 6. Security review carry-forward
 
-From `specs/SECURITY_REVIEW.md` iter-3 observation:
+From `specs/SECURITY_REVIEW.md` iter-3 observation (carried forward) **plus** the Codex iter-1
+addendum (commit `41c16a0`, "fix(security): enforce session_id validation on remaining sandbox
+sinks") that closed an F4-residual on `is_paused`/`pause`/`resume`/`destroy`:
 
 - Action events can contain raw tool args/outputs in canonical events table.
 - Single-operator model tolerated this; multi-tenant model does not.
 - Phase 5 must explicitly decide and implement tenant-scoped event redaction/visibility policy.
+- Phase 5 inherits the canonical `sandbox::is_safe_session_id` / `require_safe_session_id`
+  contract — every new sandbox-touching call site added in Phase 5 must apply the guard.
 
 This is load-bearing and must appear as first-class requirement (F-5.12).
 

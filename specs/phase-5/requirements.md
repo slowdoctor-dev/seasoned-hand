@@ -19,9 +19,14 @@ Owner: BMAD Analyst pass
 ## 2. Non-functional requirements
 
 - `NFR-5.1` **Tenant isolation correctness**  
-  For any API/CLI/worker path, cross-tenant read/write leakage rate must be 0 in acceptance suite;
-  deny-by-default on missing tenant context.  
-  Why this matters: Phase 5's value collapses if org boundaries are porous.
+  For any API/CLI/worker path, cross-tenant read/write leakage rate must be 0 in the
+  `phase5_cross_tenant_isolation_harness` acceptance suite (named by analogy with
+  Phase 4's `phase4_warm_full_loop_benchmark`); deny-by-default on missing tenant
+  context. Harness must enumerate the API surface, CLI surface, and every spawned
+  worker (verifier, curator, retention, ttl, notify, intake) and assert each
+  rejects a forged cross-tenant request.  
+  Why this matters: Phase 5's value collapses if org boundaries are porous, and
+  "0 leakage" needs a named, runnable target — not prose.
 
 - `NFR-5.2` **Authorization decision latency**  
   Role checks (`admin/user/viewer`) must add <= 10ms p95 and <= 25ms p99 per request on baseline
@@ -49,9 +54,12 @@ Owner: BMAD Analyst pass
   Why this matters: Phase 4's single-operator assumption is invalid under multi-tenant access.
 
 - `NFR-5.7` **Config strictness harmonization**  
-  All multi-user and auth-related env/config flags must use strict parse semantics (invalid values
-  fail fast at boot, no silent coercion).  
-  Why this matters: permissive parsing can silently disable security boundaries.
+  All env/config flags must use strict parse semantics (invalid values fail fast at
+  boot, no silent coercion). Scope is global — closes DEBT #91 across all non-curator
+  config families, not just the multi-user/auth subset. Curator scope was already
+  closed in story 4.14; Phase 5 finishes the harmonization.  
+  Why this matters: permissive parsing can silently disable security boundaries
+  anywhere, not only on auth flags.
 
 - `NFR-5.8` **Zero-downtime migration posture**  
   V013 tenant-tightening migration (nullable -> NOT NULL defaults + org/user/RBAC surfaces) must be
@@ -110,8 +118,10 @@ Owner: BMAD Analyst pass
 
 - `F-5.10` **Per-user cost ledger**  
   Track and expose per-user token/cost aggregates with org/project filters and reconciliation to
-  source session rows.  
-  Why this matters: shared instances require cost accountability per operator.
+  source session rows. **Tracking only** — per-user spending **caps** / hard-stops are explicitly
+  out of scope (see §6); roadmap pins "tracking", not enforcement.  
+  Why this matters: shared instances require cost accountability per operator; conflating tracking
+  with enforcement invites unbounded scope expansion at PM time.
 
 - `F-5.11` **Tenant-scoped event access model**  
   Define which event types/fields are visible to `viewer`, `user`, `admin` and ensure cross-tenant
@@ -119,9 +129,13 @@ Owner: BMAD Analyst pass
   Why this matters: events are the richest leak surface in multi-user mode.
 
 - `F-5.12` **Tenant-aware event redaction boundary**  
-  Resolve Phase 4 security observation: either (A) redact sensitive Action/Observation payloads at
-  write/read boundary for tenant-visible feeds, or (B) explicitly adopt operator-visible raw policy
-  with strict admin-only gating and documented risk acceptance. Architect must pin one.  
+  Resolve the Phase 4 security observation recorded in `/specs/SECURITY_REVIEW.md` iter-3
+  saturation section ("Phase 4 Action events stored in the canonical events table contain raw
+  tool args + outputs without applying `redact_pii`. When Phase 5 flips `tenant_id` to NOT NULL
+  and the events table starts carrying multi-tenant rows, this becomes a real cross-tenant leak
+  surface."). Architect picks one of: (A) redact sensitive Action/Observation payloads at
+  write boundary for tenant-visible feeds, (B) store raw + redact on read per role/tenant,
+  (C) dual-store (raw restricted + redacted searchable projection). See OPEN_QUESTIONS §10.  
   Why this matters: leaving this implicit creates silent cross-tenant secret exposure risk.
 
 - `F-5.13` **Session/project/task query scoping**  
@@ -130,9 +144,19 @@ Owner: BMAD Analyst pass
   Why this matters: accidental broad queries become data leaks at team scale.
 
 - `F-5.14` **Curator tenant boundaries**  
-  Curator candidate building/consolidation/archive/retention must execute within tenant boundaries,
-  including review queue and retrospective outputs.  
-  Why this matters: Curator decisions crossing tenants are security and correctness failures.
+  Curator candidate building/consolidation/archive/retention must execute within tenant
+  boundaries, including review queue and retrospective outputs. Failure taxonomy when
+  tenant resolution fails mid-cycle (pinned here so PM doesn't have to re-derive it):
+  (a) MISSING tenant_id on a candidate row → quarantine that decision unit with
+  `failure_category="tenant_unresolved"`, continue the rest of the cycle;
+  (b) CROSS-tenant reference detected (decision references a row from another
+  tenant) → reject before write, emit `curator_decision_quarantined` with
+  `failure_category="cross_tenant_ref"`;
+  (c) ENTIRE cycle fails tenant gating at startup → emit
+  `curator_cycle_refused` Misc event and skip the tick (analogous to F-4.11
+  budget-circuit-open).
+  Why this matters: Curator decisions crossing tenants are security and correctness
+  failures; un-enumerated failure modes get reinvented per implementer.
 
 - `F-5.15` **Curator threshold policy continuation**  
   Resolve DEBT #92 by deciding adaptive-threshold path (ship or explicitly defer) with tenant-safe
@@ -199,7 +223,10 @@ Phase 5 PM pass will expand this into concrete stories (target approximately 22-
 Phase 5 is accepted when all of the following hold:
 
 1. A 5-person team simulation (1 admin, 3 users, 1 viewer) runs on one instance for a full
-   acceptance scenario suite without cross-tenant data leakage or authorization bypass.
+   acceptance scenario suite without cross-tenant data leakage or authorization bypass. Total
+   wall-clock CI budget ≤ 60 min on baseline runner (15 min above Phase 4 §1's 45 min because
+   the 5-actor concurrency adds genuine fanout cost; Architect may relax with rationale if
+   genuinely infeasible).
 2. Shared SOP/playbook workflows support create/share/edit/use/handoff with audit trail present for
    all mutating operations.
 3. Per-user cost ledger reconciles to source session/tool-call totals within NFR-5.4 tolerance.
@@ -208,7 +235,9 @@ Phase 5 is accepted when all of the following hold:
 5. Event visibility/redaction policy from F-5.12 is explicitly implemented and tested against
    cross-tenant leakage cases.
 6. Phase 4 carry-forward debt set in scope (#76, #91, #92, #93, #94, #96, #97) is marked closed,
-   partial with evidence, or explicitly deferred with Phase 6 owner and rationale.
+   partial with evidence, or explicitly deferred with Phase 6 owner and rationale. The
+   `#S-1` security carry-in (tenant-scoped event redaction; see DEBT.md) ships its F-5.12
+   resolution path before Phase 5 close-out.
 
 ## 6. Out of scope (explicitly deferred)
 
@@ -218,6 +247,9 @@ Phase 5 is accepted when all of the following hold:
 - Organization-to-organization billing and chargeback integration (Phase 6+).
 - Public plugin ecosystem trust/rating governance (Phase 6+).
 - Advanced legal/compliance retention regimes beyond baseline audit immutability (Phase 6+).
+- **Per-user spending caps / hard-stop budgets** — Phase 5 ships per-user cost **tracking**
+  (F-5.10) per the roadmap, not enforcement. Cap-and-throttle policy belongs to Phase 6+ if
+  operator demand exists.
 
 ## 7. Risks and mitigations
 
