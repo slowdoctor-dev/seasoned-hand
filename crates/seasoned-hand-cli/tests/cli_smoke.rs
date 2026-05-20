@@ -78,6 +78,13 @@ fn apply_auth_env(cmd: &mut Command) {
         .env("SH_ORG_ROLE", "admin");
 }
 
+fn apply_auth_env_as(cmd: &mut Command, tenant: &str, org: &str, user: &str, role: &str) {
+    cmd.env("SH_TENANT_ID", tenant)
+        .env("SH_ORGANIZATION_ID", org)
+        .env("SH_ACTOR_USER_ID", user)
+        .env("SH_ORG_ROLE", role);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cli_help_works() {
     let mut cmd = cli();
@@ -773,7 +780,7 @@ async fn cli_user_cost_reconcile_smoke() {
     writer.flush().await.expect("flush");
 
     let mut cmd = cli();
-    apply_auth_env(&mut cmd);
+    apply_auth_env_as(&mut cmd, "tenant-a", "org-a", "u-admin", "admin");
     cmd.args([
         "--server",
         &h.server_url,
@@ -789,4 +796,149 @@ async fn cli_user_cost_reconcile_smoke() {
     let report: Value = serde_json::from_str(&stdout).expect("reconcile json");
     assert!(report["rows_checked"].as_u64().is_some());
     assert!(report["drifted_rows"].as_u64().is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn user_invite_happy_path() {
+    let h = boot().await;
+    h.state
+        .db
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO organizations (id, tenant_id, slug, display_name, status, created_at, updated_at)
+                 VALUES ('org-a', 'tenant-a', 'acme', 'Acme', 'active', 0, 0)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO users (id, tenant_id, email, display_name, status, created_at, updated_at)
+                 VALUES ('u-admin', 'tenant-a', 'admin@acme.com', 'Admin', 'active', 0, 0)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO organization_memberships (id, tenant_id, organization_id, user_id, role, is_primary, created_at, updated_at)
+                 VALUES ('m-admin', 'tenant-a', 'org-a', 'u-admin', 'admin', 1, 0, 0)",
+                [],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("seed");
+
+    let mut cmd = cli();
+    apply_auth_env_as(&mut cmd, "tenant-a", "org-a", "u-admin", "admin");
+    cmd.args([
+        "--server",
+        &h.server_url,
+        "--json",
+        "--no-color",
+        "user",
+        "invite",
+        "new@acme.com",
+        "--org",
+        "acme",
+        "--role",
+        "viewer",
+    ]);
+    let (status, stdout, stderr) = run(cmd);
+    assert!(status.success(), "invite exits 0; stderr: {stderr}");
+    let out: Value = serde_json::from_str(&stdout).expect("invite json");
+    assert!(out["user_id"].as_str().unwrap_or("").starts_with("user-"));
+    assert!(!out["login_token"].as_str().unwrap_or("").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn user_invite_viewer_denied() {
+    let h = boot().await;
+    h.state
+        .db
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO organizations (id, tenant_id, slug, display_name, status, created_at, updated_at)
+                 VALUES ('org-a', 'tenant-a', 'acme', 'Acme', 'active', 0, 0)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO users (id, tenant_id, email, display_name, status, created_at, updated_at)
+                 VALUES ('u-viewer', 'tenant-a', 'viewer@acme.com', 'Viewer', 'active', 0, 0)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO organization_memberships (id, tenant_id, organization_id, user_id, role, is_primary, created_at, updated_at)
+                 VALUES ('m-viewer', 'tenant-a', 'org-a', 'u-viewer', 'viewer', 1, 0, 0)",
+                [],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("seed");
+
+    let mut cmd = cli();
+    apply_auth_env_as(&mut cmd, "tenant-a", "org-a", "u-viewer", "viewer");
+    cmd.args([
+        "--server",
+        &h.server_url,
+        "--json",
+        "--no-color",
+        "user",
+        "invite",
+        "nope@acme.com",
+        "--org",
+        "acme",
+        "--role",
+        "user",
+    ]);
+    let (status, _stdout, stderr) = run(cmd);
+    assert!(!status.success(), "viewer invite should fail");
+    assert!(stderr.contains("forbidden_action"), "stderr={stderr}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn user_invite_cross_org_admin_denied() {
+    let h = boot().await;
+    h.state
+        .db
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO organizations (id, tenant_id, slug, display_name, status, created_at, updated_at)
+                 VALUES ('org-a', 'tenant-a', 'acme', 'Acme', 'active', 0, 0)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO organizations (id, tenant_id, slug, display_name, status, created_at, updated_at)
+                 VALUES ('org-b', 'tenant-b', 'beta', 'Beta', 'active', 0, 0)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO users (id, tenant_id, email, display_name, status, created_at, updated_at)
+                 VALUES ('u-admin', 'tenant-a', 'admin@acme.com', 'Admin', 'active', 0, 0)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO organization_memberships (id, tenant_id, organization_id, user_id, role, is_primary, created_at, updated_at)
+                 VALUES ('m-admin', 'tenant-a', 'org-a', 'u-admin', 'admin', 1, 0, 0)",
+                [],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("seed");
+
+    let mut cmd = cli();
+    apply_auth_env(&mut cmd);
+    cmd.args([
+        "--server",
+        &h.server_url,
+        "--json",
+        "--no-color",
+        "user",
+        "invite",
+        "x@beta.com",
+        "--org",
+        "beta",
+        "--role",
+        "user",
+    ]);
+    let (status, _stdout, stderr) = run(cmd);
+    assert!(!status.success(), "cross-org invite should fail");
+    assert!(stderr.contains("cross_tenant_denied"), "stderr={stderr}");
 }

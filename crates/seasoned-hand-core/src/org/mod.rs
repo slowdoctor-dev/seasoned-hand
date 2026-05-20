@@ -500,6 +500,10 @@ impl ProjectRoleOverrideStore {
 
 pub mod deactivation;
 pub use deactivation::{DeactivationError, DeactivationOutcome, UserDeactivationService};
+pub mod invitation;
+pub use invitation::{InvitationError, InvitationService, InviteOutcome, MembershipRow};
 
+#[cfg(test)]
+mod invitation_tests;
 #[cfg(test)]
 mod tests;

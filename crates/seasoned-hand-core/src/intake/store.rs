@@ -61,6 +61,10 @@ impl IntakeEventStore {
         let metadata_text = serde_json::to_string(&event.metadata)?;
         let id_clone = id.clone();
         let event = event.clone();
+        let tenant_id = event
+            .tenant_id
+            .clone()
+            .unwrap_or_else(|| "legacy-default".to_string());
         let res: Result<usize, rusqlite::Error> = self
             .pool
             .with_conn(move |conn| {
@@ -71,7 +75,7 @@ impl IntakeEventStore {
                      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)",
                     params![
                         id_clone,
-                        event.tenant_id,
+                        tenant_id,
                         event.channel,
                         event.intake_id,
                         event.brief_input,

@@ -53,6 +53,7 @@ use seasoned_hand_core::handoff::{HandoffRequest, TaskHandoffService};
 use seasoned_hand_core::intake::{IntakeEventStore, IntakeRouter};
 use seasoned_hand_core::llm::LlmClient;
 use seasoned_hand_core::notify::{NotificationsSentStore, NotifyConfig};
+use seasoned_hand_core::org::{InvitationError, InvitationService, InviteOutcome, MembershipRow};
 use seasoned_hand_core::plan::PlanManager;
 use seasoned_hand_core::project::{ProjectStore, TaskStore};
 use seasoned_hand_core::pubsub::RedisPool;
@@ -1527,6 +1528,17 @@ pub fn app(state: AppState) -> Router {
             with_auth(get(list_audit_handler), Action::AuditRead),
         )
         .route(
+            "/v1/organizations/:slug/users",
+            with_auth(get(list_org_users_handler), Action::MembershipManage),
+        )
+        .route(
+            "/v1/organizations/:slug/users",
+            with_auth(
+                axum::routing::post(post_org_invite_user_handler),
+                Action::MembershipManage,
+            ),
+        )
+        .route(
             "/v1/user-cost/reconcile",
             with_auth(
                 axum::routing::post(post_user_cost_reconcile_handler),
@@ -2639,6 +2651,12 @@ struct UserCostReconcileBody {
 }
 
 #[derive(Debug, Deserialize)]
+struct InviteUserBody {
+    email: String,
+    role: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct SopShareBody {
     user_email: String,
     permission: String,
@@ -2826,6 +2844,45 @@ async fn post_user_cost_reconcile_handler(
     Ok(Json(report))
 }
 
+async fn post_org_invite_user_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
+    Path(slug): Path<String>,
+    Json(body): Json<InviteUserBody>,
+) -> ApiResult<(StatusCode, Json<InviteOutcome>)> {
+    require_loopback(remote)?;
+    authorize_in_handler(Action::MembershipManage, &auth_ctx)?;
+    let service = InvitationService::new(
+        state.db.clone(),
+        AuditLogger::new(state.db.clone(), state.events.clone()),
+    );
+    let out = service
+        .invite_user(&auth_ctx, &slug, &body.email, &body.role)
+        .await
+        .map_err(map_invitation_error)?;
+    Ok((StatusCode::OK, Json(out)))
+}
+
+async fn list_org_users_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
+    Path(slug): Path<String>,
+) -> ApiResult<Json<Vec<MembershipRow>>> {
+    require_loopback(remote)?;
+    authorize_in_handler(Action::MembershipManage, &auth_ctx)?;
+    let service = InvitationService::new(
+        state.db.clone(),
+        AuditLogger::new(state.db.clone(), state.events.clone()),
+    );
+    let rows = service
+        .list_org_users(&auth_ctx, &slug)
+        .await
+        .map_err(map_invitation_error)?;
+    Ok(Json(rows))
+}
+
 fn parse_audit_action(value: &str) -> Option<seasoned_hand_core::audit::AuditAction> {
     use seasoned_hand_core::audit::AuditAction;
     match value {
@@ -2841,6 +2898,47 @@ fn parse_audit_action(value: &str) -> Option<seasoned_hand_core::audit::AuditAct
         "membership.update" => Some(AuditAction::MembershipUpdate),
         "event.raw_read" => Some(AuditAction::EventRawRead),
         _ => None,
+    }
+}
+
+fn map_invitation_error(err: InvitationError) -> ApiErrorResponse {
+    match err {
+        InvitationError::Auth(seasoned_hand_core::auth::AuthError::MissingTenantContext) => (
+            StatusCode::UNAUTHORIZED,
+            Json(ApiError {
+                error: "unauthorized_context".into(),
+            }),
+        ),
+        InvitationError::Auth(seasoned_hand_core::auth::AuthError::Unauthorized { .. }) => (
+            StatusCode::FORBIDDEN,
+            Json(ApiError {
+                error: "forbidden_action".into(),
+            }),
+        ),
+        InvitationError::OrganizationNotFound(_) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "organization_not_found".into(),
+            }),
+        ),
+        InvitationError::CrossTenantDenied => (
+            StatusCode::FORBIDDEN,
+            Json(ApiError {
+                error: "cross_tenant_denied".into(),
+            }),
+        ),
+        InvitationError::InvalidRole(_) => (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "invalid_role".into(),
+            }),
+        ),
+        InvitationError::Sqlite(_) | InvitationError::AuditWrite(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: "internal_error".into(),
+            }),
+        ),
     }
 }
 
@@ -3150,6 +3248,7 @@ struct CliIntakeAck {
 async fn post_intake_cli_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
     Query(q): Query<CliIntakeQuery>,
     Json(body): Json<CliIntakeBody>,
 ) -> Result<(StatusCode, Json<CliIntakeAck>), (StatusCode, Json<ApiError>)> {
@@ -3169,6 +3268,13 @@ async fn post_intake_cli_handler(
     }
 
     let intake_id = format!("{INTAKE_ID_PREFIX}{}", uuid::Uuid::new_v4());
+    let tenant_id = headers
+        .get("x-seasoned-hand-tenant-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("legacy-default")
+        .to_string();
 
     // Register the oneshot BEFORE handing the event to the router so a
     // very fast deliver() can't race past our pending slot.
@@ -3195,7 +3301,7 @@ async fn post_intake_cli_handler(
             metadata: serde_json::json!({}),
         }),
         metadata,
-        tenant_id: None,
+        tenant_id: Some(tenant_id),
         received_at: now_unix_micros(),
     };
 

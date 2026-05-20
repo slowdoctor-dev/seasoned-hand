@@ -59,6 +59,10 @@ impl DeliveryEventStore {
     pub async fn insert(&self, new: NewDeliveryEvent) -> Result<String, DeliveryStoreError> {
         let id = Uuid::new_v4().to_string();
         let target_text = serde_json::to_string(&new.target)?;
+        let tenant_id = new
+            .tenant_id
+            .clone()
+            .unwrap_or_else(|| "legacy-default".to_string());
         let id_clone = id.clone();
         let res: Result<usize, rusqlite::Error> = self
             .pool
@@ -70,7 +74,7 @@ impl DeliveryEventStore {
                      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     params![
                         id_clone,
-                        new.tenant_id,
+                        tenant_id,
                         new.task_id,
                         new.deliverable_id,
                         new.channel,

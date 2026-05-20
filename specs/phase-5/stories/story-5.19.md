@@ -1,6 +1,6 @@
 # Story 5.19 — User invitation CLI + provisioning
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 5.4, 5.10
 > **Phase**: 5

@@ -110,6 +110,22 @@ pub struct AuditListRow {
     pub created_at: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InviteUserResponse {
+    pub user_id: String,
+    pub display_name: String,
+    pub login_token: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OrgMemberRow {
+    pub user_id: String,
+    pub email: String,
+    pub display_name: String,
+    pub role: String,
+    pub status: String,
+}
+
 #[derive(Debug, Serialize)]
 struct SopShareBody<'a> {
     user_email: &'a str,
@@ -133,6 +149,12 @@ struct TaskHandoffBody<'a> {
 #[derive(Debug, Serialize)]
 struct UserCostReconcileBody<'a> {
     month_yyyymm: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct InviteUserBody<'a> {
+    email: &'a str,
+    role: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -274,6 +296,37 @@ impl ApiClient {
         let resp = self
             .with_auth_headers(self.inner.post(self.url("/v1/user-cost/reconcile")))
             .json(&UserCostReconcileBody { month_yyyymm })
+            .send()
+            .await?;
+        decode(resp).await
+    }
+
+    pub async fn invite_user(
+        &self,
+        organization_slug: &str,
+        email: &str,
+        role: &str,
+    ) -> Result<InviteUserResponse, ApiError> {
+        let resp = self
+            .with_auth_headers(
+                self.inner
+                    .post(self.url(&format!("/v1/organizations/{organization_slug}/users"))),
+            )
+            .json(&InviteUserBody { email, role })
+            .send()
+            .await?;
+        decode(resp).await
+    }
+
+    pub async fn list_org_users(
+        &self,
+        organization_slug: &str,
+    ) -> Result<Vec<OrgMemberRow>, ApiError> {
+        let resp = self
+            .with_auth_headers(
+                self.inner
+                    .get(self.url(&format!("/v1/organizations/{organization_slug}/users"))),
+            )
             .send()
             .await?;
         decode(resp).await
