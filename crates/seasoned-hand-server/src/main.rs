@@ -31,73 +31,12 @@ fn log_join_error(name: &str, result: Result<(), tokio::task::JoinError>) {
     }
 }
 
-fn parse_bool_strict(name: &str, raw: &str) -> Result<bool, String> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" => Ok(true),
-        "0" | "false" => Ok(false),
-        _ => Err(format!(
-            "{name} invalid boolean value '{raw}' (expected one of: 1, 0, true, false)"
-        )),
-    }
-}
-
-fn parse_u64_strict(name: &str, raw: &str) -> Result<u64, String> {
-    raw.trim()
-        .parse::<u64>()
-        .map_err(|_| format!("{name} invalid unsigned integer value '{raw}'"))
-}
-
-fn parse_u32_strict(name: &str, raw: &str) -> Result<u32, String> {
-    raw.trim()
-        .parse::<u32>()
-        .map_err(|_| format!("{name} invalid unsigned integer value '{raw}'"))
-}
-
-fn parse_f32_strict(name: &str, raw: &str) -> Result<f32, String> {
-    raw.trim()
-        .parse::<f32>()
-        .map_err(|_| format!("{name} invalid float value '{raw}'"))
-}
-
-fn env_bool_or_default<F>(lookup: &F, name: &str, default: bool) -> Result<bool, String>
-where
-    F: Fn(&str) -> Option<String>,
-{
-    match lookup(name) {
-        Some(raw) => parse_bool_strict(name, &raw),
-        None => Ok(default),
-    }
-}
-
-fn env_u64_or_default<F>(lookup: &F, name: &str, default: u64) -> Result<u64, String>
-where
-    F: Fn(&str) -> Option<String>,
-{
-    match lookup(name) {
-        Some(raw) => parse_u64_strict(name, &raw),
-        None => Ok(default),
-    }
-}
-
-fn env_u32_or_default<F>(lookup: &F, name: &str, default: u32) -> Result<u32, String>
-where
-    F: Fn(&str) -> Option<String>,
-{
-    match lookup(name) {
-        Some(raw) => parse_u32_strict(name, &raw),
-        None => Ok(default),
-    }
-}
-
-fn env_f32_or_default<F>(lookup: &F, name: &str, default: f32) -> Result<f32, String>
-where
-    F: Fn(&str) -> Option<String>,
-{
-    match lookup(name) {
-        Some(raw) => parse_f32_strict(name, &raw),
-        None => Ok(default),
-    }
-}
+// Story 5.22: strict-parse helpers moved to seasoned_hand_core::config::strict
+// so server, CLI, and any worker spawn point share one implementation.
+// Local re-imports keep the rest of main.rs reading the same.
+use seasoned_hand_core::config::strict::{
+    env_bool_or_default, env_f32_or_default, env_u32_or_default, env_u64_or_default,
+};
 
 fn load_curator_config_from_lookup<F>(lookup: &F) -> Result<Option<CuratorConfig>, String>
 where
@@ -298,9 +237,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let notify_config = std::sync::Arc::new(notify_config);
     state = state.with_notify_config(notify_config.clone());
 
-    let rollback_flag = std::env::var("SEASONED_HAND_ROLLBACK_ON_VERIFIER_FAIL")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+    // Story 5.22: strict-parse the verifier rollback flag so a
+    // typo doesn't silently flip a release-safety setting.
+    let rollback_flag = env_bool_or_default(
+        &|k| std::env::var(k).ok(),
+        "SEASONED_HAND_ROLLBACK_ON_VERIFIER_FAIL",
+        false,
+    )
+    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     state = state.with_rollback_on_verifier_fail(rollback_flag);
 
     // Phase 1 / story 1.9: when the verifier slot is enabled, load the
@@ -501,9 +445,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // `checkpoint_rollback_on_verifier_fail` (env-gated) is true.
         let rollback_handler = std::sync::Arc::new(ProductionRollbackHandler::new(state.clone()))
             as std::sync::Arc<dyn seasoned_hand_core::verifier::gate::RollbackHandler>;
-        let learning_enabled = std::env::var("SH_LEARNING_ENABLED")
-            .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
-            .unwrap_or(true);
+        // Story 5.22: strict bool parse for the learning gate.
+        let learning_enabled =
+            env_bool_or_default(&|k| std::env::var(k).ok(), "SH_LEARNING_ENABLED", true)
+                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
         let mut gate =
             VerifierGate::new(state.db.clone(), state.events.clone(), state.runner.clone())
                 .with_rollback(rollback_handler, state.checkpoint_rollback_on_verifier_fail);

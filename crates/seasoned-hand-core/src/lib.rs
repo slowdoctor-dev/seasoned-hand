@@ -9,6 +9,7 @@ pub mod browser;
 pub mod capability;
 pub mod channel;
 pub mod checkpoint;
+pub mod config;
 pub mod cost;
 pub mod curator;
 pub mod db;

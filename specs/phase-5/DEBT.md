@@ -13,9 +13,18 @@ Phase 5-specific shortcuts/deferrals during implementation.
 - **Phase 5 expectation**: close or re-baseline with measured relevance outcomes in multi-user
   corpus.
 
-### #91 Global config strict-parse harmonization (PARTIAL)
+### #91 Global config strict-parse harmonization (PARTIAL) — CLOSED 2026-05-21 via story 5.22
 - **Current state**: Curator scope closed in story 4.14; non-curator config families remain mixed.
 - **Phase 5 expectation**: close with global strict parse/fail-fast policy.
+- **Closed by**: story 5.22 lifted the strict-parse helpers
+  (`parse_bool_strict`, `parse_{u32,u64,f32}_strict`, `env_*_or_default`) out of
+  `crates/seasoned-hand-server/src/main.rs` into
+  `crates/seasoned-hand-core/src/config/strict.rs` so server + CLI + every worker
+  spawn share one implementation. The two non-curator typed flags that still used
+  permissive parses (`SEASONED_HAND_ROLLBACK_ON_VERIFIER_FAIL`, `SH_LEARNING_ENABLED`)
+  now go through `env_bool_or_default` and fail-fast at boot on invalid values.
+  7 core unit tests + 5 server integration tests + 3 CLI integration tests pin
+  the contract.
 
 ### #92 Adaptive auto-archive thresholds (H3)
 - **Current state**: Static per-project thresholds shipped; adaptive policy deferred.

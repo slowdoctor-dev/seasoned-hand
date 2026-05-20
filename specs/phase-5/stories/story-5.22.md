@@ -1,6 +1,6 @@
 # Story 5.22 — Global strict-config harmonization (closes DEBT #91)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 5.2
 > **Phase**: 5
