@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::auth::{Action, AuthContext, AuthError, AuthResource, authorize};
 use crate::db::DbPool;
+use crate::sharing::concurrency::{StaleRevision, check_precondition};
 use crate::time::now_micros;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +63,16 @@ pub enum SopShareError {
     UserNotFound(String),
     #[error("invalid permission in database: {0}")]
     InvalidPermission(String),
+    /// Story 5.21: optimistic concurrency precondition failed. The
+    /// caller's `expected_updated_at` no longer matches the live row;
+    /// payload carries the live revision metadata so the client can
+    /// refresh and retry.
+    #[error(
+        "stale_revision: current_updated_at={} current_revision_id={}",
+        .0.current_updated_at,
+        .0.current_revision_id
+    )]
+    StaleRevision(StaleRevision),
     #[error(transparent)]
     Db(#[from] rusqlite::Error),
 }
@@ -116,6 +127,7 @@ impl SopShareService {
         sop_id: &str,
         user_email: &str,
         permission: SopPermission,
+        expected_updated_at: Option<i64>,
     ) -> Result<SopShareRow, SopShareError> {
         self.authorize_share(auth, sop_id).await?;
         let tenant = auth.tenant_id.clone();
@@ -142,6 +154,23 @@ impl SopShareService {
                     )
                     .optional()?
                     .ok_or_else(|| SopShareError::UserNotFound(user_email.clone()))?;
+                // Story 5.21: optimistic concurrency. If a share row
+                // already exists for this (sop_id, subject_type, subject_id)
+                // triple, the caller's `expected_updated_at` must match
+                // the live row. New-row inserts skip the check (None or
+                // any value passes — there's no prior state to lose).
+                let existing: Option<(String, i64)> = conn
+                    .query_row(
+                        "SELECT id, updated_at FROM sop_shares
+                         WHERE sop_id = ? AND subject_type = 'user' AND subject_id = ?",
+                        params![sop_id, subject_id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                if let Some((row_id, current_updated_at)) = &existing {
+                    check_precondition(expected_updated_at, *current_updated_at, row_id)
+                        .map_err(SopShareError::StaleRevision)?;
+                }
                 let now = now_micros();
                 let id = Uuid::new_v4().to_string();
                 conn.execute(
@@ -210,6 +239,7 @@ impl SopShareService {
         auth: &AuthContext,
         sop_id: &str,
         user_email: &str,
+        expected_updated_at: Option<i64>,
     ) -> Result<bool, SopShareError> {
         self.authorize_share(auth, sop_id).await?;
         let tenant = auth.tenant_id.clone();
@@ -227,6 +257,21 @@ impl SopShareService {
                 let Some(subject_id) = subject_id else {
                     return Ok(false);
                 };
+                // Story 5.21: optimistic concurrency check. The share row
+                // must still match the caller's `expected_updated_at` (if
+                // supplied) before we delete it.
+                let existing: Option<(String, i64)> = conn
+                    .query_row(
+                        "SELECT id, updated_at FROM sop_shares
+                         WHERE sop_id = ? AND subject_type = 'user' AND subject_id = ?",
+                        params![sop_id, subject_id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                if let Some((row_id, current_updated_at)) = &existing {
+                    check_precondition(expected_updated_at, *current_updated_at, row_id)
+                        .map_err(SopShareError::StaleRevision)?;
+                }
                 let n = conn.execute(
                     "DELETE FROM sop_shares
                      WHERE sop_id = ? AND subject_type = 'user' AND subject_id = ?",
@@ -445,6 +490,7 @@ mod tests {
                 "sop-1",
                 "viewer@acme.dev",
                 SopPermission::Owner,
+                None,
             )
             .await
             .expect_err("viewer should not escalate");
@@ -465,6 +511,7 @@ mod tests {
                 "sop-1",
                 "viewer@acme.dev",
                 SopPermission::Editor,
+                None,
             )
             .await
             .expect("admin share");
@@ -519,6 +566,7 @@ mod tests {
                 "sop-1",
                 "viewer@acme.dev",
                 SopPermission::Viewer,
+                None,
             )
             .await
             .expect("share");
@@ -532,5 +580,90 @@ mod tests {
         );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].sop_id, "sop-1");
+    }
+
+    // --- Story 5.21: optimistic concurrency on re-share/unshare -------
+
+    #[tokio::test]
+    async fn concurrent_share_with_stale_revision_fails() {
+        // Two admins race to re-share the same SOP. Admin A sees the
+        // current `updated_at` and submits a permission change. Admin
+        // B does the same in parallel and lands first. When Admin A's
+        // request hits with its now-stale `expected_updated_at`, the
+        // service rejects with StaleRevision carrying the live row
+        // metadata so Admin A can refresh and retry.
+        let pool = open_pool().await;
+        seed(&pool).await;
+        let service = SopShareService::new(pool.clone());
+        // Seed an initial share row.
+        let initial = service
+            .share(
+                &ctx(Role::Admin, "u-admin"),
+                "sop-1",
+                "viewer@acme.dev",
+                SopPermission::Viewer,
+                None,
+            )
+            .await
+            .expect("initial share");
+        // Admin B beats Admin A to the punch.
+        service
+            .share(
+                &ctx(Role::Admin, "u-admin"),
+                "sop-1",
+                "viewer@acme.dev",
+                SopPermission::Editor,
+                Some(initial.updated_at),
+            )
+            .await
+            .expect("admin B re-share");
+        // Admin A now retries with the stale precondition.
+        let err = service
+            .share(
+                &ctx(Role::Admin, "u-admin"),
+                "sop-1",
+                "viewer@acme.dev",
+                SopPermission::Owner,
+                Some(initial.updated_at),
+            )
+            .await
+            .expect_err("admin A must see stale_revision");
+        match err {
+            SopShareError::StaleRevision(stale) => {
+                assert_ne!(stale.current_updated_at, initial.updated_at);
+                assert!(!stale.current_revision_id.is_empty());
+            }
+            other => panic!("expected StaleRevision, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn share_with_none_precondition_skips_check() {
+        // Backward-compat: callers who omit `expected_updated_at` get
+        // last-writer-wins semantics (no precondition). Required for
+        // CLI/API parity with pre-5.21 clients.
+        let pool = open_pool().await;
+        seed(&pool).await;
+        let service = SopShareService::new(pool);
+        service
+            .share(
+                &ctx(Role::Admin, "u-admin"),
+                "sop-1",
+                "viewer@acme.dev",
+                SopPermission::Viewer,
+                None,
+            )
+            .await
+            .expect("first share");
+        service
+            .share(
+                &ctx(Role::Admin, "u-admin"),
+                "sop-1",
+                "viewer@acme.dev",
+                SopPermission::Editor,
+                None,
+            )
+            .await
+            .expect("second share — no precondition, must succeed");
     }
 }

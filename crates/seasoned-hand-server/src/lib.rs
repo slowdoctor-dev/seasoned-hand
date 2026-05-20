@@ -2660,11 +2660,19 @@ struct InviteUserBody {
 struct SopShareBody {
     user_email: String,
     permission: String,
+    /// Story 5.21: optimistic concurrency precondition. When present
+    /// and the live share row's `updated_at` doesn't match, the
+    /// response is `409 stale_revision`.
+    #[serde(default)]
+    expected_updated_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
 struct SopUnshareBody {
     user_email: String,
+    /// Story 5.21: optimistic concurrency precondition (see SopShareBody).
+    #[serde(default)]
+    expected_updated_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3069,7 +3077,13 @@ async fn post_sop_share_handler(
     let permission = parse_sop_permission(&body.permission)?;
     let service = SopShareService::new(state.db.clone());
     let row = service
-        .share(&auth_ctx, &sop_id, &body.user_email, permission)
+        .share(
+            &auth_ctx,
+            &sop_id,
+            &body.user_email,
+            permission,
+            body.expected_updated_at,
+        )
         .await
         .map_err(map_sop_share_error)?;
     Ok((StatusCode::OK, Json(SopShareDto::from(row))))
@@ -3084,7 +3098,12 @@ async fn delete_sop_share_handler(
     authorize_in_handler(Action::SopShare, &auth_ctx)?;
     let service = SopShareService::new(state.db.clone());
     let deleted = service
-        .unshare(&auth_ctx, &sop_id, &body.user_email)
+        .unshare(
+            &auth_ctx,
+            &sop_id,
+            &body.user_email,
+            body.expected_updated_at,
+        )
         .await
         .map_err(map_sop_share_error)?;
     if !deleted {
@@ -3157,6 +3176,12 @@ fn map_sop_share_error(err: SopShareError) -> ApiErrorResponse {
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
                 error: "invalid_permission_db".into(),
+            }),
+        ),
+        SopShareError::StaleRevision(_) => (
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "stale_revision".into(),
             }),
         ),
         SopShareError::Db(error) => {

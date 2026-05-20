@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::auth::{Action, AuthContext, AuthError, AuthResource, authorize};
 use crate::db::DbPool;
+use crate::sharing::concurrency::{StaleRevision, check_precondition};
 use crate::time::now_micros;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +93,13 @@ pub enum PlaybookShareError {
     InvalidPermission(String),
     #[error("invalid visibility_state in database: {0}")]
     InvalidVisibilityState(String),
+    /// Story 5.21: optimistic concurrency precondition failed.
+    #[error(
+        "stale_revision: current_updated_at={} current_revision_id={}",
+        .0.current_updated_at,
+        .0.current_revision_id
+    )]
+    StaleRevision(StaleRevision),
     #[error(transparent)]
     Db(#[from] rusqlite::Error),
 }
@@ -146,6 +154,7 @@ impl PlaybookShareService {
         playbook_id: &str,
         user_email: &str,
         permission: PlaybookPermission,
+        expected_updated_at: Option<i64>,
     ) -> Result<PlaybookShareRow, PlaybookShareError> {
         self.authorize_share(auth, playbook_id).await?;
         let tenant = auth.tenant_id.clone();
@@ -172,6 +181,19 @@ impl PlaybookShareService {
                     )
                     .optional()?
                     .ok_or_else(|| PlaybookShareError::UserNotFound(user_email.clone()))?;
+                // Story 5.21: optimistic concurrency for re-shares.
+                let existing: Option<(String, i64)> = conn
+                    .query_row(
+                        "SELECT id, updated_at FROM playbook_shares
+                         WHERE playbook_id = ? AND subject_type = 'user' AND subject_id = ?",
+                        params![playbook_id, subject_id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                if let Some((row_id, current_updated_at)) = &existing {
+                    check_precondition(expected_updated_at, *current_updated_at, row_id)
+                        .map_err(PlaybookShareError::StaleRevision)?;
+                }
                 let now = now_micros();
                 let id = Uuid::new_v4().to_string();
                 conn.execute(
@@ -245,6 +267,7 @@ impl PlaybookShareService {
         auth: &AuthContext,
         playbook_id: &str,
         user_email: &str,
+        expected_updated_at: Option<i64>,
     ) -> Result<bool, PlaybookShareError> {
         self.authorize_share(auth, playbook_id).await?;
         let tenant = auth.tenant_id.clone();
@@ -262,6 +285,19 @@ impl PlaybookShareService {
                 let Some(subject_id) = subject_id else {
                     return Ok(false);
                 };
+                // Story 5.21: stale-revision precondition for deletes.
+                let existing: Option<(String, i64)> = conn
+                    .query_row(
+                        "SELECT id, updated_at FROM playbook_shares
+                         WHERE playbook_id = ? AND subject_type = 'user' AND subject_id = ?",
+                        params![playbook_id, subject_id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                if let Some((row_id, current_updated_at)) = &existing {
+                    check_precondition(expected_updated_at, *current_updated_at, row_id)
+                        .map_err(PlaybookShareError::StaleRevision)?;
+                }
                 let n = conn.execute(
                     "DELETE FROM playbook_shares
                      WHERE playbook_id = ? AND subject_type = 'user' AND subject_id = ?",
@@ -384,6 +420,7 @@ impl PlaybookShareService {
         playbook_id: &str,
         user_email: &str,
         new_state: VisibilityState,
+        expected_updated_at: Option<i64>,
     ) -> Result<bool, PlaybookShareError> {
         self.authorize_share(auth, playbook_id).await?;
         let tenant = auth.tenant_id.clone();
@@ -403,6 +440,22 @@ impl PlaybookShareService {
                 let Some(subject_id) = subject_id else {
                     return Ok(false);
                 };
+                // Story 5.21: visibility_state flips are the load-bearing
+                // concurrent path (curator auto-share vs admin
+                // review-queue approve). The precondition must match the
+                // live row's updated_at before we flip the state.
+                let existing: Option<(String, i64)> = conn
+                    .query_row(
+                        "SELECT id, updated_at FROM playbook_shares
+                         WHERE playbook_id = ? AND subject_type = 'user' AND subject_id = ?",
+                        params![playbook_id, subject_id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                if let Some((row_id, current_updated_at)) = &existing {
+                    check_precondition(expected_updated_at, *current_updated_at, row_id)
+                        .map_err(PlaybookShareError::StaleRevision)?;
+                }
                 let n = conn.execute(
                     "UPDATE playbook_shares
                      SET visibility_state = ?, updated_at = ?
@@ -591,6 +644,7 @@ mod tests {
                 "pb-1",
                 "viewer@acme.dev",
                 PlaybookPermission::Owner,
+                None,
             )
             .await
             .expect_err("viewer should not escalate");
@@ -611,6 +665,7 @@ mod tests {
                 "pb-1",
                 "viewer@acme.dev",
                 PlaybookPermission::Editor,
+                None,
             )
             .await
             .expect("admin share");
@@ -666,6 +721,7 @@ mod tests {
                 "pb-1",
                 "viewer@acme.dev",
                 PlaybookPermission::Viewer,
+                None,
             )
             .await
             .expect("share");
@@ -706,5 +762,59 @@ mod tests {
             .await
             .expect("auto-share low-confidence");
         assert_eq!(state, VisibilityState::Review);
+    }
+
+    // --- Story 5.21: optimistic concurrency on visibility_state -------
+
+    #[tokio::test]
+    async fn concurrent_visibility_state_flip_with_stale_revision_fails() {
+        // Curator auto-share races admin manual review flip. Curator
+        // flips to 'shared' first; admin's parallel attempt to flip to
+        // 'suspended' with the now-stale `expected_updated_at` rejects
+        // with StaleRevision, surfacing the live row metadata so the
+        // admin can refresh + retry. This is the load-bearing
+        // concurrent path per arch §6.2 / §11.
+        let pool = open_pool().await;
+        seed(&pool).await;
+        let service = PlaybookShareService::new(pool.clone());
+        // Seed an initial share row owned by viewer@acme.dev.
+        let initial = service
+            .share(
+                &ctx(Role::Admin, "u-admin"),
+                "pb-1",
+                "viewer@acme.dev",
+                PlaybookPermission::Viewer,
+                None,
+            )
+            .await
+            .expect("initial share");
+        // Concurrent flip lands first.
+        service
+            .update_visibility_state(
+                &ctx(Role::Admin, "u-admin"),
+                "pb-1",
+                "viewer@acme.dev",
+                VisibilityState::Shared,
+                Some(initial.updated_at),
+            )
+            .await
+            .expect("first flip");
+        // Second flip with the stale precondition must fail.
+        let err = service
+            .update_visibility_state(
+                &ctx(Role::Admin, "u-admin"),
+                "pb-1",
+                "viewer@acme.dev",
+                VisibilityState::Suspended,
+                Some(initial.updated_at),
+            )
+            .await
+            .expect_err("stale flip must reject");
+        match err {
+            PlaybookShareError::StaleRevision(stale) => {
+                assert_ne!(stale.current_updated_at, initial.updated_at);
+            }
+            other => panic!("expected StaleRevision, got {other:?}"),
+        }
     }
 }

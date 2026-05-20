@@ -1,6 +1,6 @@
 # Story 5.21 — Optimistic concurrency for shared artifacts
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 5.7, 5.8
 > **Phase**: 5
