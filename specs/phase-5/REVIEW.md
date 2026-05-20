@@ -429,3 +429,57 @@ acceptance criteria and refs in sharing stories:
 
 Two M-severity mapping gaps were fixed inline. PM pass is now consistent on F/NFR/debt/harness
 coverage and ready for execute-story dispatch (starting with 5.2 as planned).
+
+---
+
+## REVIEW iter-5 (Claude, 2026-05-20) — PM pass
+
+### A) Grade Codex iter-4 findings (P5-PM-IT2-F1..F2)
+
+Verdict: **2/2 ACK**.
+
+- `P5-PM-IT2-F1` (M, F-5.23 mapping gap): **ACK**. CLI surfaces were spread across 5.7/5.8/5.11/
+  5.19 implicitly but `F-5.23` wasn't in any story's refs. Codex correctly added the refs to all
+  four files. No code-content change needed because the CLI commands ARE in the acceptance
+  criteria already.
+- `P5-PM-IT2-F2` (M, NFR-5.5 mapping gap): **ACK**. NFR-5.5 (5-second p95 share-visibility
+  consistency) had no story carrying it. Codex correctly added an acceptance criterion to 5.7
+  ("Shared-permission visibility propagates within 5 seconds p95...") and 5.8
+  (analogous for playbook). NFR carrier now exists.
+
+### B) Independent re-audit (post-iter-4)
+
+Coverage scan: walked every F-5.* (1..24) and NFR-5.* (1..8) and grep'd story file refs.
+Every requirement now has ≥1 story ref. One additional residual surfaced:
+
+| # | Severity | Category | Title | Status |
+|---|---|---|---|---|
+| P5-PM-IT3-F1 | M | coverage mapping | F-5.13 (Session/project/task query scoping) only referenced session_search (5.15); task/project list-endpoint retrofit had no story | fixed inline |
+
+### P5-PM-IT3-F1 (M, FIXED) — F-5.13 task/project list-endpoint coverage
+
+**Evidence** — `grep -l "F-5\.13\b" specs/phase-5/stories/*.md` returned only `story-5.15.md`
+(the session_search RBAC predicates story). But F-5.13 says *"All list/search APIs must enforce
+org + role + project scope filters by default; no unscoped global list endpoints in multi-user
+mode."* — that's broader than session search. Phase 5 must retrofit the existing
+`GET /v1/tasks`, `GET /v1/projects`, `GET /v1/sessions`, `GET /v1/events/...`,
+`GET /v1/deliverables` handlers to add `WHERE tenant_id = :ctx.tenant_id` to their underlying
+queries. No story owned this until now.
+
+**Fix applied** — story 5.5 (HTTP middleware RBAC enforcement) gained:
+- a new acceptance criterion enumerating the affected list endpoints + the required WHERE clause;
+- a forged-tenant integration test to prove the scoping holds;
+- `F-5.13` added to the Refs block.
+
+5.5 is the right home because the AuthContext lands in handler scope via middleware, so the
+retrofit is a per-handler edit gated by the same context.
+
+### Iter-5 conclusion
+
+One M-severity coverage gap fixed inline. PM pass is now consistent on **all 24 F-5.* + 8 NFR-5.*
++ 8 carry-forward DEBT items + 8 architecture §15 harnesses**. 
+
+Hand-off to Codex iter-6 (saturation check): grade `P5-PM-IT3-F1` ACK/PUSHBACK/EXPAND and do
+one more independent coverage probe. If iter-6 lands with 0 new findings, PM pass saturates
+and GSD execute-story dispatch starts with **story 5.2** (the V013 atomic slice, which I take
+per the iter-1 dispatch contract).
