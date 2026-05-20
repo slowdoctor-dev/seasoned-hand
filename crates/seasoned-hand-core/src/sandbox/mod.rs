@@ -378,6 +378,7 @@ impl SandboxClient {
     /// rollback attempt proceed (a real revert failure will surface
     /// downstream as `revert_failed`).
     pub async fn is_paused(&self, session_id: &str) -> Result<bool, SandboxError> {
+        require_safe_session_id(session_id)?;
         let name = container_name(session_id);
         match self.docker.inspect_container(&name, None).await {
             Ok(inspect) => Ok(inspect
@@ -390,6 +391,7 @@ impl SandboxClient {
     }
 
     pub async fn pause(&self, session_id: &str) -> Result<(), SandboxError> {
+        require_safe_session_id(session_id)?;
         let name = container_name(session_id);
         let inspect = self.docker.inspect_container(&name, None).await?;
         if let Some(state) = &inspect.state
@@ -402,6 +404,7 @@ impl SandboxClient {
     }
 
     pub async fn resume(&self, session_id: &str) -> Result<(), SandboxError> {
+        require_safe_session_id(session_id)?;
         let name = container_name(session_id);
         let inspect = self.docker.inspect_container(&name, None).await?;
         if let Some(state) = &inspect.state
@@ -540,6 +543,7 @@ impl SandboxClient {
 
     /// Idempotent: a missing container is treated as success.
     pub async fn destroy(&self, session_id: &str) -> Result<(), SandboxError> {
+        require_safe_session_id(session_id)?;
         let name = container_name(session_id);
         let res = self
             .docker

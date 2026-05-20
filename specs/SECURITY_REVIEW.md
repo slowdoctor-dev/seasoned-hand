@@ -147,3 +147,29 @@ load-bearing items. Security hardening loop saturates here.
 
 Codex review of this audit trail can land once the 5-day rate-limit
 recovers; the loop is closed from Claude's side.
+
+---
+
+## Codex re-audit addendum — 2026-05-20
+
+Performed commit-truth review against `79d4c9e` and `f9d2a57` plus current
+`sandbox/mod.rs`.
+
+- `F1` ACK
+- `F2` ACK
+- `F3` ACK
+- `F4` EXPAND
+
+`F4` correctly added defense-in-depth at `create`, `register_existing`, and
+TTL fallback cleanup. One residual sink class remained: container-name paths
+in `is_paused`, `pause`, `resume`, and `destroy` still accepted unchecked
+`session_id`.
+
+**Codex iter-1 finding (L, fixed inline)**  
+Added `require_safe_session_id(session_id)?` to those four methods so the
+"all sandbox sinks validate session_id" claim now holds.
+
+Evidence:
+- code: `crates/seasoned-hand-core/src/sandbox/mod.rs`
+- tests: `sandbox::tests::is_safe_session_id_accepts_and_rejects`,
+  `sandbox::tests::require_safe_session_id_returns_invalid_workspace`
