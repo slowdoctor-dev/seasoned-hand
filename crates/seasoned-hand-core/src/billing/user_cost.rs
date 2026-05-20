@@ -1,15 +1,19 @@
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use rusqlite::params;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::db::DbPool;
+use crate::events::{EventStore, EventType, NewEvent, sqlite::SqliteEventStore};
 use crate::time::now_micros;
 
 /// Default cadence when `SH_USER_COST_INTERVAL_SEC` is unset.
 pub const DEFAULT_USER_COST_INTERVAL_SECS: u64 = 3600;
+pub const DEFAULT_USER_COST_RECONCILE_INTERVAL_SECS: u64 = 24 * 3600;
 
 /// Sentinel constants — match V013 bootstrap inserts so unattributable
 /// sessions still produce a ledger row instead of silently dropping.
@@ -23,6 +27,12 @@ const SENTINEL_USER: &str = "user-legacy-admin";
 #[derive(Clone)]
 pub struct NearlineWriter {
     db: DbPool,
+}
+
+#[derive(Clone)]
+pub struct ReconciliationJob {
+    db: DbPool,
+    events: std::sync::Arc<SqliteEventStore>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +50,35 @@ pub struct FlushReport {
 pub enum NearlineWriterError {
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
+}
+
+#[derive(Debug, Error)]
+pub enum ReconciliationError {
+    #[error("sqlite: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    #[error("event store: {0}")]
+    Event(#[from] crate::events::EventError),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DriftFinding {
+    pub tenant_id: String,
+    pub user_id: String,
+    pub month_yyyymm: String,
+    pub expected_cost_cents: i64,
+    pub observed_cost_cents: i64,
+    pub delta_pct: f64,
+    pub expected_session_count: i64,
+    pub observed_session_count: i64,
+    pub expected_tool_calls: i64,
+    pub observed_tool_calls: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReconciliationReport {
+    pub rows_checked: usize,
+    pub drifted_rows: usize,
+    pub drifts: Vec<DriftFinding>,
 }
 
 #[derive(Debug, Clone)]
@@ -202,4 +241,269 @@ impl NearlineWriter {
             }
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ReconcileKey {
+    tenant_id: String,
+    user_id: String,
+    month_yyyymm: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReconcileMetrics {
+    cost_cents: i64,
+    session_count: i64,
+    tool_calls: i64,
+}
+
+impl ReconciliationJob {
+    pub fn new(db: DbPool, events: std::sync::Arc<SqliteEventStore>) -> Self {
+        Self { db, events }
+    }
+
+    pub async fn run(
+        &self,
+        month_yyyymm: &str,
+    ) -> Result<ReconciliationReport, ReconciliationError> {
+        let month = month_yyyymm.to_string();
+        let expected = self.expected_for_month(&month).await?;
+        let observed = self.observed_for_month(&month).await?;
+
+        let mut keys: HashSet<ReconcileKey> = expected.keys().cloned().collect();
+        keys.extend(observed.keys().cloned());
+
+        let rows_checked = keys.len();
+        let mut drifts = Vec::new();
+        for key in keys {
+            let expected_metrics = expected.get(&key).cloned().unwrap_or(ReconcileMetrics {
+                cost_cents: 0,
+                session_count: 0,
+                tool_calls: 0,
+            });
+            let observed_metrics = observed.get(&key).cloned().unwrap_or(ReconcileMetrics {
+                cost_cents: 0,
+                session_count: 0,
+                tool_calls: 0,
+            });
+            let delta_pct = delta_pct(expected_metrics.cost_cents, observed_metrics.cost_cents);
+            if is_drift(
+                expected_metrics.cost_cents,
+                observed_metrics.cost_cents,
+                delta_pct,
+            ) {
+                let finding = DriftFinding {
+                    tenant_id: key.tenant_id.clone(),
+                    user_id: key.user_id.clone(),
+                    month_yyyymm: key.month_yyyymm.clone(),
+                    expected_cost_cents: expected_metrics.cost_cents,
+                    observed_cost_cents: observed_metrics.cost_cents,
+                    delta_pct,
+                    expected_session_count: expected_metrics.session_count,
+                    observed_session_count: observed_metrics.session_count,
+                    expected_tool_calls: expected_metrics.tool_calls,
+                    observed_tool_calls: observed_metrics.tool_calls,
+                };
+                self.emit_drift_event(&finding).await?;
+                drifts.push(finding);
+            }
+        }
+        Ok(ReconciliationReport {
+            rows_checked,
+            drifted_rows: drifts.len(),
+            drifts,
+        })
+    }
+
+    pub async fn run_daily(self, interval: Duration, shutdown: CancellationToken) {
+        let mut ticker = tokio::time::interval(interval);
+        ticker.tick().await;
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => break,
+                _ = ticker.tick() => {
+                    match self.current_and_previous_months().await {
+                        Ok((current, previous)) => {
+                            for month in [previous, current] {
+                                match self.run(&month).await {
+                                    Ok(report) => tracing::debug!(
+                                        month_yyyymm = %month,
+                                        rows_checked = report.rows_checked,
+                                        drifted_rows = report.drifted_rows,
+                                        "user_cost reconciliation run ok",
+                                    ),
+                                    Err(error) => tracing::warn!(
+                                        month_yyyymm = %month,
+                                        %error,
+                                        "user_cost reconciliation run failed",
+                                    ),
+                                }
+                            }
+                        }
+                        Err(error) => tracing::warn!(%error, "user_cost reconciliation month-resolve failed"),
+                    }
+                }
+            }
+        }
+    }
+
+    async fn current_and_previous_months(&self) -> Result<(String, String), ReconciliationError> {
+        let now = now_micros();
+        let tuple = self
+            .db
+            .with_conn(move |conn| {
+                conn.query_row(
+                    "SELECT
+                        strftime('%Y%m', CAST(? AS INTEGER) / 1000000, 'unixepoch'),
+                        strftime('%Y%m', CAST(? AS INTEGER) / 1000000, 'unixepoch', 'start of month', '-1 month')",
+                    params![now, now],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
+            })
+            .await?;
+        Ok(tuple)
+    }
+
+    async fn expected_for_month(
+        &self,
+        month_yyyymm: &str,
+    ) -> Result<HashMap<ReconcileKey, ReconcileMetrics>, ReconciliationError> {
+        let month = month_yyyymm.to_string();
+        let rows = self
+            .db
+            .with_conn(move |conn| {
+                let mut stmt = conn.prepare(
+                    "WITH session_buckets AS (
+                       SELECT
+                         COALESCE(p.tenant_id, t.tenant_id, ?) AS tenant_id,
+                         COALESCE(s.user_id, ?) AS user_id,
+                         strftime('%Y%m',
+                                  CAST(s.updated_at AS INTEGER) / 1000000,
+                                  'unixepoch') AS month_yyyymm,
+                         s.cost_cents,
+                         s.tool_calls
+                       FROM sessions s
+                       LEFT JOIN tasks t ON t.id = s.task_id
+                       LEFT JOIN projects p
+                         ON p.id = COALESCE(t.project_id, s.project_id)
+                       WHERE s.state IN ('FINISHED','ERROR')
+                     )
+                     SELECT tenant_id, user_id, month_yyyymm,
+                            COUNT(*) AS session_count,
+                            COALESCE(SUM(tool_calls), 0) AS tool_calls,
+                            COALESCE(SUM(cost_cents), 0) AS cost_cents
+                     FROM session_buckets
+                     WHERE month_yyyymm = ?
+                     GROUP BY tenant_id, user_id, month_yyyymm",
+                )?;
+                let rows = stmt
+                    .query_map(params![SENTINEL_TENANT, SENTINEL_USER, month], |r| {
+                        Ok((
+                            ReconcileKey {
+                                tenant_id: r.get(0)?,
+                                user_id: r.get(1)?,
+                                month_yyyymm: r.get(2)?,
+                            },
+                            ReconcileMetrics {
+                                session_count: r.get(3)?,
+                                tool_calls: r.get(4)?,
+                                cost_cents: r.get(5)?,
+                            },
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<Vec<(ReconcileKey, ReconcileMetrics)>, rusqlite::Error>(rows)
+            })
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    async fn observed_for_month(
+        &self,
+        month_yyyymm: &str,
+    ) -> Result<HashMap<ReconcileKey, ReconcileMetrics>, ReconciliationError> {
+        let month = month_yyyymm.to_string();
+        let rows = self
+            .db
+            .with_conn(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT tenant_id, user_id, month_yyyymm, session_count, tool_calls, cost_cents
+                     FROM user_cost_ledger
+                     WHERE month_yyyymm = ?",
+                )?;
+                let rows = stmt
+                    .query_map(params![month], |r| {
+                        Ok((
+                            ReconcileKey {
+                                tenant_id: r.get(0)?,
+                                user_id: r.get(1)?,
+                                month_yyyymm: r.get(2)?,
+                            },
+                            ReconcileMetrics {
+                                session_count: r.get(3)?,
+                                tool_calls: r.get(4)?,
+                                cost_cents: r.get(5)?,
+                            },
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<Vec<(ReconcileKey, ReconcileMetrics)>, rusqlite::Error>(rows)
+            })
+            .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    async fn emit_drift_event(&self, finding: &DriftFinding) -> Result<(), ReconciliationError> {
+        let session_id = format!("audit:{}", finding.tenant_id);
+        self.ensure_session(&session_id).await?;
+        self.events
+            .append(NewEvent {
+                session_id,
+                event_type: EventType::Misc,
+                source: "user_cost_reconciliation".to_string(),
+                data: serde_json::json!({
+                    "kind": "user_cost_reconciliation_drift",
+                    "tenant_id": finding.tenant_id,
+                    "user_id": finding.user_id,
+                    "month_yyyymm": finding.month_yyyymm,
+                    "expected_cost_cents": finding.expected_cost_cents,
+                    "observed_cost_cents": finding.observed_cost_cents,
+                    "delta_pct": finding.delta_pct,
+                    "expected_session_count": finding.expected_session_count,
+                    "observed_session_count": finding.observed_session_count,
+                    "expected_tool_calls": finding.expected_tool_calls,
+                    "observed_tool_calls": finding.observed_tool_calls,
+                }),
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn ensure_session(&self, session_id: &str) -> Result<(), ReconciliationError> {
+        let session_id = session_id.to_string();
+        let now = now_micros();
+        self.db
+            .with_conn(move |conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO sessions (id, created_at, updated_at, state)
+                     VALUES (?, ?, ?, 'IDLE')",
+                    params![session_id, now, now],
+                )?;
+                Ok::<(), rusqlite::Error>(())
+            })
+            .await?;
+        Ok(())
+    }
+}
+
+fn delta_pct(expected: i64, observed: i64) -> f64 {
+    if expected == 0 {
+        if observed == 0 { 0.0 } else { 1.0 }
+    } else {
+        ((expected - observed).abs() as f64) / (expected as f64)
+    }
+}
+
+fn is_drift(expected: i64, observed: i64, delta_pct: f64) -> bool {
+    (expected == 0 && observed > 0) || delta_pct > 0.005
 }

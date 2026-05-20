@@ -728,3 +728,65 @@ async fn cli_init_creates_dirs() {
     let (status, _, stderr) = run(cmd);
     assert!(status.success(), "second init still 0; stderr: {stderr}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_user_cost_reconcile_smoke() {
+    let h = boot().await;
+    h.state
+        .db
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO organizations (id, tenant_id, slug, display_name, status, created_at, updated_at)
+                 VALUES ('org-a', 'tenant-a', 'org-a', 'Org A', 'active', 0, 0)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO users (id, tenant_id, email, display_name, status, created_at, updated_at)
+                 VALUES ('u-admin', 'tenant-a', 'admin@example.com', 'Admin', 'active', 0, 0)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO organization_memberships (id, tenant_id, organization_id, user_id, role, is_primary, created_at, updated_at)
+                 VALUES ('mem-a', 'tenant-a', 'org-a', 'u-admin', 'admin', 1, 0, 0)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO projects (id, tenant_id, title, status, created_at, updated_at)
+                 VALUES ('proj-a', 'tenant-a', 'P', 'active', 0, 0)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO tasks (id, project_id, tenant_id, title, status, created_at, updated_at)
+                 VALUES ('task-a', 'proj-a', 'tenant-a', 'T', 'Completed', 0, 0)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO sessions (id, created_at, updated_at, state, project_id, user_id, task_id, cost_cents, tool_calls)
+                 VALUES ('sess-a', 1747296000000000, 1747296000000000, 'FINISHED', 'proj-a', 'u-admin', 'task-a', 120, 4)",
+                [],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("seed");
+    let writer = seasoned_hand_core::billing::NearlineWriter::new(h.state.db.clone());
+    writer.flush().await.expect("flush");
+
+    let mut cmd = cli();
+    apply_auth_env(&mut cmd);
+    cmd.args([
+        "--server",
+        &h.server_url,
+        "--json",
+        "--no-color",
+        "user-cost",
+        "reconcile",
+        "--month",
+        "2025-05",
+    ]);
+    let (status, stdout, stderr) = run(cmd);
+    assert!(status.success(), "reconcile exits 0; stderr: {stderr}");
+    let report: Value = serde_json::from_str(&stdout).expect("reconcile json");
+    assert!(report["rows_checked"].as_u64().is_some());
+    assert!(report["drifted_rows"].as_u64().is_some());
+}

@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::db::{self, DbPool};
+use crate::events::{EventQuery, EventStore, EventType, sqlite::SqliteEventStore};
 use rusqlite::params;
 
 async fn setup() -> DbPool {
@@ -360,4 +361,109 @@ async fn flush_records_event_watermark() {
         .await
         .unwrap();
     assert_eq!(stored, report.high_watermark_event_id);
+}
+
+#[tokio::test]
+async fn recomputes_match_when_no_drift() {
+    let pool = setup().await;
+    insert_session(
+        &pool,
+        "sess-r1",
+        Some("user-a"),
+        Some("task-a"),
+        Some("proj-a"),
+        MAY_2026_MICROS,
+        150,
+        3,
+        "FINISHED",
+    )
+    .await;
+    let writer = NearlineWriter::new(pool.clone());
+    writer.flush().await.unwrap();
+
+    let events = std::sync::Arc::new(SqliteEventStore::new(pool.clone()));
+    let job = ReconciliationJob::new(pool, events);
+    let report = job.run("202605").await.unwrap();
+    assert_eq!(report.drifted_rows, 0);
+    assert!(report.drifts.is_empty());
+}
+
+#[tokio::test]
+async fn detects_cost_drift() {
+    let pool = setup().await;
+    insert_session(
+        &pool,
+        "sess-r2",
+        Some("user-a"),
+        Some("task-a"),
+        Some("proj-a"),
+        MAY_2026_MICROS,
+        200,
+        4,
+        "FINISHED",
+    )
+    .await;
+    let writer = NearlineWriter::new(pool.clone());
+    writer.flush().await.unwrap();
+    pool.with_conn(|conn| {
+        conn.execute(
+            "UPDATE user_cost_ledger SET cost_cents = 100
+             WHERE tenant_id = 'tenant-a' AND user_id = 'user-a' AND month_yyyymm = '202605'",
+            [],
+        )?;
+        Ok::<(), rusqlite::Error>(())
+    })
+    .await
+    .unwrap();
+
+    let events = std::sync::Arc::new(SqliteEventStore::new(pool.clone()));
+    let job = ReconciliationJob::new(pool.clone(), events.clone());
+    let report = job.run("202605").await.unwrap();
+    assert_eq!(report.drifted_rows, 1);
+    let drift = &report.drifts[0];
+    assert_eq!(drift.expected_cost_cents, 200);
+    assert_eq!(drift.observed_cost_cents, 100);
+    assert!((drift.delta_pct - 0.5).abs() < f64::EPSILON);
+
+    let audit_events = events
+        .query(
+            "audit:tenant-a",
+            EventQuery {
+                event_type: Some(EventType::Misc),
+                after_id: None,
+                limit: Some(20),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(audit_events.iter().any(|e| {
+        e.data.get("kind").and_then(|v| v.as_str()) == Some("user_cost_reconciliation_drift")
+    }));
+}
+
+#[tokio::test]
+async fn detects_zero_expected_vs_nonzero_observed() {
+    let pool = setup().await;
+    pool.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO user_cost_ledger
+               (id, tenant_id, organization_id, user_id, month_yyyymm, session_count,
+                tool_calls, cost_cents, source_low_watermark_event_id,
+                source_high_watermark_event_id, reconciled_at, created_at, updated_at)
+             VALUES
+               ('ucl-manual', 'tenant-a', 'org-a', 'user-a', '202605', 1, 1, 25, NULL, NULL, 0, 0, 0)",
+            [],
+        )?;
+        Ok::<(), rusqlite::Error>(())
+    })
+    .await
+    .unwrap();
+    let events = std::sync::Arc::new(SqliteEventStore::new(pool.clone()));
+    let job = ReconciliationJob::new(pool, events);
+    let report = job.run("202605").await.unwrap();
+    assert_eq!(report.drifted_rows, 1);
+    let drift = &report.drifts[0];
+    assert_eq!(drift.expected_cost_cents, 0);
+    assert_eq!(drift.observed_cost_cents, 25);
+    assert!((drift.delta_pct - 1.0).abs() < f64::EPSILON);
 }

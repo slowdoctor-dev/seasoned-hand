@@ -80,6 +80,9 @@ enum Commands {
     /// Audit log — `seasoned-hand audit list ...`.
     #[command(subcommand)]
     Audit(commands::audit::AuditCmd),
+    /// User-cost controls — `seasoned-hand user-cost reconcile ...`.
+    #[command(subcommand)]
+    UserCost(commands::user_cost::UserCostCmd),
     /// Bootstrap `~/.seasoned-hand/` (config + deliverables dirs).
     Init,
     /// Exec the `seasoned-hand-server` binary (assumes it's on PATH —
@@ -114,6 +117,7 @@ async fn main() -> ExitCode {
         Commands::Playbook(cmd) => commands::playbook::run(cmd, cli.json).await,
         Commands::Session(cmd) => commands::session_search::run(cmd, cli.json).await,
         Commands::Audit(cmd) => commands::audit::run(cmd, &client, cli.json).await,
+        Commands::UserCost(cmd) => commands::user_cost::run(cmd, &client, cli.json).await,
         Commands::Init => commands::init::run(cli.json),
         Commands::Server { args } => {
             // exec-replaces the process on Unix (function returns Err

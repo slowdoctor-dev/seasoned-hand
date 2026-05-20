@@ -10,3 +10,4 @@ pub mod server;
 pub mod session_search;
 pub mod sop;
 pub mod task;
+pub mod user_cost;

@@ -23,6 +23,7 @@ use seasoned_hand_core::agent::narrate::NarratorHook;
 use seasoned_hand_core::agent::{AgentRunner, AgentRunnerDeps};
 use seasoned_hand_core::audit::{AuditLogger, AuditQuery};
 use seasoned_hand_core::auth::{Action, AuthContext, AuthResource, authorize};
+use seasoned_hand_core::billing::{ReconciliationJob, ReconciliationReport};
 use seasoned_hand_core::browser::tracks::PostBrowserActionHook;
 use seasoned_hand_core::capability::ModelCapabilities;
 use seasoned_hand_core::channel::{
@@ -1418,6 +1419,13 @@ pub fn app(state: AppState) -> Router {
             with_auth(get(list_audit_handler), Action::AuditRead),
         )
         .route(
+            "/v1/user-cost/reconcile",
+            with_auth(
+                axum::routing::post(post_user_cost_reconcile_handler),
+                Action::AuditRead,
+            ),
+        )
+        .route(
             "/v1/sops/:id/shares",
             with_auth(get(list_sop_shares_handler), Action::SopShare),
         )
@@ -2518,6 +2526,11 @@ struct AuditListQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct UserCostReconcileBody {
+    month_yyyymm: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct SopShareBody {
     user_email: String,
     permission: String,
@@ -2676,6 +2689,35 @@ async fn list_audit_handler(
     Ok(Json(rows))
 }
 
+async fn post_user_cost_reconcile_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
+    Json(body): Json<UserCostReconcileBody>,
+) -> ApiResult<Json<ReconciliationReport>> {
+    require_loopback(remote)?;
+    authorize_in_handler(Action::AuditRead, &auth_ctx)?;
+    if !is_valid_month_yyyymm(&body.month_yyyymm) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "invalid_month_yyyymm".into(),
+            }),
+        ));
+    }
+    let job = ReconciliationJob::new(state.db.clone(), state.events.clone());
+    let report = job.run(&body.month_yyyymm).await.map_err(|error| {
+        tracing::error!(%error, "user_cost reconcile failed");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: "internal_error".into(),
+            }),
+        )
+    })?;
+    Ok(Json(report))
+}
+
 fn parse_audit_action(value: &str) -> Option<seasoned_hand_core::audit::AuditAction> {
     use seasoned_hand_core::audit::AuditAction;
     match value {
@@ -2696,6 +2738,14 @@ fn parse_audit_action(value: &str) -> Option<seasoned_hand_core::audit::AuditAct
 
 fn parse_since_to_micros(value: &str) -> Result<i64, ()> {
     value.parse::<i64>().map_err(|_| ())
+}
+
+fn is_valid_month_yyyymm(value: &str) -> bool {
+    value.len() == 6
+        && value.chars().all(|c| c.is_ascii_digit())
+        && value[4..6]
+            .parse::<u32>()
+            .is_ok_and(|m| (1..=12).contains(&m))
 }
 
 fn map_handoff_error(err: seasoned_hand_core::handoff::HandoffError) -> ApiErrorResponse {

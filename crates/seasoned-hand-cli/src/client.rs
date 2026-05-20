@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result};
 use seasoned_hand_core::agent::init::briefing::PartialBrief;
+use seasoned_hand_core::billing::ReconciliationReport;
 use seasoned_hand_core::deliverable::Deliverable;
 use seasoned_hand_core::handoff::HandoffOutcome;
 use seasoned_hand_core::project::{Project, Task};
@@ -127,6 +128,11 @@ struct TaskHandoffBody<'a> {
     reason: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_updated_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct UserCostReconcileBody<'a> {
+    month_yyyymm: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -259,6 +265,18 @@ impl ApiClient {
             .send()
             .await?;
         decode_unit(resp).await
+    }
+
+    pub async fn user_cost_reconcile(
+        &self,
+        month_yyyymm: &str,
+    ) -> Result<ReconciliationReport, ApiError> {
+        let resp = self
+            .with_auth_headers(self.inner.post(self.url("/v1/user-cost/reconcile")))
+            .json(&UserCostReconcileBody { month_yyyymm })
+            .send()
+            .await?;
+        decode(resp).await
     }
 
     pub async fn task_provenance(&self, id: &str) -> Result<serde_json::Value, ApiError> {

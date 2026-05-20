@@ -745,6 +745,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await;
         })
     };
+    let user_cost_reconcile_shutdown = tokio_util::sync::CancellationToken::new();
+    let user_cost_reconcile_handle = {
+        let interval_secs = env_u64_or_default(
+            &env_lookup,
+            "SH_USER_COST_RECONCILE_INTERVAL_SEC",
+            seasoned_hand_core::billing::DEFAULT_USER_COST_RECONCILE_INTERVAL_SECS,
+        )
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        let job = seasoned_hand_core::billing::ReconciliationJob::new(
+            state.db.clone(),
+            state.events.clone(),
+        );
+        let token = user_cost_reconcile_shutdown.clone();
+        let reconcile_auth = seasoned_hand_core::auth::SystemAuth::for_worker(
+            std::env::var("SH_USER_COST_RECONCILE_ORGANIZATION_ID")
+                .unwrap_or_else(|_| "org-legacy-default".to_string()),
+            std::env::var("SH_USER_COST_RECONCILE_TENANT_ID")
+                .unwrap_or_else(|_| "legacy-default".to_string()),
+            "user-cost-reconcile",
+        );
+        tracing::info!(
+            interval_seconds = interval_secs,
+            system_actor = %reconcile_auth.actor_user_id,
+            system_tenant = %reconcile_auth.tenant_id,
+            "user_cost reconciliation job spawned",
+        );
+        tokio::spawn(async move {
+            job.run_daily(std::time::Duration::from_secs(interval_secs), token)
+                .await;
+        })
+    };
 
     let ttl_shutdown = tokio_util::sync::CancellationToken::new();
     let ttl_handle = {
@@ -797,6 +828,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     user_cost_shutdown.cancel();
     log_join_error("user-cost", user_cost_handle.await);
+    user_cost_reconcile_shutdown.cancel();
+    log_join_error("user-cost-reconcile", user_cost_reconcile_handle.await);
 
     // Story 1.13: drain the checkpoint manager.
     checkpoint_shutdown.cancel();

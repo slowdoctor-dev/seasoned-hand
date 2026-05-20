@@ -1,6 +1,6 @@
 # Story 5.13 — user_cost reconciliation job + drift alarm
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2 hours
 > **Dependencies**: 5.12
 > **Phase**: 5

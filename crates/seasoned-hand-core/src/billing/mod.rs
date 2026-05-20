@@ -20,4 +20,7 @@ pub mod user_cost;
 #[cfg(test)]
 mod tests;
 
-pub use user_cost::{FlushReport, NearlineWriter, NearlineWriterError};
+pub use user_cost::{
+    DEFAULT_USER_COST_RECONCILE_INTERVAL_SECS, DriftFinding, FlushReport, NearlineWriter,
+    NearlineWriterError, ReconciliationError, ReconciliationJob, ReconciliationReport,
+};
