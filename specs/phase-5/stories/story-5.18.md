@@ -1,6 +1,6 @@
 # Story 5.18 — Optional org-wide curator aggregation flag (default off)
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 1.5 hours
 > **Dependencies**: 5.17
 > **Phase**: 5

@@ -98,6 +98,7 @@ async fn worker_tenant_unresolved_emits_curator_cycle_refused() {
         CuratorConfig {
             enabled: true,
             project_id: "proj-empty".to_string(),
+            org_aggregation_enabled: false,
             ..CuratorConfig::default()
         },
         db,

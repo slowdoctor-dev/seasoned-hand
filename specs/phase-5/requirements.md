@@ -232,7 +232,7 @@ Atomic-slice story is 5.2 (V013 + ADR-014 + ARCH v1.4 — same shape as Phase 4 
 | 5.15 | session_search_index RBAC predicates + redacted source | 3.0h | 5.14 | done |
 | 5.16 | events::visibility module + admin raw-event route | 2.5h | 5.14, 5.5 | done |
 | 5.17 | Curator tenant boundaries + failure taxonomy | 3.0h | 5.2, 5.4 | done |
-| 5.18 | Optional org-wide curator aggregation flag (default off) | 1.5h | 5.17 | ready |
+| 5.18 | Optional org-wide curator aggregation flag (default off) | 1.5h | 5.17 | done |
 | 5.19 | User invitation CLI + provisioning | 2.5h | 5.4, 5.10 | ready |
 | 5.20 | User deactivation + mandatory reassignment | 2.5h | 5.19, 5.9 | ready |
 | 5.21 | Optimistic concurrency for shared artifacts | 2.0h | 5.7, 5.8 | ready |

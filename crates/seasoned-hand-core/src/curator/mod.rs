@@ -39,6 +39,12 @@ pub struct CuratorConfig {
     pub archive_recommend_min_confidence: f32,
     pub archive_apply_min_confidence: f32,
     pub project_id: String,
+    /// Story 5.18 / arch OQ #12 Option B: when true, the curator's
+    /// `CandidateBuilder` pulls revisions from every project within the
+    /// worker's tenant (= organization, since `organizations.tenant_id`
+    /// is UNIQUE). Default false — behavior matches Phase 4. Admin-only
+    /// flip via `SH_CURATOR_ORG_AGGREGATION`.
+    pub org_aggregation_enabled: bool,
 }
 
 impl Default for CuratorConfig {
@@ -56,6 +62,7 @@ impl Default for CuratorConfig {
             archive_recommend_min_confidence: 0.40,
             archive_apply_min_confidence: 0.55,
             project_id: "default".to_string(),
+            org_aggregation_enabled: false,
         }
     }
 }
@@ -469,11 +476,31 @@ impl BacklogProbe for SqliteBacklogProbe {
 #[derive(Clone)]
 pub struct SqliteCandidateBuilder {
     db: DbPool,
+    /// Story 5.18: when `Some(tenant)`, candidate aggregation expands
+    /// from project-scoped (Phase 4 default) to tenant-scoped — every
+    /// playbook revision in that tenant is a candidate, regardless of
+    /// which project produced it. `None` keeps Phase 4 semantics.
+    org_aggregation_tenant: Option<String>,
 }
 
 impl SqliteCandidateBuilder {
     pub fn new(db: DbPool) -> Self {
-        Self { db }
+        Self {
+            db,
+            org_aggregation_tenant: None,
+        }
+    }
+
+    /// Story 5.18 / arch OQ #12 Option B: enable org-wide aggregation
+    /// by pinning the tenant the worker should pull candidates from.
+    /// Org = tenant per the V013 schema (`organizations.tenant_id` is
+    /// UNIQUE), so a single tenant_id pins both the aggregation scope
+    /// and the audit-attribution boundary.
+    pub fn new_with_org_aggregation(db: DbPool, tenant_id: String) -> Self {
+        Self {
+            db,
+            org_aggregation_tenant: Some(tenant_id),
+        }
     }
 }
 
@@ -485,10 +512,25 @@ impl CandidateBuilder for SqliteCandidateBuilder {
         limit: u32,
     ) -> Result<Vec<DuplicateCandidate>, CuratorWorkerError> {
         let project_id = project_id.to_string();
+        let aggregation_tenant = self.org_aggregation_tenant.clone();
         let rows = self
             .db
             .with_conn(move |conn| {
-                let mut stmt = conn.prepare(
+                // Story 5.18: when `aggregation_tenant` is set, the join
+                // expands across every project in that tenant; otherwise
+                // it keeps the Phase 4 `source_project_id` scope. The
+                // join condition between l/r adjusts to match: same
+                // project for project-scoped runs, same tenant + same
+                // org for aggregation runs.
+                let scope_clause = if aggregation_tenant.is_some() {
+                    "l.tenant_id = r.tenant_id AND l.tenant_id = ?"
+                } else {
+                    "l.source_project_id = r.source_project_id AND l.source_project_id = ?"
+                };
+                let scope_param = aggregation_tenant
+                    .clone()
+                    .unwrap_or_else(|| project_id.clone());
+                let sql = format!(
                     "SELECT
                         l.id AS left_revision_id,
                         r.id AS right_revision_id,
@@ -497,20 +539,20 @@ impl CandidateBuilder for SqliteCandidateBuilder {
                         CAST((COALESCE(l.created_at, 0) - COALESCE(r.created_at, 0)) / 86400000000 AS INTEGER) AS recency_delta_days
                      FROM playbook_revisions l
                      JOIN playbook_revisions r
-                       ON l.source_project_id = r.source_project_id
+                       ON {scope_clause}
                       AND l.id < r.id
                      JOIN playbooks lp ON lp.id = l.playbook_id
                      JOIN playbooks rp ON rp.id = r.playbook_id
-                     WHERE l.source_project_id = ?
-                       AND lp.status = 'active'
+                     WHERE lp.status = 'active'
                        AND rp.status = 'active'
                      ORDER BY
                        ABS(COALESCE(l.created_at, 0) - COALESCE(r.created_at, 0)) ASC,
                        l.id ASC,
                        r.id ASC
-                     LIMIT ?",
-                )?;
-                let mut q = stmt.query(rusqlite::params![project_id, i64::from(limit.max(1))])?;
+                     LIMIT ?"
+                );
+                let mut stmt = conn.prepare(&sql)?;
+                let mut q = stmt.query(rusqlite::params![scope_param, i64::from(limit.max(1))])?;
                 let mut out = Vec::new();
                 while let Some(row) = q.next()? {
                     let left_text: String = row.get(2)?;
@@ -3303,6 +3345,7 @@ mod tests {
                 archive_recommend_min_confidence: 0.40,
                 archive_apply_min_confidence: 0.55,
                 project_id: "proj-1".to_string(),
+                org_aggregation_enabled: false,
             },
             db,
             events.clone(),
@@ -3445,6 +3488,7 @@ mod tests {
                 archive_recommend_min_confidence: 0.40,
                 archive_apply_min_confidence: 0.55,
                 project_id: "proj-consolidate".to_string(),
+                org_aggregation_enabled: false,
             },
             db.clone(),
             events,
@@ -4011,6 +4055,7 @@ mod tests {
                 archive_recommend_min_confidence: 0.40,
                 archive_apply_min_confidence: 0.55,
                 project_id: "proj-conflict".to_string(),
+                org_aggregation_enabled: false,
             },
             db.clone(),
             events,
@@ -4090,6 +4135,7 @@ mod tests {
                 archive_recommend_min_confidence: 0.40,
                 archive_apply_min_confidence: 0.55,
                 project_id: "proj-no-conflict".to_string(),
+                org_aggregation_enabled: false,
             },
             db2.clone(),
             events2,
@@ -4198,6 +4244,7 @@ mod tests {
                     archive_recommend_min_confidence: 0.40,
                     archive_apply_min_confidence: 0.55,
                     project_id: project_id.to_string(),
+                    org_aggregation_enabled: false,
                 },
                 db.clone(),
                 events,
@@ -4233,6 +4280,7 @@ mod tests {
                 archive_recommend_min_confidence: 0.40,
                 archive_apply_min_confidence: 0.55,
                 project_id: "proj-retro".to_string(),
+                org_aggregation_enabled: false,
             },
             db.clone(),
             Arc::new(SqliteEventStore::new(db.clone())),
@@ -4352,6 +4400,7 @@ mod tests {
                 archive_recommend_min_confidence: 0.40,
                 archive_apply_min_confidence: 0.55,
                 project_id: "proj-pattern".to_string(),
+                org_aggregation_enabled: false,
             },
             db.clone(),
             events,
@@ -4467,6 +4516,7 @@ mod tests {
                 archive_recommend_min_confidence: 0.40,
                 archive_apply_min_confidence: 0.55,
                 project_id: "proj-kd".to_string(),
+                org_aggregation_enabled: false,
             },
             db.clone(),
             events,
@@ -4556,6 +4606,7 @@ mod tests {
                 archive_recommend_min_confidence: 0.40,
                 archive_apply_min_confidence: 0.55,
                 project_id: "proj-review".to_string(),
+                org_aggregation_enabled: false,
             },
             db.clone(),
             events,
@@ -4700,6 +4751,7 @@ mod tests {
                 archive_recommend_min_confidence: 0.40,
                 archive_apply_min_confidence: 0.55,
                 project_id: "proj-quarantine".to_string(),
+                org_aggregation_enabled: false,
             },
             db,
             events.clone(),
@@ -4795,6 +4847,7 @@ mod tests {
                 archive_recommend_min_confidence: 0.40,
                 archive_apply_min_confidence: 0.55,
                 project_id: "proj-taxonomy".to_string(),
+                org_aggregation_enabled: false,
             },
             db.clone(),
             events.clone(),
@@ -6134,5 +6187,120 @@ mod tests {
             elapsed_ms < 60_000,
             "warm benchmark exceeded 60s in-test wall clock; observed {elapsed_ms}ms"
         );
+    }
+
+    // --- Story 5.18: org-wide aggregation flag ---------------------------
+
+    /// Seed two playbooks under the SAME tenant but DIFFERENT projects.
+    /// Phase 4 project-scoped builder finds 0 candidate pairs (different
+    /// projects); story 5.18 aggregation builder finds 1 pair.
+    async fn seed_cross_project_pair_same_tenant(db: &DbPool) {
+        db.with_conn(|conn| {
+            // Two playbooks, same tenant 'tenant-a', different projects.
+            conn.execute(
+                "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id, created_at, updated_at, trigger_keywords, content, status, source_project_id, active_revision_id, success_count, failure_count)
+                 VALUES ('pb-a', 'tenant-a', 'A', '/tmp/a.md', 1, NULL, 1, 1, '[\"refund\"]', 'Refund flow.', 'active', 'proj-1', 'rev-a-1', 0, 0)",
+                [],
+            )
+            .expect("insert playbook a");
+            conn.execute(
+                "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id, created_at, updated_at, trigger_keywords, content, status, source_project_id, active_revision_id, success_count, failure_count)
+                 VALUES ('pb-b', 'tenant-a', 'B', '/tmp/b.md', 1, NULL, 1, 1, '[\"refund\"]', 'Refund process.', 'active', 'proj-2', 'rev-b-1', 0, 0)",
+                [],
+            )
+            .expect("insert playbook b");
+            conn.execute(
+                "INSERT INTO playbook_revisions (id, tenant_id, playbook_id, revision_no, parent_revision_id, title, trigger_keywords, content, source_task_id, source_project_id, author_type, change_kind, confidence, created_at, superseded_at)
+                 VALUES ('rev-a-1', 'tenant-a', 'pb-a', 1, NULL, 'A rev', '[\"refund\"]', 'Refund flow.', NULL, 'proj-1', 'extractor', 'extract', 1.0, 1, NULL)",
+                [],
+            )
+            .expect("insert rev a");
+            conn.execute(
+                "INSERT INTO playbook_revisions (id, tenant_id, playbook_id, revision_no, parent_revision_id, title, trigger_keywords, content, source_task_id, source_project_id, author_type, change_kind, confidence, created_at, superseded_at)
+                 VALUES ('rev-b-1', 'tenant-a', 'pb-b', 1, NULL, 'B rev', '[\"refund\"]', 'Refund process.', NULL, 'proj-2', 'extractor', 'extract', 1.0, 1, NULL)",
+                [],
+            )
+            .expect("insert rev b");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn project_scoped_builder_does_not_cross_projects() {
+        // Phase 4 behavior — the default `new()` builder must NOT pull
+        // candidates from a sibling project, even within the same tenant.
+        let db = db::open(":memory:").await.expect("db");
+        seed_cross_project_pair_same_tenant(&db).await;
+        let builder = SqliteCandidateBuilder::new(db);
+        let candidates = builder
+            .build_duplicate_candidates("proj-1", 10)
+            .await
+            .expect("candidates");
+        assert_eq!(
+            candidates.len(),
+            0,
+            "project-scoped builder must not surface cross-project pairs"
+        );
+    }
+
+    #[tokio::test]
+    async fn org_aggregation_builder_pulls_from_sibling_projects_in_tenant() {
+        // Story 5.18: aggregation builder pinned to 'tenant-a' surfaces
+        // the cross-project pair that the project-scoped builder hides.
+        let db = db::open(":memory:").await.expect("db");
+        seed_cross_project_pair_same_tenant(&db).await;
+        let builder = SqliteCandidateBuilder::new_with_org_aggregation(db, "tenant-a".to_string());
+        // project_id arg is ignored when aggregation is on — pass an
+        // arbitrary one to confirm the builder doesn't filter on it.
+        let candidates = builder
+            .build_duplicate_candidates("ignored", 10)
+            .await
+            .expect("candidates");
+        assert_eq!(candidates.len(), 1);
+        let pair = &candidates[0];
+        // Either (rev-a-1, rev-b-1) ordering is acceptable — the SQL
+        // sorts by id so left < right.
+        assert!(
+            (pair.left_revision_id == "rev-a-1" && pair.right_revision_id == "rev-b-1")
+                || (pair.left_revision_id == "rev-b-1" && pair.right_revision_id == "rev-a-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn org_aggregation_builder_respects_tenant_boundary() {
+        // Cross-tenant pairs must NEVER aggregate, even with org flag on.
+        // Seed two playbooks in DIFFERENT tenants; the aggregation
+        // builder pinned to 'tenant-a' must ignore 'tenant-b'.
+        let db = db::open(":memory:").await.expect("db");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id, created_at, updated_at, trigger_keywords, content, status, source_project_id, active_revision_id, success_count, failure_count)
+                 VALUES ('pb-a', 'tenant-a', 'A', '/tmp/a.md', 1, NULL, 1, 1, '[]', '', 'active', 'p1', 'rev-a', 0, 0)",
+                [],
+            ).expect("a");
+            conn.execute(
+                "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id, created_at, updated_at, trigger_keywords, content, status, source_project_id, active_revision_id, success_count, failure_count)
+                 VALUES ('pb-b', 'tenant-b', 'B', '/tmp/b.md', 1, NULL, 1, 1, '[]', '', 'active', 'p1', 'rev-b', 0, 0)",
+                [],
+            ).expect("b");
+            conn.execute(
+                "INSERT INTO playbook_revisions (id, tenant_id, playbook_id, revision_no, parent_revision_id, title, trigger_keywords, content, source_task_id, source_project_id, author_type, change_kind, confidence, created_at, superseded_at)
+                 VALUES ('rev-a', 'tenant-a', 'pb-a', 1, NULL, 'A', '[]', '', NULL, 'p1', 'extractor', 'extract', 1.0, 1, NULL)",
+                [],
+            ).expect("rev-a");
+            conn.execute(
+                "INSERT INTO playbook_revisions (id, tenant_id, playbook_id, revision_no, parent_revision_id, title, trigger_keywords, content, source_task_id, source_project_id, author_type, change_kind, confidence, created_at, superseded_at)
+                 VALUES ('rev-b', 'tenant-b', 'pb-b', 1, NULL, 'B', '[]', '', NULL, 'p1', 'extractor', 'extract', 1.0, 1, NULL)",
+                [],
+            ).expect("rev-b");
+        }).await;
+
+        let builder = SqliteCandidateBuilder::new_with_org_aggregation(db, "tenant-a".to_string());
+        let candidates = builder
+            .build_duplicate_candidates("ignored", 10)
+            .await
+            .expect("candidates");
+        // 'rev-a' is alone in 'tenant-a' — no pair possible.
+        assert_eq!(candidates.len(), 0);
     }
 }

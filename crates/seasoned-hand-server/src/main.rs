@@ -159,6 +159,7 @@ where
             0.55,
         )?,
         project_id: lookup("SH_CURATOR_PROJECT_ID").unwrap_or_else(|| "default".to_string()),
+        org_aggregation_enabled: env_bool_or_default(lookup, "SH_CURATOR_ORG_AGGREGATION", false)?,
     }))
 }
 
@@ -559,7 +560,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             embedding_slot.base_url.clone(),
             embedding_slot.api_key.clone(),
         );
-        let candidate_builder = std::sync::Arc::new(SqliteCandidateBuilder::new(state.db.clone()));
+        // Story 5.18: when org aggregation is on, pin the builder to
+        // the worker's tenant (org = tenant per V013); otherwise keep
+        // Phase 4 project-scoped behavior.
+        let candidate_builder = if config.org_aggregation_enabled {
+            let tenant = std::env::var("SH_CURATOR_TENANT_ID")
+                .unwrap_or_else(|_| "legacy-default".to_string());
+            tracing::info!(
+                tenant = %tenant,
+                "curator org-wide candidate aggregation enabled",
+            );
+            std::sync::Arc::new(SqliteCandidateBuilder::new_with_org_aggregation(
+                state.db.clone(),
+                tenant,
+            ))
+        } else {
+            std::sync::Arc::new(SqliteCandidateBuilder::new(state.db.clone()))
+        };
         let consolidation_engine = std::sync::Arc::new(
             SqliteConsolidationEngine::new(state.db.clone()).with_archive_policy(
                 config.auto_archive_enabled,
