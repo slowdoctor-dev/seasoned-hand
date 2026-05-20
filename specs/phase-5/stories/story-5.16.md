@@ -1,6 +1,6 @@
 # Story 5.16 — events::visibility module + admin raw-event route
 
-> **Status**: ready
+> **Status**: done
 > **Estimated**: 2.5 hours
 > **Dependencies**: 5.14, 5.5
 > **Phase**: 5

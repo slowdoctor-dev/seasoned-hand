@@ -2,6 +2,8 @@
 //! refs: /specs/phase-5/stories/story-5.14.md
 
 use super::*;
+use crate::audit::AuditLogger;
+use crate::auth::{AuthContext, Role};
 use crate::db::{self, DbPool};
 use crate::events::sqlite::SqliteEventStore;
 use crate::events::{EventStore, EventType, NewEvent};
@@ -189,6 +191,262 @@ async fn audit_sourced_event_gets_admin_visibility() {
         .unwrap();
     let (_, vis, _, _) = projection_for(&pool, event.id).await;
     assert_eq!(vis, "admin");
+}
+
+// --- 5.16 read-surface fixtures ---------------------------------------
+
+/// Seed an admin user + matching membership in `tenant-test` so the
+/// raw-read audit row's FK to users(id) resolves.
+async fn seed_admin(pool: &DbPool) {
+    pool.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO organizations (id, tenant_id, slug, display_name, status,
+                                         created_at, updated_at)
+             VALUES ('org-t', 'tenant-test', 'org-t', 'T', 'active', 0, 0)",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO users (id, tenant_id, email, display_name, status,
+                                created_at, updated_at)
+             VALUES ('user-admin', 'tenant-test', 'a@x.io', 'A', 'active', 0, 0)",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO users (id, tenant_id, email, display_name, status,
+                                created_at, updated_at)
+             VALUES ('user-user', 'tenant-test', 'u@x.io', 'U', 'active', 0, 0)",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO users (id, tenant_id, email, display_name, status,
+                                created_at, updated_at)
+             VALUES ('user-viewer', 'tenant-test', 'v@x.io', 'V', 'active', 0, 0)",
+            [],
+        )?;
+        Ok::<(), rusqlite::Error>(())
+    })
+    .await
+    .unwrap();
+}
+
+fn ctx(role: Role, actor: &str) -> AuthContext {
+    AuthContext {
+        tenant_id: "tenant-test".into(),
+        organization_id: "org-t".into(),
+        actor_user_id: actor.into(),
+        org_role: role,
+        project_override_role: None,
+    }
+}
+
+#[tokio::test]
+async fn query_returns_redacted_rows_filtered_by_visibility() {
+    let pool = setup().await;
+    seed_admin(&pool).await;
+    let store = SqliteEventStore::new(pool.clone());
+    // 'user' visibility (default user-sourced) + 'admin' visibility
+    // (source=="audit") in the same session.
+    store
+        .append(NewEvent {
+            session_id: "s-test".into(),
+            event_type: EventType::Message,
+            source: "user".into(),
+            data: serde_json::json!({"text": "user-visible"}),
+        })
+        .await
+        .unwrap();
+    store
+        .append(NewEvent {
+            session_id: "s-test".into(),
+            event_type: EventType::Misc,
+            source: "audit".into(),
+            data: serde_json::json!({"kind": "audit_logged"}),
+        })
+        .await
+        .unwrap();
+
+    // Admin sees both rows.
+    let admin_rows = query(
+        &pool,
+        &ctx(Role::Admin, "user-admin"),
+        "s-test",
+        default_q(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(admin_rows.len(), 2);
+
+    // User sees only the 'user'-visibility row; the 'admin'-visibility
+    // audit row is filtered out at the IN-clause predicate.
+    let user_rows = query(&pool, &ctx(Role::User, "user-user"), "s-test", default_q())
+        .await
+        .unwrap();
+    assert_eq!(user_rows.len(), 1);
+    assert_eq!(user_rows[0].visibility_level, "user");
+
+    // Viewer sees zero — no 'viewer' rows in this test.
+    let viewer_rows = query(
+        &pool,
+        &ctx(Role::Viewer, "user-viewer"),
+        "s-test",
+        default_q(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(viewer_rows.len(), 0);
+}
+
+#[tokio::test]
+async fn query_does_not_cross_tenant_boundaries() {
+    // Forged tenant in the AuthContext returns zero rows even for a
+    // real session — the predicate IS the gate (NFR-5.1 primitive).
+    let pool = setup().await;
+    seed_admin(&pool).await;
+    let store = SqliteEventStore::new(pool.clone());
+    store
+        .append(NewEvent {
+            session_id: "s-test".into(),
+            event_type: EventType::Message,
+            source: "user".into(),
+            data: serde_json::json!({"text": "hi"}),
+        })
+        .await
+        .unwrap();
+    let forged = AuthContext {
+        tenant_id: "tenant-other".into(),
+        ..ctx(Role::Admin, "user-admin")
+    };
+    let rows = query(&pool, &forged, "s-test", default_q()).await.unwrap();
+    assert_eq!(rows.len(), 0);
+}
+
+#[tokio::test]
+async fn query_raw_admin_returns_data_and_emits_audit_row() {
+    let pool = setup().await;
+    seed_admin(&pool).await;
+    let events = std::sync::Arc::new(SqliteEventStore::new(pool.clone()));
+    let audit = AuditLogger::new(pool.clone(), events.clone());
+    events
+        .append(NewEvent {
+            session_id: "s-test".into(),
+            event_type: EventType::Message,
+            source: "user".into(),
+            data: serde_json::json!({"text": "raw-payload"}),
+        })
+        .await
+        .unwrap();
+    let rows = query_raw(
+        &pool,
+        &ctx(Role::Admin, "user-admin"),
+        &audit,
+        "s-test",
+        default_q(),
+    )
+    .await
+    .unwrap();
+    assert!(rows.iter().any(|r| r.data.contains("raw-payload")));
+    // Audit row recorded.
+    let count: i64 = pool
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM audit_log
+                 WHERE actor_user_id = 'user-admin' AND action = 'event.raw_read'
+                   AND resource_id = 's-test'",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn query_raw_viewer_is_denied() {
+    let pool = setup().await;
+    seed_admin(&pool).await;
+    let events = std::sync::Arc::new(SqliteEventStore::new(pool.clone()));
+    let audit = AuditLogger::new(pool.clone(), events.clone());
+    let err = query_raw(
+        &pool,
+        &ctx(Role::Viewer, "user-viewer"),
+        &audit,
+        "s-test",
+        default_q(),
+    )
+    .await
+    .expect_err("viewer must be denied raw-read");
+    assert!(matches!(err, VisibilityQueryError::Auth(_)));
+}
+
+#[tokio::test]
+async fn query_raw_user_role_is_denied() {
+    let pool = setup().await;
+    seed_admin(&pool).await;
+    let events = std::sync::Arc::new(SqliteEventStore::new(pool.clone()));
+    let audit = AuditLogger::new(pool.clone(), events.clone());
+    let err = query_raw(
+        &pool,
+        &ctx(Role::User, "user-user"),
+        &audit,
+        "s-test",
+        default_q(),
+    )
+    .await
+    .expect_err("user role must be denied raw-read");
+    assert!(matches!(err, VisibilityQueryError::Auth(_)));
+}
+
+#[tokio::test]
+async fn query_raw_blocks_cross_tenant_admin() {
+    // Even with `Action::EventRawRead`, an admin in tenant-other must
+    // not see tenant-test's raw rows. Tenant boundary trumps role.
+    let pool = setup().await;
+    seed_admin(&pool).await;
+    let events = std::sync::Arc::new(SqliteEventStore::new(pool.clone()));
+    let audit = AuditLogger::new(pool.clone(), events.clone());
+    // Seed the other tenant's admin user so audit FK resolves.
+    pool.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO organizations (id, tenant_id, slug, display_name, status,
+                                         created_at, updated_at)
+             VALUES ('org-other', 'tenant-other', 'org-other', 'O', 'active', 0, 0)",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO users (id, tenant_id, email, display_name, status,
+                                created_at, updated_at)
+             VALUES ('user-other-admin', 'tenant-other', 'oa@x.io', 'OA', 'active', 0, 0)",
+            [],
+        )?;
+        Ok::<(), rusqlite::Error>(())
+    })
+    .await
+    .unwrap();
+    events
+        .append(NewEvent {
+            session_id: "s-test".into(),
+            event_type: EventType::Message,
+            source: "user".into(),
+            data: serde_json::json!({"text": "tenant-test secret"}),
+        })
+        .await
+        .unwrap();
+    let cross = AuthContext {
+        tenant_id: "tenant-other".into(),
+        organization_id: "org-other".into(),
+        actor_user_id: "user-other-admin".into(),
+        org_role: Role::Admin,
+        project_override_role: None,
+    };
+    let rows = query_raw(&pool, &cross, &audit, "s-test", default_q())
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 0);
+}
+
+fn default_q() -> EventReadQuery {
+    EventReadQuery::default()
 }
 
 #[tokio::test]

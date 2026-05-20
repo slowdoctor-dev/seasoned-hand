@@ -930,6 +930,100 @@ async fn list_events(
     }
 }
 
+// --- Story 5.16: tenant-visible event read + admin raw-event route -----
+
+#[derive(Debug, Deserialize, Default)]
+pub struct VisibleEventsQueryParams {
+    pub after_event_id: Option<i64>,
+    pub limit: Option<usize>,
+}
+
+/// `GET /v1/events/:session_id` — returns rows from `tenant_event_view`
+/// filtered by the caller's tenant + role visibility. Redacted at write
+/// time (story 5.14); no raw `events.data` is exposed here regardless
+/// of role.
+async fn list_redacted_events(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
+    Path(session_id): Path<String>,
+    Query(params): Query<VisibleEventsQueryParams>,
+) -> Result<
+    Json<Vec<seasoned_hand_core::events::visibility::VisibleEventRow>>,
+    (StatusCode, Json<ApiError>),
+> {
+    require_loopback(remote)?;
+    // No `Action`-level gate here — the tenant + visibility predicates
+    // inside `visibility::query` ARE the gate (architecture §7).
+    let q = seasoned_hand_core::events::visibility::EventReadQuery {
+        after_event_id: params.after_event_id,
+        limit: params.limit,
+    };
+    match seasoned_hand_core::events::visibility::query(&state.db, &auth_ctx, &session_id, q).await
+    {
+        Ok(rows) => Ok(Json(rows)),
+        Err(err) => {
+            tracing::error!(error = %err, "visibility::query failed");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            ))
+        }
+    }
+}
+
+/// `GET /v1/admin/events/:session_id/raw` — admin-only forensic read of
+/// raw `events.data`. Gated by `Action::EventRawRead`; every call
+/// writes an `audit_log` row via [`AuditLogger`] before returning, so
+/// the access is non-repudiable. Cross-tenant admins are blocked even
+/// with the action right — the session's tenant must match the
+/// caller's tenant.
+async fn list_raw_events_admin(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
+    Path(session_id): Path<String>,
+    Query(params): Query<VisibleEventsQueryParams>,
+) -> Result<
+    Json<Vec<seasoned_hand_core::events::visibility::RawEventRow>>,
+    (StatusCode, Json<ApiError>),
+> {
+    require_loopback(remote)?;
+    let audit = AuditLogger::new(state.db.clone(), state.events.clone());
+    let q = seasoned_hand_core::events::visibility::EventReadQuery {
+        after_event_id: params.after_event_id,
+        limit: params.limit,
+    };
+    match seasoned_hand_core::events::visibility::query_raw(
+        &state.db,
+        &auth_ctx,
+        &audit,
+        &session_id,
+        q,
+    )
+    .await
+    {
+        Ok(rows) => Ok(Json(rows)),
+        Err(seasoned_hand_core::events::visibility::VisibilityQueryError::Auth(_)) => Err((
+            StatusCode::FORBIDDEN,
+            Json(ApiError {
+                error: "forbidden_action".into(),
+            }),
+        )),
+        Err(err) => {
+            tracing::error!(error = %err, "visibility::query_raw failed");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            ))
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct SessionSummary {
     id: String,
@@ -1304,6 +1398,20 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/v1/sessions/:id/events",
             with_auth(get(list_events), Action::TaskRead),
+        )
+        // Story 5.16: tenant-visible redacted event feed. Routes through
+        // the auth middleware (any authenticated role) but no `Action`
+        // gate — the tenant + visibility predicates inside
+        // `visibility::query` ARE the gate.
+        .route(
+            "/v1/events/:session_id",
+            with_auth(get(list_redacted_events), Action::TaskRead),
+        )
+        // Story 5.16: admin-only forensic raw-event read. Emits an
+        // audit_log row per call (`Action::EventRawRead`).
+        .route(
+            "/v1/admin/events/:session_id/raw",
+            with_auth(get(list_raw_events_admin), Action::EventRawRead),
         )
         .route("/v1/sessions/:id/feature-list", get(get_feature_list))
         .route("/v1/sessions/:id/progress", get(get_progress))

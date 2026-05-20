@@ -20,7 +20,12 @@
 //! closes: SECURITY_REVIEW DEBT #S-1
 
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
+use crate::audit::{AuditAction, AuditLogger, AuditRecord, AuditWriteError};
+use crate::auth::{Action, AuthContext, AuthError, AuthResource, Role, authorize};
+use crate::db::DbPool;
 use crate::events::Event;
 use crate::events::session_search::searchable_text_for_event;
 use crate::verifier::extraction::redact_pii;
@@ -158,6 +163,230 @@ fn redact_event_data(event: &Event) -> String {
     };
     let (redacted, _) = redact_pii(&raw);
     redacted
+}
+
+/// Map an `AuthContext`'s effective role to the set of visibility_level
+/// values it may read from `tenant_event_view`. Mirrors story 5.15's
+/// `session_search::allowed_visibility_levels_for_role` so the read
+/// surface and the search surface stay in lockstep.
+pub fn allowed_visibility_levels(role: Role) -> &'static [&'static str] {
+    match role {
+        Role::Admin => &["viewer", "user", "admin"],
+        Role::User => &["viewer", "user"],
+        Role::Viewer => &["viewer"],
+    }
+}
+
+/// One row of the tenant-visible event feed returned by [`query`].
+///
+/// `redacted_data` is the post-PII-scrub JSON string stored in
+/// `tenant_event_view.redacted_data`; never the raw `events.data`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VisibleEventRow {
+    pub event_id: i64,
+    pub session_id: String,
+    pub timestamp: i64,
+    pub event_type: String,
+    pub source: String,
+    pub visibility_level: String,
+    pub redacted_data: String,
+}
+
+/// One row of the admin raw-event read returned by [`query_raw`].
+///
+/// `data` carries the canonical `events.data` payload with NO redaction
+/// applied — surfacing it requires `Action::EventRawRead` + an audit_log
+/// record per-call.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RawEventRow {
+    pub event_id: i64,
+    pub session_id: String,
+    pub timestamp: i64,
+    pub event_type: String,
+    pub source: String,
+    pub data: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct EventReadQuery {
+    /// Strictly-greater cursor over `event_id` for monotonic pagination.
+    pub after_event_id: Option<i64>,
+    /// Page size; clamped to [1, 500] (default 100) at execution time.
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Error)]
+pub enum VisibilityQueryError {
+    #[error("auth: {0}")]
+    Auth(#[from] AuthError),
+    #[error("sqlite: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    #[error("audit: {0}")]
+    Audit(#[from] AuditWriteError),
+}
+
+/// Read tenant-visible event rows for a session. Applies the compound
+/// `(tenant_id, visibility_level)` predicate from architecture §7 so
+/// callers cannot read across tenant boundaries or above their role's
+/// visibility scope. Uses the redacted projection (NOT raw `events.data`),
+/// so PII patterns scrubbed at write time stay scrubbed at read time.
+///
+/// `Action`-level gating is intentionally absent here — the tenant +
+/// visibility predicates ARE the gate. Callers needing a hard admin-only
+/// surface (e.g. forensics) must use [`query_raw`] instead.
+pub async fn query(
+    db: &DbPool,
+    auth: &AuthContext,
+    session_id: &str,
+    q: EventReadQuery,
+) -> Result<Vec<VisibleEventRow>, VisibilityQueryError> {
+    let tenant = auth.tenant_id.clone();
+    let allowed = allowed_visibility_levels(auth.org_role);
+    let allowed_owned: Vec<String> = allowed.iter().map(|s| (*s).to_string()).collect();
+    let session_id = session_id.to_string();
+    let after = q.after_event_id;
+    let limit = q.limit.unwrap_or(100).clamp(1, 500);
+
+    let rows = db
+        .with_conn(move |conn| {
+            // Build the IN-list dynamically — the allowed set is small
+            // (1..=3 entries) so inline `?` placeholders are simpler
+            // than rarray. Order by event_id so cursors are monotonic.
+            let placeholders = std::iter::repeat_n("?", allowed_owned.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut sql = format!(
+                "SELECT t.event_id, e.session_id, e.timestamp, e.type, e.source,
+                        t.visibility_level, t.redacted_data
+                 FROM tenant_event_view t
+                 JOIN events e ON e.id = t.event_id
+                 WHERE t.tenant_id = ?
+                   AND t.visibility_level IN ({placeholders})
+                   AND e.session_id = ?"
+            );
+            let mut params_vec: Vec<rusqlite::types::Value> = vec![tenant.into()];
+            for level in &allowed_owned {
+                params_vec.push(level.clone().into());
+            }
+            params_vec.push(session_id.into());
+            if let Some(after_id) = after {
+                sql.push_str(" AND t.event_id > ?");
+                params_vec.push(after_id.into());
+            }
+            sql.push_str(" ORDER BY t.event_id ASC LIMIT ?");
+            params_vec.push((limit as i64).into());
+
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(params_vec.iter()), |r| {
+                    Ok(VisibleEventRow {
+                        event_id: r.get(0)?,
+                        session_id: r.get(1)?,
+                        timestamp: r.get(2)?,
+                        event_type: r.get(3)?,
+                        source: r.get(4)?,
+                        visibility_level: r.get(5)?,
+                        redacted_data: r.get(6)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok::<Vec<VisibleEventRow>, rusqlite::Error>(rows)
+        })
+        .await?;
+    Ok(rows)
+}
+
+/// Admin-only forensic read of raw `events.data` for a session. Gated
+/// by `Action::EventRawRead` (admin role only; user + viewer denied at
+/// the policy gate). Every successful read writes one `audit_log` row
+/// via [`AuditLogger`] so the access is non-repudiable.
+///
+/// Returns the rows the caller is now authorized to see — the audit
+/// row carries the count + session_id so operators can detect
+/// suspicious large reads even though the data itself isn't logged.
+pub async fn query_raw(
+    db: &DbPool,
+    auth: &AuthContext,
+    audit: &AuditLogger,
+    session_id: &str,
+    q: EventReadQuery,
+) -> Result<Vec<RawEventRow>, VisibilityQueryError> {
+    authorize(
+        Action::EventRawRead,
+        &AuthResource {
+            is_same_org: true,
+            actor_can_share: true,
+        },
+        auth,
+    )?;
+
+    let tenant = auth.tenant_id.clone();
+    let session_id_for_query = session_id.to_string();
+    let after = q.after_event_id;
+    let limit = q.limit.unwrap_or(100).clamp(1, 500);
+
+    let rows = db
+        .with_conn(move |conn| {
+            // Resolve the session's tenant via the same chain the
+            // projection hook uses. Cross-tenant reads are denied here
+            // so an admin in tenant A can't pull raw rows from tenant B
+            // even with `Action::EventRawRead`.
+            let session_tenant: String = resolve_tenant_id(conn, &session_id_for_query)?;
+            if session_tenant != tenant {
+                return Ok::<Vec<RawEventRow>, rusqlite::Error>(Vec::new());
+            }
+            let mut sql = String::from(
+                "SELECT id, session_id, timestamp, type, source, data
+                 FROM events
+                 WHERE session_id = ?",
+            );
+            let mut params_vec: Vec<rusqlite::types::Value> = vec![session_id_for_query.into()];
+            if let Some(after_id) = after {
+                sql.push_str(" AND id > ?");
+                params_vec.push(after_id.into());
+            }
+            sql.push_str(" ORDER BY id ASC LIMIT ?");
+            params_vec.push((limit as i64).into());
+
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(params_vec.iter()), |r| {
+                    Ok(RawEventRow {
+                        event_id: r.get(0)?,
+                        session_id: r.get(1)?,
+                        timestamp: r.get(2)?,
+                        event_type: r.get(3)?,
+                        source: r.get(4)?,
+                        data: r.get(5)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await?;
+
+    // Emit one audit_log row per raw-read call. The payload carries
+    // session_id + row count + cursor; never the actual event data, so
+    // the audit log itself doesn't leak what was just read raw.
+    audit
+        .record(
+            auth,
+            AuditRecord {
+                action: AuditAction::EventRawRead,
+                resource_type: "session",
+                resource_id: session_id,
+                target_user_id: None,
+                decision: Some("allow"),
+                reason: None,
+                metadata: serde_json::json!({
+                    "after_event_id": q.after_event_id,
+                    "limit": q.limit,
+                    "rows_returned": rows.len(),
+                }),
+            },
+        )
+        .await?;
+    Ok(rows)
 }
 
 #[cfg(test)]
