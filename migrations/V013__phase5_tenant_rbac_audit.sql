@@ -128,5 +128,9 @@ CREATE TABLE IF NOT EXISTS tenant_event_view (
 -- 1) deterministic tenant backfill for Phase 2-4 tables
 -- 2) table-rebuild NOT NULL flips where required
 -- 3) integrity checks + reconciliation gates
+-- 4) ALTER session_search_index ADD COLUMN tenant_id TEXT NOT NULL
+--    and visibility_level TEXT NOT NULL CHECK(visibility_level IN ('viewer','user','admin'))
+--    for the OQ #11 (Option C) shared-index-with-strict-predicates story
+--    (architecture §10). PM story must also pair-update the FTS triggers.
 
 COMMIT;

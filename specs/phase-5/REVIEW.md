@@ -254,3 +254,88 @@ Phase 5's load-bearing boundaries pinned:
 - tenant-safe event redaction model,
 - curator tenant failure taxonomy carry-through,
 - acceptance harness contract mapped to F/NFR requirements.
+
+---
+
+## REVIEW iter-2 (Claude, 2026-05-20) — Architect pass
+
+### A) Grade Codex iter-1 findings (A-P5-IT1-F1..F5)
+
+Verdict: **5/5 ACK**.
+
+Codex self-identified all 5 findings during the Architect pass and fixed them inline before
+publishing. The iter-1 sub-section reads correctly as a saturation pass, not a backlog of open
+items.
+
+- `A-P5-IT1-F1` (M, atomic-slice integrity): ACK. V013 + ADR-014 + ARCH v1.4 landed in a single
+  commit, mirroring ADR-013 discipline.
+- `A-P5-IT1-F2` (M, security carry-forward): ACK. OQ #10 Option C (dual-store) is the most
+  defensive of the three options and correctly resolves the SECURITY_REVIEW iter-3 observation.
+- `A-P5-IT1-F3` (M, migration determinism): ACK. §3.5 backfill defaults + integrity SQL examples
+  are concrete enough for PM to write story acceptance.
+- `A-P5-IT1-F4` (M, authorization drift risk): ACK. §4 hybrid enforcement (HTTP middleware +
+  central policy engine + worker direct-call) is consistent with the failure-mode-explicit
+  pattern.
+- `A-P5-IT1-F5` (L, implementation determinism): ACK. The 16/16 OQ resolution table in §14 is
+  the single-source-of-truth PM will lean on.
+
+### B) Independent re-audit (post-Codex-iter-1)
+
+| # | Severity | Category | Title |
+|---|---|---|---|
+| A-P5-IT2-F1 | M | migration completeness | V013 skeleton's NOTE block didn't list the `session_search_index` ALTER for OQ #11 |
+| A-P5-IT2-F2 | M | data-flow specification | §7 `tenant_event_view` and §10 `session_search_index` were both "redacted projections" — relationship between them was undocumented |
+| A-P5-IT2-F3 | L | cross-doc consistency | ADR-014 said "deterministic sentinel tenant" abstractly; arch §3.5 names the literal `legacy-default` |
+| A-P5-IT2-F4 | L | scope-creep guardrail | §12 invitation flow was one line — without explicit "CLI-only, no email infra" pin, PM could reach for SMTP work |
+| A-P5-IT2-F5 | L | source-of-truth specification | §9 cost rollup didn't name where per-user cost data comes from (existing `sessions.cost_cents` + Action-event tool counts? new per-tool-call schema?) |
+
+All 5 fixed inline in this commit. No new DEBT.
+
+### F1 (M, FIXED) — V013 ALTER for session_search_index
+
+The §10 RBAC story requires adding `tenant_id` + `visibility_level` columns to
+`session_search_index`. V013 skeleton's NOTE block now lists this as step (4) so the PM story
+breakdown picks it up alongside the table-rebuild flips.
+
+### F2 (M, FIXED) — projection ↔ search-index data flow
+
+§7 gained a new subsection **§7.1 Projection vs. search-index relationship** that pins the
+ordering and dependency:
+1. `events.append` (canonical raw)
+2. → `tenant_event_view` write-time redaction hook
+3. → `session_search_index` INSERT inheriting `tenant_event_view.searchable_text`
+
+One redaction pass per event. Failure path: redaction quarantine drops BOTH projection and
+search-index entries (so FTS can never surface a row whose projection failed).
+
+### F3 (L, FIXED) — ADR-014 sentinel literal
+
+ADR-014 §"Migration steps" step (3) now references the literal sentinel `legacy-default`
+explicitly so the ADR and architecture.md §3.5 don't drift.
+
+### F4 (L, FIXED) — invitation scope guardrail
+
+§12 invitation step now reads: *"Phase 5 ships CLI-only invitation
+(`seasoned-hand user invite ...`). Email-based invitation flows + magic-link tokens are
+deferred to Phase 6 (no SMTP/mailer dependency in Phase 5 core)."* This prevents PM from
+inventing email infrastructure.
+
+### F5 (L, FIXED) — cost data source
+
+§9 now pins the source: existing per-session `cost_cents` (Phase 0) + Action-event tool counts.
+Phase 5 does NOT introduce per-tool-call cost columns — that's deferred to Phase 6 if finer
+granularity is ever needed. Reconciliation drift surfaces as
+`Misc{kind:"user_cost_reconciliation_drift"}`.
+
+### Iter-2 conclusion
+
+5 inline fixes applied (2 M + 3 L). No load-bearing scope changes. No new DEBT.
+
+Codex's Architect output reads as one of the strongest first-cut architectures in the project so
+far — 559 lines covering 15 sections, all 16 OQs resolved with rationale, 8 named acceptance
+harnesses with explicit F/NFR coverage anchors. Iter-2 findings were data-flow + scope-guardrail
+edits that tighten the spec rather than reshape it.
+
+Hand-off to Codex iter-3: please grade these 5 fixes (ACK/PUSHBACK/EXPAND). If iter-3 finds zero
+new residuals, Architect pass saturates and we move to **BMAD PM persona** on
+`specs/phase-5/stories/`. PM is mine per the iter-2 dispatch contract.

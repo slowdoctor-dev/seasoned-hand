@@ -397,6 +397,26 @@ Security consequence:
 
 - Cross-tenant leakage risk drops to projection-policy correctness, not every consumer query path.
 
+### 7.1 Projection vs. search-index relationship
+
+Phase 5 ships **two** redacted/tenant-aware surfaces and they have a defined dependency:
+
+- `tenant_event_view` (§7) — per-event redacted payload + visibility flag. Single source of truth
+  for "what does tenant T's user/viewer role see for event E".
+- `session_search_index` + `session_search_fts` (§10) — full-text search projection. In Phase 5
+  this surface gains the same `tenant_id` + `visibility_level` columns and reads its
+  `searchable_text` FROM the upstream `tenant_event_view.searchable_text` column (NOT from the
+  raw `events.data` column it pulled from in Phase 3).
+
+Write path: events.append → tenant_event_view write-time hook (redaction) →
+session_search_index INSERT (mirrors visibility_level + tenant_id + uses
+`tenant_event_view.searchable_text` as source). One redaction pass per event; FTS index inherits
+the redacted text rather than re-redacting independently.
+
+Failure path: if redaction quarantines an event from `tenant_event_view`, the
+`session_search_index` row is also skipped (so the FTS index can never surface a row whose
+projection failed). The `tenant_event_projection_failed` Misc event documents the skip.
+
 ## 8. Curator Tenantization
 
 Chosen from OQ #12: **Option B (tenant partition + optional org-wide aggregation mode OFF by default)**.
@@ -423,8 +443,15 @@ These are emitted as `Misc` with deterministic payload keys:
 
 Chosen from OQ #9: **Option C (materialized rollups + reconciliation)**.
 
-- Nearline writer updates `user_cost_ledger` on session close / periodic checkpoint.
-- Daily reconciliation job recomputes from source (`sessions`, `events`) and flags drift >0.5%.
+- **Source of cost data**: existing per-session `cost_cents` field on `sessions` (introduced
+  Phase 0) plus Action-event `tool_calls` aggregates. Phase 5 does NOT introduce per-tool-call
+  cost columns — the nearline writer aggregates from those two existing surfaces. If finer
+  granularity is needed later, it lands as a Phase 6 schema extension, not a Phase 5
+  prerequisite.
+- **Nearline writer** updates `user_cost_ledger` on session close + periodic 1h checkpoint,
+  scoped to `tenant_id + organization_id + actor_user_id + month_yyyymm`.
+- **Daily reconciliation job** recomputes from source (`sessions`, `events`) and flags drift
+  >0.5% via `Misc{kind:"user_cost_reconciliation_drift"}` for operator triage.
 
 This satisfies NFR-5.4 performance and correctness simultaneously.
 
@@ -464,9 +491,14 @@ Chosen from OQ #15: **Option B (deactivate + mandatory ownership reassignment)**
 
 Lifecycle:
 
-- Invite -> active membership with role.
-- Deactivate requires reassignment of active task ownership and owner-level shares.
-- Historical audit ownership remains unchanged for immutable records.
+- **Invite**: Phase 5 ships CLI-only invitation (`seasoned-hand user invite <email> --org <slug>
+  --role <role>`). The CLI inserts the `users` row in `status='active'` and the matching
+  `organization_memberships` row in one transaction; admin user shares the resulting display name
+  + login token out-of-band. **Email-based invitation flows + magic-link tokens are deferred to
+  Phase 6** (no SMTP/mailer dependency in Phase 5 core — consistent with local-first stance and
+  out-of-scope §6).
+- **Deactivate** requires reassignment of active task ownership and owner-level shares.
+- **Historical audit ownership** remains unchanged for immutable records.
 
 This avoids orphaned mutable assets while preserving forensic attribution.
 

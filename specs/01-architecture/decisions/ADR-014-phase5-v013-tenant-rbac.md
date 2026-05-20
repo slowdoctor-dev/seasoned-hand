@@ -64,7 +64,9 @@ Neutral:
 1. Create new multi-user tables (`organizations`, `users`, memberships/overrides, sharing ACL,
    audit, cost ledger, tenant event projection).
 2. Backfill tenant ids for existing rows from canonical parent relations.
-3. Route unresolved legacy rows to deterministic sentinel tenant with audit warning records.
+3. Route unresolved legacy rows to deterministic sentinel tenant — literal value `legacy-default`
+   per architecture.md §3.5 — with audit warning records keyed off the same sentinel string for
+   operator remediation queries.
 4. Rebuild target tables as needed to enforce NOT NULL `tenant_id` constraints.
 5. Run integrity checks (NULL count = 0, tenant-chain equality checks, cross-tenant ref checks).
 6. Keep rollback path at transaction boundary and archive validation query outputs.
