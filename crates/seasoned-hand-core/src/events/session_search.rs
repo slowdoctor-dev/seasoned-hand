@@ -85,6 +85,20 @@ pub fn search_session_events(
     query: &str,
     filters: &SessionSearchQuery,
 ) -> rusqlite::Result<Vec<EventHit>> {
+    // Phase 5 hardening: this API must fail closed on scope omissions.
+    // If tenant or allowed visibilities are missing/empty, return no rows.
+    // This prevents accidental cross-tenant/all-visibility leakage when a
+    // caller forgets to populate these guards.
+    let Some(tenant_id) = filters.tenant_id.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let Some(levels) = filters.allowed_visibility_levels.as_ref() else {
+        return Ok(Vec::new());
+    };
+    if levels.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let mut sql = String::from(
         "SELECT i.event_id, i.session_id, i.timestamp, i.event_type, i.source,
                 snippet(session_search_fts, 2, '[', ']', ' … ', 16) AS snippet
@@ -94,22 +108,16 @@ pub fn search_session_events(
     );
 
     let mut binds: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(query.to_string())];
-    if let Some(tenant_id) = &filters.tenant_id {
-        sql.push_str(" AND i.tenant_id = ?");
-        binds.push(Box::new(tenant_id.clone()));
-    }
-    if let Some(levels) = &filters.allowed_visibility_levels
-        && !levels.is_empty()
-    {
-        let placeholders = std::iter::repeat_n("?", levels.len())
-            .collect::<Vec<_>>()
-            .join(", ");
-        sql.push_str(" AND i.visibility_level IN (");
-        sql.push_str(&placeholders);
-        sql.push(')');
-        for level in levels {
-            binds.push(Box::new(level.clone()));
-        }
+    sql.push_str(" AND i.tenant_id = ?");
+    binds.push(Box::new(tenant_id.clone()));
+    let placeholders = std::iter::repeat_n("?", levels.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    sql.push_str(" AND i.visibility_level IN (");
+    sql.push_str(&placeholders);
+    sql.push(')');
+    for level in levels {
+        binds.push(Box::new(level.clone()));
     }
     if let Some(session_id) = &filters.session_id {
         sql.push_str(" AND i.session_id = ?");

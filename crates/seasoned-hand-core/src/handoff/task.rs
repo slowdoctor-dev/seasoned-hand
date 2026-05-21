@@ -103,6 +103,13 @@ impl TaskHandoffService {
         // §4.2 hybrid: policy engine gates the operation regardless of
         // surface (HTTP middleware already pre-checked, but the worker /
         // CLI paths land here without that pre-check).
+        //
+        // `is_same_org: true` is sound, not a stub (hardening
+        // P5-HARD-IT1-M2): `organizations.tenant_id` is UNIQUE (V013), so
+        // one tenant maps to exactly one org. The target-user lookup
+        // below is tenant-scoped (`WHERE tenant_id = ? AND email = ?`), so
+        // a resolvable target is necessarily in the actor's org. There is
+        // no cross-org-within-tenant case to guard against.
         authorize(
             Action::TaskHandoff,
             &AuthResource {
@@ -129,11 +136,18 @@ impl TaskHandoffService {
             .with_conn(move |conn| -> Result<HandoffOutcomeInner, HandoffError> {
                 let tx = conn.transaction()?;
                 // 1. Resolve task row (status + updated_at + owner + project).
+                //    Hardening P5-HARD-IT2-H3 (caught by the M4 cross-tenant
+                //    write probe): the lookup MUST be tenant-scoped. Without
+                //    `AND tenant_id = ?` a caller in tenant A could hand off
+                //    tenant B's task (the id is globally unique but the row
+                //    belongs to another tenant) and mutate its ownership —
+                //    a direct NFR-5.1 cross-tenant write. A foreign task-id
+                //    now surfaces as TaskNotFound, identical to a missing id.
                 let row: Option<(String, i64, Option<String>, String)> = tx
                     .query_row(
                         "SELECT status, updated_at, owner_user_id, project_id
-                         FROM tasks WHERE id = ?",
-                        params![task_id],
+                         FROM tasks WHERE id = ? AND tenant_id = ?",
+                        params![task_id, tenant],
                         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                     )
                     .optional()?;

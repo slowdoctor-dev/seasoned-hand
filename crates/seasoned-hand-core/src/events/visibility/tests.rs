@@ -450,6 +450,62 @@ fn default_q() -> EventReadQuery {
 }
 
 #[tokio::test]
+async fn query_respects_project_override_downgrade() {
+    // Hardening P5-HARD-IT1-H1: an org-admin downgraded to Viewer via a
+    // project override must NOT see admin/user-visibility rows — the
+    // read surface gates on effective_role(), not raw org_role.
+    let pool = setup().await;
+    seed_admin(&pool).await;
+    let store = SqliteEventStore::new(pool.clone());
+    // One 'admin'-visibility row (source=="audit") + one 'user' row.
+    store
+        .append(NewEvent {
+            session_id: "s-test".into(),
+            event_type: EventType::Misc,
+            source: "audit".into(),
+            data: serde_json::json!({"kind": "audit_logged"}),
+        })
+        .await
+        .unwrap();
+    store
+        .append(NewEvent {
+            session_id: "s-test".into(),
+            event_type: EventType::Message,
+            source: "user".into(),
+            data: serde_json::json!({"text": "user-visible"}),
+        })
+        .await
+        .unwrap();
+
+    // org_role=Admin but project_override_role=Viewer → effective Viewer.
+    let downgraded = AuthContext {
+        tenant_id: "tenant-test".into(),
+        organization_id: "org-t".into(),
+        actor_user_id: "user-admin".into(),
+        org_role: Role::Admin,
+        project_override_role: Some(Role::Viewer),
+    };
+    let rows = query(&pool, &downgraded, "s-test", default_q())
+        .await
+        .unwrap();
+    // Viewer scope = {viewer} only; neither the admin nor user row qualifies.
+    assert!(
+        rows.is_empty(),
+        "project-downgraded admin must be limited to viewer visibility; saw {rows:?}"
+    );
+
+    // Sanity: the same actor WITHOUT the override (true org-admin) sees both.
+    let full_admin = AuthContext {
+        project_override_role: None,
+        ..downgraded.clone()
+    };
+    let admin_rows = query(&pool, &full_admin, "s-test", default_q())
+        .await
+        .unwrap();
+    assert_eq!(admin_rows.len(), 2);
+}
+
+#[tokio::test]
 async fn projection_hook_does_not_recurse_on_internal_events() {
     // The post-commit quarantine path emits Misc events with the
     // projection-internal source prefix. The hook must skip them so we

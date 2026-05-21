@@ -272,7 +272,43 @@ async fn phase5_cross_tenant_isolation_harness() {
         "cross-tenant handoff target must surface as UserNotFound; got {cross_handoff:?}"
     );
 
+    // Cross-tenant WRITE attempt with a real foreign task-id (`task-b`):
+    // tenant-A admin must not mutate tenant-B task ownership.
+    let cross_task_handoff = handoff_service
+        .handoff(
+            &auth_a_admin,
+            HandoffRequest {
+                task_id: "task-b".into(),
+                to_user_email: "a-user@x.io".into(),
+                reason: Some("forged foreign task".into()),
+                expected_updated_at: None,
+            },
+        )
+        .await;
+    assert!(
+        matches!(cross_task_handoff, Err(HandoffError::TaskNotFound(_))),
+        "cross-tenant handoff using foreign task-id must fail as TaskNotFound; got {cross_task_handoff:?}"
+    );
+    let owner_b: Option<String> = pool
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT owner_user_id FROM tasks WHERE id='task-b'",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .await
+        .expect("task-b remains queryable");
+    assert!(
+        owner_b.is_none(),
+        "cross-tenant forged handoff must not mutate tenant-B owner_user_id"
+    );
+
     // ---------- 5. User deactivation rejects cross-tenant target ----------
+    // NOTE: the "cross-org same-tenant" path is structurally unreachable in
+    // this schema because `organizations.tenant_id` is UNIQUE (V013): one
+    // tenant maps to exactly one org. So we test the meaningful boundary here
+    // (cross-tenant target) and leave cross-org as defensive-but-unreachable.
     let deactivation =
         UserDeactivationService::new(pool.clone(), audit.clone(), handoff_service.clone());
     let cross_deact = deactivation

@@ -241,7 +241,11 @@ pub async fn query(
     q: EventReadQuery,
 ) -> Result<Vec<VisibleEventRow>, VisibilityQueryError> {
     let tenant = auth.tenant_id.clone();
-    let allowed = allowed_visibility_levels(auth.org_role);
+    // Story 5.16 + hardening P5-HARD-IT1-H1: gate on the EFFECTIVE role
+    // (project override takes precedence over org role), matching every
+    // other RBAC gate in the codebase. Using raw org_role here would let
+    // a project-downgraded admin still read admin-visibility rows.
+    let allowed = allowed_visibility_levels(auth.effective_role());
     let allowed_owned: Vec<String> = allowed.iter().map(|s| (*s).to_string()).collect();
     let session_id = session_id.to_string();
     let after = q.after_event_id;

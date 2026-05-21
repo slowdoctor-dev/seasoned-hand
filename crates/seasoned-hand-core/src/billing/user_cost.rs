@@ -496,6 +496,15 @@ impl ReconciliationJob {
     }
 }
 
+/// Relative drift between the expected (recomputed-from-source) and the
+/// observed (ledger) cost. Returns a fraction in [0.0, 1.0+).
+///
+/// Hardening P5-HARD-IT1-L3: when `expected == 0`, any nonzero `observed`
+/// — positive OR negative — yields 1.0 (treated as full drift). This is
+/// deliberate: a ledger row showing cost where the source shows none
+/// (including an impossible negative cost, which has no DB CHECK) is a
+/// reconciliation discrepancy that MUST surface as a drift finding so an
+/// operator investigates. Over-reporting here is the safe direction.
 fn delta_pct(expected: i64, observed: i64) -> f64 {
     if expected == 0 {
         if observed == 0 { 0.0 } else { 1.0 }

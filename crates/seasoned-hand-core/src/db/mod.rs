@@ -32,6 +32,15 @@ pub enum DbError {
 /// configuration for a single-user single-task workload that the
 /// criterion benches showed never contends. Phase 5 multi-user is the
 /// pay-down trigger.
+///
+/// PAY-DOWN PREREQUISITE (P5-HARD-IT1-L1): several Phase 5 read-check-write
+/// sequences are atomic ONLY because this single connection is held for
+/// the whole `with_conn` closure. Before introducing a multi-connection
+/// pool, audit every check-then-mutate path and wrap it in an explicit
+/// `conn.transaction()`. The known sites are documented at
+/// `sharing::concurrency::check_precondition`; the handoff service
+/// (`handoff/task.rs`) already uses an explicit transaction and is the
+/// reference pattern.
 #[derive(Clone)]
 pub struct DbPool {
     inner: Arc<Mutex<Connection>>,

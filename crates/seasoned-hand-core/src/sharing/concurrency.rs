@@ -34,6 +34,25 @@ pub struct StaleRevision {
 /// Designed to be called from inside a service method's transaction
 /// AFTER reading the row, BEFORE mutating it — so the check + write
 /// land atomically.
+///
+/// ## Atomicity invariant (hardening P5-HARD-IT1-L1)
+///
+/// All five callers (`SopShareService::{share,unshare}`,
+/// `PlaybookShareService::{share,unshare,update_visibility_state}`) do
+/// SELECT-`updated_at` → `check_precondition` → mutate inside a single
+/// [`crate::db::DbPool::with_conn`] closure. That closure holds the
+/// pool's `tokio::Mutex` over the **one** SQLite connection for its
+/// whole duration (see `db/mod.rs` — Phase 0 DEBT #1), so the
+/// read-check-write is atomic today WITHOUT an explicit SQL
+/// transaction: no other writer can interleave.
+///
+/// **When DEBT #1 is paid down to a real multi-connection pool**, that
+/// guarantee disappears and these sequences become a live TOCTOU race.
+/// At that point each caller MUST wrap its read-check-write in an
+/// explicit `conn.transaction()` (the handoff service already does this
+/// in `handoff/task.rs`). This is a hard prerequisite of the
+/// pool-paydown work, recorded here at the shared chokepoint so it
+/// cannot be missed.
 pub fn check_precondition(
     expected_updated_at: Option<i64>,
     current_updated_at: i64,

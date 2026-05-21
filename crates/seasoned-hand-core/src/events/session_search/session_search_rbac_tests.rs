@@ -51,6 +51,57 @@ async fn forged_tenant_returns_zero_rows() {
 }
 
 #[tokio::test]
+async fn omitted_tenant_scope_fails_closed() {
+    let pool = db::open(":memory:").await.unwrap();
+    seed_project_chain(&pool, "tenant-a", "proj-a", "task-a").await;
+    seed_project_chain(&pool, "tenant-b", "proj-b", "task-b").await;
+    seed_session(&pool, "sess-a", "task-a", "proj-a").await;
+    seed_session(&pool, "sess-b", "task-b", "proj-b").await;
+    let store = SqliteEventStore::new(pool.clone());
+
+    store
+        .append(NewEvent {
+            session_id: "sess-a".into(),
+            event_type: EventType::Message,
+            source: "user".into(),
+            data: serde_json::json!({ "text": "alpha-only" }),
+        })
+        .await
+        .unwrap();
+    store
+        .append(NewEvent {
+            session_id: "sess-b".into(),
+            event_type: EventType::Message,
+            source: "user".into(),
+            data: serde_json::json!({ "text": "alpha-only" }),
+        })
+        .await
+        .unwrap();
+
+    let hits = pool
+        .with_conn(|conn| {
+            search_session_events(
+                conn,
+                "alpha-only",
+                &SessionSearchQuery {
+                    // Intentionally omitted tenant_id and visibility levels:
+                    // fail-closed must return 0 rows.
+                    tenant_id: None,
+                    allowed_visibility_levels: None,
+                    ..SessionSearchQuery::default()
+                },
+            )
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        hits.is_empty(),
+        "omitted tenant/visibility scope must fail closed (no rows)"
+    );
+}
+
+#[tokio::test]
 async fn role_visibility_predicates_are_enforced() {
     let pool = db::open(":memory:").await.unwrap();
     seed_project_chain(&pool, "tenant-a", "proj-a", "task-a").await;

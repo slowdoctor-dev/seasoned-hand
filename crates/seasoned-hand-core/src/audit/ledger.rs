@@ -222,7 +222,10 @@ impl AuditLogger {
         // User role: limit results to the actor's own rows regardless of
         // the caller-supplied `actor_user_id` filter (per architecture
         // §4.3 row "View audit log (org) — user → allow (limited)").
-        let effective_actor_filter = match auth.org_role {
+        // Hardening P5-HARD-IT1-H1: key off the EFFECTIVE role so a
+        // project-override downgrade applies here too, consistent with
+        // `authorize` (policy.rs) and `visibility::query`.
+        let effective_actor_filter = match auth.effective_role() {
             Role::User => Some(auth.actor_user_id.clone()),
             _ => q.actor_user_id.clone(),
         };

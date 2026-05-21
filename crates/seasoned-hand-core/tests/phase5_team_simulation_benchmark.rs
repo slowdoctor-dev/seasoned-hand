@@ -227,7 +227,8 @@ async fn phase5_team_simulation_benchmark() {
 
     // ---------- 3. Curator-style high-confidence playbook share ----------
     // Skip going through the full curator pipeline — the share-row
-    // shape is the production invariant; cura
+    // shape is the production invariant; curator execution already has
+    // dedicated harness coverage in story 5.28.
     pool.with_conn(|conn| {
         conn.execute(
             "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version,
@@ -286,6 +287,24 @@ async fn phase5_team_simulation_benchmark() {
     );
     // 3 cost-bearing users → 3 rows.
     assert_eq!(report.rows_checked, 3);
+    // Inject a real drift (>0.5%) to validate detection path in this
+    // composed benchmark (not just the clean reconciliation path).
+    pool.with_conn(|conn| {
+        conn.execute(
+            "UPDATE user_cost_ledger
+             SET cost_cents = cost_cents + 10
+             WHERE tenant_id='tenant-team' AND user_id='u-alice' AND month_yyyymm='202605'",
+            [],
+        )?;
+        Ok::<(), rusqlite::Error>(())
+    })
+    .await
+    .unwrap();
+    let drift_report = reconciler.run("202605").await.expect("reconcile drift");
+    assert!(
+        drift_report.drifted_rows >= 1,
+        "injected >0.5% drift must be detected; report={drift_report:?}"
+    );
 
     // ---------- 6. Cross-tenant probe — zero leakage from tenant-team ----------
     // Alice (tenant-team User) attempts to read tenant-other's session
@@ -329,12 +348,13 @@ async fn phase5_team_simulation_benchmark() {
     assert!(!own.is_empty(), "in-tenant read must surface own events");
 
     // ---------- 7. Wall-clock CI budget ----------
-    // Per acceptance §1: ≤ 60 min on baseline. The harness uses
-    // in-memory SQLite + no real LLM, so practical budget is seconds.
+    // Per acceptance §1, the composed benchmark must stay comfortably
+    // inside CI budget. Here we enforce a concrete and non-trivial
+    // local ceiling for this in-memory harness.
     let elapsed = started.elapsed();
     assert!(
-        elapsed.as_secs() <= 3600,
-        "team simulation exceeded 60min CI budget: {:.2}s",
+        elapsed.as_secs() <= 300,
+        "team simulation exceeded 5min harness ceiling: {:.2}s",
         elapsed.as_secs_f64()
     );
     eprintln!(

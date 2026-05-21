@@ -61,6 +61,10 @@ pub enum DeactivationError {
     },
     #[error("source user is already deactivated")]
     AlreadyDeactivated,
+    #[error(
+        "refusing to deactivate the last active admin of org {organization_id} (would lock the org out of all admin-gated actions)"
+    )]
+    LastAdminLockout { organization_id: String },
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error("audit: {0}")]
@@ -157,6 +161,44 @@ impl UserDeactivationService {
             return Err(DeactivationError::CrossOrgTarget);
         }
 
+        // 0.5. Last-admin lockout guard (P5-HARD-IT1-M1). If the source
+        // is an admin and removing them would leave the org with zero
+        // active admins, refuse — otherwise the org loses access to
+        // every admin-gated action (MembershipManage / EventRawRead /
+        // audit-admin) with no recovery path.
+        let lockout_org = source_org_id.clone();
+        let lockout_source = source_user_id.clone();
+        let would_lock_out = self
+            .db
+            .with_conn(move |conn| {
+                let source_role: Option<String> = conn
+                    .query_row(
+                        "SELECT role FROM organization_memberships
+                         WHERE organization_id = ? AND user_id = ?",
+                        params![lockout_org, lockout_source],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if source_role.as_deref() != Some("admin") {
+                    return Ok::<bool, rusqlite::Error>(false);
+                }
+                let other_active_admins: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM organization_memberships m
+                     JOIN users u ON u.id = m.user_id
+                     WHERE m.organization_id = ? AND m.role = 'admin'
+                       AND u.status = 'active' AND m.user_id != ?",
+                    params![lockout_org, lockout_source],
+                    |r| r.get(0),
+                )?;
+                Ok(other_active_admins == 0)
+            })
+            .await?;
+        if would_lock_out {
+            return Err(DeactivationError::LastAdminLockout {
+                organization_id: source_org_id.clone(),
+            });
+        }
+
         // 1. Find every active task owned by source — these need hand-off.
         let source_id_for_query = source_user_id.clone();
         let active_tasks: Vec<(String, i64)> = self
@@ -209,17 +251,24 @@ impl UserDeactivationService {
         //    `created_at` timestamp + visibility_state survive.
         let source_id_for_shares = source_user_id.clone();
         let target_id_for_shares = target_user_id.clone();
+        // P5-HARD-IT1-H2: scope the rewrite to the caller's tenant. Every
+        // mutating statement in Phase 5 carries a tenant predicate; this
+        // one must too, so the rewrite can never cross a tenant boundary
+        // even if a user-id namespace ever collided across tenants.
+        let shares_tenant = auth.tenant_id.clone();
         let (sop_shares_transferred, playbook_shares_transferred): (usize, usize) = self
             .db
             .with_conn(move |conn| {
                 let tx = conn.transaction()?;
                 let sop_n = tx.execute(
-                    "UPDATE sop_shares SET granted_by_user_id = ? WHERE granted_by_user_id = ?",
-                    params![target_id_for_shares, source_id_for_shares],
+                    "UPDATE sop_shares SET granted_by_user_id = ?
+                     WHERE granted_by_user_id = ? AND tenant_id = ?",
+                    params![target_id_for_shares, source_id_for_shares, shares_tenant],
                 )?;
                 let pb_n = tx.execute(
-                    "UPDATE playbook_shares SET granted_by_user_id = ? WHERE granted_by_user_id = ?",
-                    params![target_id_for_shares, source_id_for_shares],
+                    "UPDATE playbook_shares SET granted_by_user_id = ?
+                     WHERE granted_by_user_id = ? AND tenant_id = ?",
+                    params![target_id_for_shares, source_id_for_shares, shares_tenant],
                 )?;
                 tx.commit()?;
                 Ok::<(usize, usize), rusqlite::Error>((sop_n, pb_n))

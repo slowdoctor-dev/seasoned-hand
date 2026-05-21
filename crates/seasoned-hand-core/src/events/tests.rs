@@ -326,6 +326,16 @@ mod session_search {
                     "needle_alpha",
                     &SessionSearchQuery {
                         session_id: Some("s1".into()),
+                        // P5-HARD-IT1-M3: search now fails closed without a
+                        // tenant scope. Session s1 has no task chain, so its
+                        // events project to the V013 sentinel tenant at
+                        // 'user' visibility.
+                        tenant_id: Some("legacy-default".into()),
+                        allowed_visibility_levels: Some(vec![
+                            "viewer".into(),
+                            "user".into(),
+                            "admin".into(),
+                        ]),
                         limit: Some(20),
                         ..Default::default()
                     },

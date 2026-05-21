@@ -245,3 +245,85 @@ async fn deactivate_denies_viewer_role() {
         .expect_err("viewer must be denied");
     assert!(matches!(err, DeactivationError::Auth(_)));
 }
+
+// --- Hardening P5-HARD-IT1-M1: last-admin lockout guard ---
+
+/// Promote a seeded user's membership role (helper for the lockout tests;
+/// the default setup seeds everyone as 'user').
+async fn set_role(pool: &DbPool, user_id: &str, role: &str) {
+    let user_id = user_id.to_string();
+    let role = role.to_string();
+    pool.with_conn(move |conn| {
+        conn.execute(
+            "UPDATE organization_memberships SET role = ? WHERE user_id = ?",
+            params![role, user_id],
+        )?;
+        Ok::<(), rusqlite::Error>(())
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn deactivate_last_admin_is_rejected() {
+    // user-src is the ONLY admin in org-t. Deactivating it would leave
+    // the org with zero admins → must be refused (LastAdminLockout).
+    let (pool, svc) = setup().await;
+    set_role(&pool, "user-src", "admin").await;
+    let err = svc
+        .deactivate(&ctx_admin(), "src@x.io", "tgt@x.io", None)
+        .await
+        .expect_err("deactivating the sole admin must be rejected");
+    assert!(
+        matches!(err, DeactivationError::LastAdminLockout { .. }),
+        "expected LastAdminLockout, got {err:?}"
+    );
+    // Source must remain active — the guard fails BEFORE any state change.
+    let status: String = pool
+        .with_conn(|conn| {
+            conn.query_row("SELECT status FROM users WHERE id = 'user-src'", [], |r| {
+                r.get(0)
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(status, "active");
+}
+
+#[tokio::test]
+async fn deactivate_non_last_admin_succeeds() {
+    // Two admins (user-src + user-tgt). Deactivating user-src is fine —
+    // user-tgt remains as an active admin.
+    let (pool, svc) = setup().await;
+    set_role(&pool, "user-src", "admin").await;
+    set_role(&pool, "user-tgt", "admin").await;
+    let outcome = svc
+        .deactivate(&ctx_admin(), "src@x.io", "tgt@x.io", None)
+        .await
+        .expect("deactivating a non-last admin must succeed");
+    assert_eq!(outcome.source_user_id, "user-src");
+    let status: String = pool
+        .with_conn(|conn| {
+            conn.query_row("SELECT status FROM users WHERE id = 'user-src'", [], |r| {
+                r.get(0)
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(status, "deactivated");
+}
+
+#[tokio::test]
+async fn deactivate_non_admin_source_is_unaffected_by_lockout_guard() {
+    // The guard only fires for admin sources. A plain 'user' source
+    // deactivates normally even if it happens to be the only 'user'.
+    let (pool, svc) = setup().await;
+    // user-admin is promoted so the org always has an admin; user-src
+    // stays a 'user'.
+    set_role(&pool, "user-admin", "admin").await;
+    let outcome = svc
+        .deactivate(&ctx_admin(), "src@x.io", "tgt@x.io", None)
+        .await
+        .expect("deactivating a non-admin user must succeed");
+    assert_eq!(outcome.source_user_id, "user-src");
+}
