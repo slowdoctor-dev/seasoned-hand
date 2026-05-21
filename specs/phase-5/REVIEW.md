@@ -809,3 +809,47 @@ Applied in `crates/seasoned-hand-server/src/lib.rs`:
 
 iter-4 found **1 new H + 1 new M**, both fixed inline. Saturation not yet reached
 (non-zero new H/M in this round). A confirming iter-5 full re-sweep is still required.
+
+---
+
+## HARDENING iter-5 (Claude, 2026-05-21) — beyond the :id family: workspace + WS
+
+iter-4 completed the HTTP `:id` retrofit and found H5/M6. iter-5 swept the surfaces
+the `:id` audit didn't reach: the workspace file proxy and the WebSocket path.
+
+### Findings
+
+- **`P5-HARD-IT5-H6` (H) — FIXED.** `/v1/workspace/:session_id` + `/v1/workspace/:session_id/*sub_path`
+  (`workspace_root` / `workspace_proxy`) served raw sandbox files (source, tool outputs,
+  any secrets in the workspace) gated by `require_loopback` ONLY — no `with_auth`, no
+  AuthContext, no tenant check. A local tenant-A caller could read tenant-B's sandbox by
+  session_id — the richest possible leak surface. Fixed: wrapped all three routes with
+  `with_auth(..., Action::TaskRead)`, added `Extension<AuthContext>` + `authorize_in_handler`
+  + `require_session_tenant(...)` to both handlers (reuses iter-4's session→tenant chain
+  helper). Updated the two non-loopback regression tests to pass `Extension(test_auth())`.
+
+- **`P5-HARD-IT5-H7` (H) — RECORDED; assigned to iter-6 (Codex).** The WebSocket path
+  (`/ws` → `ws_upgrade` → `ws_session`) has NO auth and NO tenant scoping. `ws_upgrade`
+  is `require_loopback` only (not `with_auth`); the message handlers (`task_create`,
+  `handle_task_{pause,resume,cancel}`) operate by session_id with no tenant check, and
+  `task_create` sets `tenant_id: None` (ws.rs:329). This is the documented Phase 0
+  DEBT #7 ("no WS auth") whose own comment said it would be closed "until Phase 5
+  multi-user lands real auth" — but Phase 5 did NOT close it. It's a full tenant-isolation
+  bypass of the entire task lifecycle over WS. Loopback-gated (same trust boundary as the
+  HTTP routes), pre-existing debt, not a Phase 5 code regression — but it must close for
+  the multi-user story to hold. **Closure plan (iter-6, Codex):** reuse the header-based
+  auth model — wrap `/ws` with `with_auth`, extract `Extension<AuthContext>` in
+  `ws_upgrade`, thread it through `ws_session` into the message arms, call
+  `require_session_tenant` before pause/resume/cancel, and set the real tenant on
+  `task_create`. No new handshake protocol needed. Closes DEBT #7.
+
+### Route-coverage note
+Audited every `app()` route. Intentionally-public/token-gated routes (`/healthz`, `/ws`
+[H7], `/v1/cost`, `/v1/intake/webhook` [own token], `/v1/admin/sandbox/cleanup` [admin
+token]) are by-design. All `/v1/{tasks,projects,sessions,verifications}/:id*` routes are
+now `with_auth` + tenant-guarded (iter-3/4/5). Workspace closed here. WS is the one
+remaining gap (H7).
+
+### Iter-5 conclusion
+Round produced **2 H (H6 fixed, H7 recorded→iter-6)** → NOT zero-finding. iter-6 (Codex):
+close H7 (WS tenant scoping / DEBT #7) + independent re-sweep. Saturation still pending.

@@ -1321,18 +1321,26 @@ enum WorkspaceResponse {
 async fn workspace_root(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskRead, &auth_ctx)?;
+    // P5-HARD-IT5-H6: tenant-scope before serving the workspace root.
+    require_session_tenant(&state, &session_id, &auth_ctx).await?;
     workspace_proxy_inner(state, session_id, String::new()).await
 }
 
 async fn workspace_proxy(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Path((session_id, sub_path)): Path<(String, String)>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskRead, &auth_ctx)?;
+    // P5-HARD-IT5-H6: tenant-scope before serving any sandbox file.
+    require_session_tenant(&state, &session_id, &auth_ctx).await?;
     workspace_proxy_inner(state, session_id, sub_path).await
 }
 
@@ -1572,9 +1580,23 @@ pub fn app(state: AppState) -> Router {
             "/v1/sessions/:id/progress",
             with_auth(get(get_progress), Action::TaskRead),
         )
-        .route("/v1/workspace/:session_id/*sub_path", get(workspace_proxy))
-        .route("/v1/workspace/:session_id", get(workspace_root))
-        .route("/v1/workspace/:session_id/", get(workspace_root))
+        // P5-HARD-IT5-H6: the workspace proxy serves raw sandbox files
+        // (source, outputs, secrets) by session_id — the richest leak
+        // surface. Previously loopback-only with NO auth/tenant check.
+        // Now RBAC-gated + tenant-scoped (require_session_tenant in the
+        // handler) so a tenant-A caller can't read tenant-B's sandbox.
+        .route(
+            "/v1/workspace/:session_id/*sub_path",
+            with_auth(get(workspace_proxy), Action::TaskRead),
+        )
+        .route(
+            "/v1/workspace/:session_id",
+            with_auth(get(workspace_root), Action::TaskRead),
+        )
+        .route(
+            "/v1/workspace/:session_id/",
+            with_auth(get(workspace_root), Action::TaskRead),
+        )
         .route(
             "/v1/sessions/:id/verifications",
             with_auth(get(list_verifications_handler), Action::TaskRead),
@@ -3920,6 +3942,7 @@ mod tests {
         let outcome = workspace_root(
             State(state),
             axum::extract::ConnectInfo(remote),
+            Extension(test_auth()),
             Path("any-session-id".to_string()),
         )
         .await;
@@ -4004,6 +4027,7 @@ mod tests {
             workspace_proxy(
                 State(state.clone()),
                 axum::extract::ConnectInfo(remote),
+                Extension(test_auth()),
                 Path(("any".into(), "sub/path.txt".into())),
             )
         })
