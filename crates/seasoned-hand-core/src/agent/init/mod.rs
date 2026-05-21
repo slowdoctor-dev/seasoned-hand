@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use serde::Deserialize;
 use serde_json::json;
@@ -87,7 +87,7 @@ impl Initializer {
             sandbox,
             events,
             task_store: None,
-            planner_prompt: read_planner_prompt().unwrap_or_else(|_| DEFAULT_PLANNER_PROMPT.into()),
+            planner_prompt: PLANNER_PROMPT.clone(),
         }
     }
 
@@ -710,6 +710,14 @@ fn initial_progress_lines(plan: &Plan) -> String {
 fn read_planner_prompt() -> Result<String, std::io::Error> {
     std::fs::read_to_string(Path::new("config/prompts/planner.system.txt"))
 }
+
+/// Planner system prompt, read from disk once and cached process-wide.
+/// `Initializer::new` runs per task on a Tokio worker thread, so reading the
+/// (operator-static) prompt file on every construction was a blocking,
+/// repeated disk I/O. The prompt never changes at runtime, matching how the
+/// verifier/narrator prompts are loaded once at boot.
+static PLANNER_PROMPT: LazyLock<String> =
+    LazyLock::new(|| read_planner_prompt().unwrap_or_else(|_| DEFAULT_PLANNER_PROMPT.into()));
 
 const DEFAULT_PLANNER_PROMPT: &str = "You are Seasoned Hand planner. Return JSON: {\"goal\":\"...\",\"phases\":[{\"id\":1,\"title\":\"...\",\"capabilities\":[]}]}";
 

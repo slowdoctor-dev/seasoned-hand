@@ -226,6 +226,16 @@ impl AgentRunner {
         let breaker = self.breakers.for_session(&req.session_id).await;
         let cancel_token = self.cancel_tokens.get(&req.session_id).map(|t| t.clone());
 
+        // Hot-loop invariant: the tool catalogue and mask policy are fixed for
+        // the whole run, so build the masked ToolSpec list once instead of
+        // rebuilding all ~38 tool schemas (a fresh `json!` per tool) every
+        // iteration.
+        let masked_tools = {
+            let mut tools = self.tool_specs_from_registry();
+            apply_mask(&mut tools, &*self.mask_policy, AgentMode::Worker);
+            tools
+        };
+
         for step in start_step..req.max_steps {
             steps_run = step + 1;
             if self
@@ -260,13 +270,11 @@ impl AgentRunner {
                     },
                 );
             }
-            let mut tools = self.tool_specs_from_registry();
-            apply_mask(&mut tools, &*self.mask_policy, AgentMode::Worker);
             let main_slot = self.router.resolve(SlotName::Main);
             let llm_call = self.llm.chat_completion(ChatCompletionRequest {
                 model: main_slot.model.clone(),
                 messages,
-                tools: Some(tools),
+                tools: Some(masked_tools.clone()),
                 tool_choice: Some(ToolChoice::required()),
                 temperature: None,
                 max_tokens: None,
