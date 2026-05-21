@@ -44,10 +44,9 @@ N+1 (billing/retention batched in one tx); indexes (all hot columns covered).
 Both fixes are behaviour-preserving (cached value / hoisted invariant — same
 result each call). Committed `d5d5f77`.
 
-### iter-2 (Codex) — IN PROGRESS at session pause (2026-05-22)
+### iter-2 (Codex) — committed `ef8202f` (2026-05-22)
 
-Codex's independent pass found one hot-path allocation issue and is committing
-it (gate validation running at session close):
+Codex's independent pass found one hot-path allocation issue and fixed it:
 
 - **P3 (Codex):** `SqliteEventStore`'s event-read query (`events/sqlite.rs`,
   the `WHERE session_id = ? [...] ORDER BY id ASC LIMIT ?` read used by
@@ -57,8 +56,9 @@ it (gate validation running at session close):
   type_filter) combinations using stack `rusqlite::params![]`, removing the
   per-call allocations. Behaviour-preserving (same SQL, params, rows).
 
-**Status at pause:** P3 verified behaviour-preserving by Claude (read the diff);
-Codex was running its final `cargo test --workspace` before committing
-`events/sqlite.rs`. **Next session:** confirm Codex committed + pushed P3,
-record its hash, then run the independent **iter-3** confirm. Saturation =
-a bilateral round where neither party finds a new hot-path issue.
+P3 verified behaviour-preserving by Claude (read the diff: same SQL, params,
+rows); Codex's gates green; committed + pushed as `ef8202f` (only
+`events/sqlite.rs`). **Next session:** run the independent **iter-3** confirm
+(Claude sweep + Codex confirm). Saturation = a bilateral round where neither
+party finds a new hot-path issue. Tracks sealed so far this cycle: Security,
+manageability; performance has 3 fixes (P1/P2/P3) and awaits its iter-3 seal.
