@@ -173,3 +173,90 @@ Evidence:
 - code: `crates/seasoned-hand-core/src/sandbox/mod.rs`
 - tests: `sandbox::tests::is_safe_session_id_accepts_and_rejects`,
   `sandbox::tests::require_safe_session_id_returns_invalid_workspace`
+
+---
+
+## Audit cycle — 2026-05-21 (Claude + Codex) — dedicated Security track
+
+> Reviewers: Claude (iter-1), Codex (iter-2, independent re-audit — pending
+> capacity; Codex currently at-capacity throttle).
+> Scope: a dedicated **Security** hardening track, broader than the just-
+> completed Phase-5 cross-tenant saturation pass (10 H + 6 M, see
+> `specs/phase-5/REVIEW.md`). Categories: request authn / network exposure,
+> SQL injection, path traversal, token compare / CSPRNG, secrets-in-logs,
+> DoS / resource caps, deserialization panic-safety, crypto, production
+> `unwrap`/`panic`, integer overflow.
+> Saturation rule: a full Claude+Codex round with zero new H/M findings.
+
+### iter-1 (Claude) — attack-surface map
+
+| Surface | Verdict |
+|---|---|
+| Request authentication model (`x-seasoned-hand-*` header trust) | **H-1 (mitigated)** — see below |
+| `require_loopback` coverage on sensitive handlers | **H-2 (fixed)** — 3 SOP-share handlers were the only gap |
+| SQL injection (all crates) | clean — every value bound via `params!` / `params_from_iter` / `ToSql`; no string-interpolated values |
+| Path traversal (workspace / sandbox) | clean — `require_safe_session_id` + workspace-root containment; minor Windows-backslash note (loopback-only, non-blocking) |
+| Token compare / invitation tokens | clean — `subtle::ConstantTimeEq::ct_eq` for compare, `uuid` v4 (getrandom CSPRNG) for generation, SHA-256-hashed at rest |
+| Secrets / PII in logs | clean — no `tracing::*` call emits API keys, tokens, or raw header identity |
+| DoS / resource caps | clean — list endpoints `LIMIT`-capped; axum `DefaultBodyLimit` 2 MB on the router |
+| Deserialization panic-safety | clean — no `unwrap`/`expect` on `serde` paths in production |
+| Crypto | clean — `sha2` + `subtle` + `getrandom`-backed `uuid`; no hand-rolled primitives |
+| Production `unwrap`/`panic` | clean — all hits are in `#[cfg(test)]` modules |
+
+### H-1 (HIGH, mitigated) — header-trust authentication model
+
+`crates/seasoned-hand-server/src/auth.rs` middleware derives the full caller
+identity (`tenant_id`, `organization_id`, `actor_user_id`, role) from
+self-asserted plaintext `x-seasoned-hand-*` request headers, with no
+credential binding. If the control plane is bound to a non-loopback address
+without a trusted authenticating gateway in front, any client that can reach
+the socket can assert `x-seasoned-hand-org-role: admin` for any tenant — a
+complete auth bypass.
+
+This is **by design** for the current single-operator, self-hosted posture:
+verifiable end-user authentication (API key / OAuth) is the BASELINE §8
+Open Decision slated for Phase 6. The header-trust model is the documented
+gateway-trust contract.
+
+Mitigation applied this iteration (defense-in-depth, not a replacement for
+real authn):
+1. Default bind is loopback (`127.0.0.1`); `HOST` env override.
+2. `main.rs` now logs a startup `SECURITY:` warning whenever the resolved
+   bind address is non-loopback, naming the gateway requirement.
+3. Because **H-2 closes the last `require_loopback` gap**, every sensitive
+   handler now enforces loopback — so on the default bind the header-trust
+   surface is reachable only from the same host.
+4. `SECURITY.md` gains a "Request authentication & network exposure" section
+   stating the gateway requirement explicitly.
+
+Residual risk is carried forward to Phase 6 as the real-authn work item.
+
+### H-2 (HIGH, fixed) — missing `require_loopback` on SOP-share handlers
+
+`post_sop_share_handler`, `delete_sop_share_handler`, and
+`list_sop_shares_handler` (`crates/seasoned-hand-server/src/lib.rs`) were the
+only sensitive Phase 5 handlers that did **not** call `require_loopback`.
+They were `with_auth`-gated and tenant-scoped, but lacked the loopback
+defense-in-depth every other sensitive handler applies — so on a
+mis-configured non-loopback bind they were directly reachable.
+
+Fix: added `ConnectInfo` + `require_loopback(remote)?` as the first body line
+of all three handlers (comment tag `SEC-IT1-H2`), and added three regression
+sweeps to the existing `assert_handler_refuses_non_loopback` battery
+(`{post,delete}_sop_share_refuses_non_loopback_remote`,
+`list_sop_shares_refuses_non_loopback_remote`).
+
+### Low findings (logged, not blocking)
+
+- `delta_pct` cost-drift math does `(expected - observed).abs()` on `i64`;
+  theoretically overflowable but the inputs are internally-generated cost
+  cents, never request-controlled. Not fixed.
+- WS outbound channel is unbounded; loopback-only and bounded in practice by
+  the agent loop cadence. Not fixed.
+
+### iter-1 verdict
+
+2 HIGH (H-1 mitigated + carried to Phase 6; H-2 fixed), 2 Low logged. All
+other categories clean. Awaiting Codex's independent iter-2 re-audit before
+declaring saturation — a single sweep is not a seal (cf. the Phase-5
+cross-tenant pass, where the bilateral confirm caught H10).

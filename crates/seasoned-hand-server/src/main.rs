@@ -763,6 +763,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = bind_addr()?;
     tracing::info!(%addr, %database_url, %redis_url, "seasoned-hand-server starting");
 
+    // SEC-IT1-H1: the request auth model derives identity (tenant /
+    // org / role) from plaintext `x-seasoned-hand-*` headers, trusting an
+    // upstream gateway to set them. Every sensitive handler enforces
+    // `require_loopback`, so on the default 127.0.0.1 bind the header
+    // trust is only reachable from the host itself. Binding a
+    // non-loopback address removes that backstop: the headers become the
+    // ONLY identity gate, and a verifiable-credential authn layer
+    // (API key / OAuth — the open Phase 6 auth decision) is NOT yet in
+    // place. Refuse to silently expose that surface — loudly warn.
+    if !addr.ip().is_loopback() {
+        tracing::warn!(
+            %addr,
+            "SECURITY: binding a non-loopback address. The auth model trusts \
+             x-seasoned-hand-* identity headers — you MUST front this with a \
+             gateway that authenticates callers and sets those headers, and \
+             must NOT expose this port directly. See SECURITY.md."
+        );
+    }
+
     let listener = tokio::net::TcpListener::bind(addr).await?;
     // Story 1.13b: the rollback admin endpoint needs `ConnectInfo<SocketAddr>`
     // to enforce the loopback guard, so we use

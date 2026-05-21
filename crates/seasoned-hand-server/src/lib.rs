@@ -3222,10 +3222,15 @@ fn map_audit_query_error(err: seasoned_hand_core::audit::AuditQueryError) -> Api
 
 async fn post_sop_share_handler(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Extension(auth_ctx): Extension<AuthContext>,
     Path(sop_id): Path<String>,
     Json(body): Json<SopShareBody>,
 ) -> ApiResult<(StatusCode, Json<SopShareDto>)> {
+    // SEC-IT1-H2: match the loopback defense-in-depth every other
+    // sensitive Phase 5 handler applies (these 3 SOP-share routes were
+    // the only sensitive handlers missing it).
+    require_loopback(remote)?;
     authorize_in_handler(Action::SopShare, &auth_ctx)?;
     let permission = parse_sop_permission(&body.permission)?;
     let service = SopShareService::new(state.db.clone());
@@ -3244,10 +3249,12 @@ async fn post_sop_share_handler(
 
 async fn delete_sop_share_handler(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Extension(auth_ctx): Extension<AuthContext>,
     Path(sop_id): Path<String>,
     Json(body): Json<SopUnshareBody>,
 ) -> ApiResult<StatusCode> {
+    require_loopback(remote)?; // SEC-IT1-H2
     authorize_in_handler(Action::SopShare, &auth_ctx)?;
     let service = SopShareService::new(state.db.clone());
     let deleted = service
@@ -3272,9 +3279,11 @@ async fn delete_sop_share_handler(
 
 async fn list_sop_shares_handler(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
     Extension(auth_ctx): Extension<AuthContext>,
     Path(sop_id): Path<String>,
 ) -> ApiResult<Json<Vec<SopShareDto>>> {
+    require_loopback(remote)?; // SEC-IT1-H2
     authorize_in_handler(Action::SopShare, &auth_ctx)?;
     let service = SopShareService::new(state.db.clone());
     let rows = service
@@ -4171,6 +4180,59 @@ mod tests {
                 axum::extract::ConnectInfo(remote),
                 Path("any".into()),
                 Query(ChannelTestQuery { role: None }),
+            )
+        })
+        .await;
+    }
+
+    // SEC-IT1-H2: the 3 SOP-share handlers were the only sensitive Phase 5
+    // routes missing the loopback gate. Lock the fix with regression sweeps.
+    #[tokio::test]
+    async fn post_sop_share_refuses_non_loopback_remote() {
+        let state = empty_state().await;
+        assert_handler_refuses_non_loopback(|remote| {
+            post_sop_share_handler(
+                State(state.clone()),
+                axum::extract::ConnectInfo(remote),
+                Extension(test_auth()),
+                Path("any".into()),
+                Json(SopShareBody {
+                    user_email: "x@example.com".into(),
+                    permission: "viewer".into(),
+                    expected_updated_at: None,
+                }),
+            )
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn delete_sop_share_refuses_non_loopback_remote() {
+        let state = empty_state().await;
+        assert_handler_refuses_non_loopback(|remote| {
+            delete_sop_share_handler(
+                State(state.clone()),
+                axum::extract::ConnectInfo(remote),
+                Extension(test_auth()),
+                Path("any".into()),
+                Json(SopUnshareBody {
+                    user_email: "x@example.com".into(),
+                    expected_updated_at: None,
+                }),
+            )
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn list_sop_shares_refuses_non_loopback_remote() {
+        let state = empty_state().await;
+        assert_handler_refuses_non_loopback(|remote| {
+            list_sop_shares_handler(
+                State(state.clone()),
+                axum::extract::ConnectInfo(remote),
+                Extension(test_auth()),
+                Path("any".into()),
             )
         })
         .await;

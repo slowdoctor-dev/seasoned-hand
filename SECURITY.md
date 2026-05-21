@@ -76,6 +76,29 @@ We do not:
 - Send telemetry without explicit opt-in
 - Make network calls outside what the user configures
 
+## Request authentication & network exposure (IMPORTANT)
+
+The control plane derives caller identity — `tenant_id`, `organization_id`,
+`actor_user_id`, and role — from plaintext `x-seasoned-hand-*` request headers. It
+does **not** independently authenticate the caller (verifiable API-key / OAuth authn
+is the planned Phase 6 auth decision). The deployment model is therefore:
+
+- **Default bind is `127.0.0.1` (loopback).** Every sensitive HTTP/WebSocket handler
+  additionally enforces a loopback check, so on the default bind only processes on the
+  same host can reach them. This is the supported single-operator posture.
+- **If you set `HOST` to a non-loopback address** (e.g. `0.0.0.0`), the server logs a
+  startup `SECURITY:` warning. In that mode you **MUST** place a trusted reverse proxy /
+  gateway in front that authenticates every caller and sets the `x-seasoned-hand-*`
+  headers itself, and you must **not** expose the control-plane port directly. Without
+  that gateway, any client that can reach the socket can assert
+  `x-seasoned-hand-org-role: admin` for any tenant and gain full access.
+
+Tenant isolation within the control plane (one tenant cannot read/write another's data
+once identity is established) is enforced at every surface and covered by the
+`phase5_cross_tenant_isolation_harness`; see `specs/phase-5/REVIEW.md`. That isolation
+assumes the *identity itself* is trustworthy — which is the gateway's responsibility in
+a multi-tenant deployment.
+
 ## Known security considerations
 
 - The agent can execute shell commands inside the sandbox. The sandbox is the security boundary. Do not run on untrusted code paths or with mounted host filesystems.
