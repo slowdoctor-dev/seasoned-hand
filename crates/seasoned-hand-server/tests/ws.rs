@@ -1,6 +1,7 @@
 use axum::http::StatusCode;
 use futures_util::{SinkExt, StreamExt};
 use seasoned_hand_core::events::{EventStore, EventType, NewEvent};
+use seasoned_hand_core::project::{NewProject, NewTask, ProjectStore, TaskStore};
 use seasoned_hand_core::router::SlotRouter;
 use seasoned_hand_core::sandbox::SandboxClient;
 use seasoned_hand_core::search::{SearchClient, SearchProvider};
@@ -8,6 +9,7 @@ use seasoned_hand_core::{db, pubsub};
 use seasoned_hand_server::{AppState, app};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -40,11 +42,31 @@ async fn boot() -> (String, AppState) {
         .await;
 
     let pool = db::open(":memory:").await.unwrap();
+    let projects = ProjectStore::new(pool.clone());
+    let tasks = TaskStore::new(pool.clone());
+    let project_id = projects
+        .insert(NewProject {
+            tenant_id: Some("legacy-default".to_string()),
+            title: "WS Project".to_string(),
+            description: None,
+        })
+        .await
+        .unwrap();
+    let task_id = tasks
+        .insert(NewTask {
+            project_id: project_id.clone(),
+            tenant_id: Some("legacy-default".to_string()),
+            title: "WS Task".to_string(),
+            expected_due_at: None,
+        })
+        .await
+        .unwrap();
     pool.with_conn(|conn| {
         conn.execute(
-            "INSERT INTO sessions (id, created_at, updated_at, state) \
-             VALUES ('s1', 1, 1, 'RUNNING')",
-            [],
+            "INSERT INTO sessions (
+                id, task_id, project_id, created_at, updated_at, state, title, cost_cents, tool_calls
+            ) VALUES ('s1', ?, ?, 1, 1, 'RUNNING', 'seed-session', 0, 0)",
+            rusqlite::params![task_id, project_id],
         )
         .unwrap();
     })
@@ -83,6 +105,27 @@ slots:
     (format!("ws://{addr}/ws"), state)
 }
 
+fn ws_request(
+    url: &str,
+    tenant_id: &str,
+    org_role: &str,
+) -> tokio_tungstenite::tungstenite::http::Request<()> {
+    let mut req = url.into_client_request().expect("ws request");
+    req.headers_mut()
+        .insert("x-seasoned-hand-tenant-id", tenant_id.parse().unwrap());
+    req.headers_mut().insert(
+        "x-seasoned-hand-organization-id",
+        format!("org-{tenant_id}").parse().unwrap(),
+    );
+    req.headers_mut().insert(
+        "x-seasoned-hand-actor-user-id",
+        "user-test".parse().unwrap(),
+    );
+    req.headers_mut()
+        .insert("x-seasoned-hand-org-role", org_role.parse().unwrap());
+    req
+}
+
 async fn recv_envelope(
     ws: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -107,7 +150,9 @@ async fn recv_envelope(
 #[tokio::test]
 async fn bad_json_does_not_close_connection() {
     let (url, _) = boot().await;
-    let (mut ws, _) = connect_async(url).await.unwrap();
+    let (mut ws, _) = connect_async(ws_request(&url, "legacy-default", "admin"))
+        .await
+        .unwrap();
 
     ws.send(Message::Text("{".into())).await.unwrap();
     let value = recv_envelope(&mut ws).await;
@@ -143,7 +188,9 @@ async fn bad_json_does_not_close_connection() {
 #[tokio::test]
 async fn task_create_returns_session_id_and_starts_runner() {
     let (url, state) = boot().await;
-    let (mut ws, _) = connect_async(url).await.unwrap();
+    let (mut ws, _) = connect_async(ws_request(&url, "legacy-default", "admin"))
+        .await
+        .unwrap();
     ws.send(Message::Text(
         json!({
             "type": "command",
@@ -189,7 +236,9 @@ async fn task_create_returns_session_id_and_starts_runner() {
 #[tokio::test]
 async fn ws_task_create_emits_briefing_then_confirm_acks_started() {
     let (url, state) = boot().await;
-    let (mut ws, _) = connect_async(url).await.unwrap();
+    let (mut ws, _) = connect_async(ws_request(&url, "legacy-default", "admin"))
+        .await
+        .unwrap();
     ws.send(Message::Text(
         json!({
             "type": "command",
@@ -302,7 +351,9 @@ async fn ws_task_create_emits_briefing_then_confirm_acks_started() {
 #[tokio::test]
 async fn ws_briefing_confirm_unknown_task_acks_not_pending() {
     let (url, _state) = boot().await;
-    let (mut ws, _) = connect_async(url).await.unwrap();
+    let (mut ws, _) = connect_async(ws_request(&url, "legacy-default", "admin"))
+        .await
+        .unwrap();
     ws.send(Message::Text(
         json!({
             "type": "command",
@@ -333,7 +384,9 @@ async fn ws_briefing_confirm_unknown_task_acks_not_pending() {
 #[tokio::test]
 async fn ws_task_create_creates_intake_event() {
     let (url, state) = boot().await;
-    let (mut ws, _) = connect_async(url).await.unwrap();
+    let (mut ws, _) = connect_async(ws_request(&url, "legacy-default", "admin"))
+        .await
+        .unwrap();
     ws.send(Message::Text(
         json!({
             "type": "command",
@@ -393,7 +446,9 @@ async fn user_response_resumes_suspended_session() {
                 .unwrap()
         })
         .await;
-    let (mut ws, _) = connect_async(url).await.unwrap();
+    let (mut ws, _) = connect_async(ws_request(&url, "legacy-default", "admin"))
+        .await
+        .unwrap();
 
     ws.send(Message::Text(
         json!({
@@ -446,7 +501,9 @@ async fn subscribe_replays_then_redis_subscribe_failure() {
         .await
         .unwrap();
 
-    let (mut ws, _) = connect_async(url).await.unwrap();
+    let (mut ws, _) = connect_async(ws_request(&url, "legacy-default", "admin"))
+        .await
+        .unwrap();
     ws.send(Message::Text(
         json!({
             "type": "command",
@@ -475,4 +532,78 @@ async fn cost_route_still_works_with_ws_route() {
     let http = url.replace("ws://", "http://").replace("/ws", "/v1/cost");
     let resp = reqwest::get(http).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn ws_tenant_a_cannot_pause_tenant_b_session() {
+    let (url, state) = boot().await;
+    let projects = ProjectStore::new(state.db.clone());
+    let tasks = TaskStore::new(state.db.clone());
+    let project_b = projects
+        .insert(NewProject {
+            tenant_id: Some("tenant-b".to_string()),
+            title: "Tenant B Project".to_string(),
+            description: None,
+        })
+        .await
+        .unwrap();
+    let task_b = tasks
+        .insert(NewTask {
+            project_id: project_b.clone(),
+            tenant_id: Some("tenant-b".to_string()),
+            title: "Tenant B Task".to_string(),
+            expected_due_at: None,
+        })
+        .await
+        .unwrap();
+    state
+        .db
+        .with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO sessions (
+                    id, task_id, project_id, created_at, updated_at, state, title, cost_cents, tool_calls
+                ) VALUES ('s-tenant-b', ?, ?, 1, 1, 'RUNNING', 'tenant-b-session', 0, 0)",
+                rusqlite::params![task_b, project_b],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .unwrap();
+
+    let (mut ws, _) = connect_async(ws_request(&url, "tenant-a", "admin"))
+        .await
+        .unwrap();
+    ws.send(Message::Text(
+        json!({
+            "type": "command",
+            "id": "pause-foreign",
+            "ts": 1,
+            "payload": { "cmd": "task_pause", "session_id": "s-tenant-b" }
+        })
+        .to_string(),
+    ))
+    .await
+    .unwrap();
+
+    let first = recv_envelope(&mut ws).await;
+    assert_eq!(first["type"], "error");
+    assert_eq!(first["kind"], "forbidden_session_scope");
+    let second = recv_envelope(&mut ws).await;
+    assert_eq!(second["type"], "ack");
+    assert_eq!(second["ref"], "pause-foreign");
+    assert_eq!(second["ok"], false);
+    assert_eq!(second["error"], "forbidden_session_scope");
+
+    let state_after = state
+        .db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT state FROM sessions WHERE id='s-tenant-b'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+        })
+        .await;
+    assert_eq!(state_after, "RUNNING");
 }

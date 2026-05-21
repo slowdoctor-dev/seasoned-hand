@@ -1544,7 +1544,7 @@ async fn get_progress(
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
-        .route("/ws", get(ws::ws_upgrade))
+        .route("/ws", with_auth(get(ws::ws_upgrade), Action::TaskRead))
         .route("/v1/cost", get(cost_snapshot))
         .route(
             "/v1/sessions",

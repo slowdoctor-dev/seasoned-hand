@@ -853,3 +853,51 @@ remaining gap (H7).
 ### Iter-5 conclusion
 Round produced **2 H (H6 fixed, H7 recorded→iter-6)** → NOT zero-finding. iter-6 (Codex):
 close H7 (WS tenant scoping / DEBT #7) + independent re-sweep. Saturation still pending.
+
+---
+
+## HARDENING iter-6 (Codex, 2026-05-21) — WS auth + tenant scope closure
+
+### A) Grade Claude iter-5 finding
+
+- **`P5-HARD-IT5-H6` (workspace proxy leak) — ACK.**
+  The fix is correct: `with_auth(..., Action::TaskRead)` on workspace routes plus
+  handler-level `authorize_in_handler + require_session_tenant(...)` closes the
+  highest-value file-read surface for forged `session_id`.
+
+### B) H7 closure (DEBT #7)
+
+- **`P5-HARD-IT5-H7` (H) — FIXED in iter-6.**
+  Implemented end-to-end closure:
+  1. `/ws` route is now wrapped with `with_auth(get(ws::ws_upgrade), Action::TaskRead)`.
+  2. `ws_upgrade` now requires `Extension<AuthContext>`.
+  3. `ws_session` and `handle_command` now carry `AuthContext`.
+  4. `task_pause` / `task_resume` / `task_cancel` call `require_session_tenant(...)` before
+     mutation; cross-tenant attempts emit WS `Error{kind:"forbidden_session_scope"}` and
+     `Ack{ok:false,error:"forbidden_session_scope"}`.
+  5. `task_create` now writes `IntakeEvent.tenant_id = Some(auth_ctx.tenant_id)` instead of `None`.
+  6. Added regression test `ws_tenant_a_cannot_pause_tenant_b_session`.
+
+### C) Debt closure updates
+
+- Closed the explicit carry-forward in:
+  - `specs/phase-2/DEBT.md` item #43 (Phase 0 DEBT #7 widening), with concrete Phase 5
+    hardening closure notes and test evidence.
+
+### D) Independent re-sweep (iter-6)
+
+Focused additional sweep on:
+- WS route/wiring (`/ws`, `ws_upgrade`, `ws_session`, command arms),
+- loopback-only but sensitive route family,
+- id-based handler family already hardened in iter-3/4/5,
+- CLI/HTTP lifecycle overlap paths (`task_pause/resume/cancel` via WS helpers).
+
+Findings:
+- **New H findings**: 0
+- **New M findings**: 0
+- **New L findings**: 0
+
+### Iter-6 conclusion
+
+iter-6 introduced no new residual findings beyond closing H7. This round is clean on
+new H/M and leaves the stack ready for the final saturation re-sweep (iter-7).

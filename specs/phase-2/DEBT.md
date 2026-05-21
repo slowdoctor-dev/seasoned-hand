@@ -968,7 +968,7 @@ the closing SHA.
   `.env.example` with all vars + sane defaults + 1-line purpose +
   DEBT references.
 
-### 43. WS `briefing_confirm` has no auth (Phase 0 DEBT #7 widening)
+### ~~43. WS `briefing_confirm` has no auth (Phase 0 DEBT #7 widening)~~ — CLOSED 2026-05-21 (Phase 5 hardening iter-6)
 - **Origin**: REVIEW §1/H
 - **Severity**: **Medium**
 - **What**: Phase 0 DEBT #7 (no WS auth) is the umbrella. Phase 2
@@ -978,9 +978,14 @@ the closing SHA.
   briefing by id. The HTTP sibling at `/v1/briefings/:id/confirm` IS
   loopback-gated — inconsistent. task_id is a UUID so practical
   exploit needs discovery.
-- **Pay down**: Phase 5 multi-user WS auth (DEBT #7) closes the
-  umbrella. Until then, operators on non-loopback binds should
-  firewall the WS port.
+- **Resolution (Phase 5 hardening iter-6)**:
+  - `/ws` is now behind Phase 5 auth middleware (`with_auth(..., Action::TaskRead)`), so
+    upgrades require `AuthContext` headers.
+  - `ws_session` threads `AuthContext` into command handling.
+  - `task_create` writes authenticated `tenant_id` instead of `None`.
+  - `task_pause` / `task_resume` / `task_cancel` now enforce tenant ownership via
+    `require_session_tenant(...)` before mutating state.
+  - Added server WS regression: tenant-A cannot pause tenant-B session (`ws_tenant_a_cannot_pause_tenant_b_session`).
 
 ### 44. Story 2.5 `RouteOutcome<T>` requirement unmet on channels routes
 - **Origin**: REVIEW §3 stories 2.1-2.13 cross-finding 1

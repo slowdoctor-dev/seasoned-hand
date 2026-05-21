@@ -5,12 +5,14 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use axum::Extension;
 use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use seasoned_hand_core::agent::RunRequest;
 use seasoned_hand_core::agent::init::briefing::{BriefingAction, PartialBrief, UserResponse};
+use seasoned_hand_core::auth::AuthContext;
 use seasoned_hand_core::channel::{
     DeliveryTarget, IntakeEvent, chat::CHANNEL_NAME as CHAT_CHANNEL,
     chat::TARGET_SESSION_PREFIX as CHAT_TARGET_SESSION_PREFIX,
@@ -145,16 +147,16 @@ pub enum ServerEnvelope {
     },
 }
 
-/// `/ws` upgrade entry. Loopback-gated per Codex review DEBT #66 — Phase 2
-/// added sensitive verbs (`briefing_confirm`, `task_pause/resume/cancel`)
-/// to a previously control-only socket; Phase 0 DEBT #7 (no WS auth)
-/// remains the umbrella, and until Phase 5 multi-user lands real auth
-/// the only safe bound is the loopback peer the operator runs locally.
-/// Non-loopback peers get a 403 before the protocol upgrade so no
-/// half-open WS state is created.
+/// `/ws` upgrade entry.
+///
+/// Loopback remains mandatory (DEBT #66) and, as of Phase 5 hardening
+/// iter-6, auth context is now required and propagated into `ws_session`
+/// so every command is tenant-scoped. This closes the long-running
+/// Phase 0/2 DEBT #7 ("WS auth bypass").
 pub async fn ws_upgrade(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     ws: WebSocketUpgrade,
 ) -> axum::response::Response {
     if !remote.ip().is_loopback() {
@@ -164,11 +166,11 @@ pub async fn ws_upgrade(
         )
             .into_response();
     }
-    ws.on_upgrade(move |socket| ws_session(socket, state))
+    ws.on_upgrade(move |socket| ws_session(socket, state, auth_ctx))
         .into_response()
 }
 
-async fn ws_session(socket: WebSocket, state: AppState) {
+async fn ws_session(socket: WebSocket, state: AppState, auth_ctx: AuthContext) {
     let (mut writer, mut reader) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerEnvelope>();
     let (close_tx, mut close_rx) = mpsc::unbounded_channel::<(u16, &'static str)>();
@@ -223,7 +225,15 @@ async fn ws_session(socket: WebSocket, state: AppState) {
                                 last_pong = Instant::now();
                             }
                             Ok(ClientEnvelope::Command { id, payload, .. }) => {
-                                handle_command(&state, &tx, &mut subscriptions, id, payload).await;
+                                handle_command(
+                                    &state,
+                                    &auth_ctx,
+                                    &tx,
+                                    &mut subscriptions,
+                                    id,
+                                    payload,
+                                )
+                                .await;
                             }
                             Err(error) => {
                                 let _ = tx.send(ServerEnvelope::Error {
@@ -264,6 +274,7 @@ async fn ws_session(socket: WebSocket, state: AppState) {
 
 async fn handle_command(
     state: &AppState,
+    auth_ctx: &AuthContext,
     tx: &mpsc::UnboundedSender<ServerEnvelope>,
     subscriptions: &mut HashMap<String, tokio::task::JoinHandle<()>>,
     cmd_id: String,
@@ -326,7 +337,7 @@ async fn handle_command(
                     metadata: json!({}),
                 }),
                 metadata,
-                tenant_id: None,
+                tenant_id: Some(auth_ctx.tenant_id.clone()),
                 received_at: now_unix(),
             };
             match state.intake_router.handle_event(intake_event).await {
@@ -426,6 +437,23 @@ async fn handle_command(
             session_id,
             durable,
         } => {
+            if let Err((status, _)) =
+                crate::require_session_tenant(state, &session_id, auth_ctx).await
+            {
+                let _ = tx.send(ServerEnvelope::Error {
+                    id: Some(cmd_id.clone()),
+                    kind: "forbidden_session_scope".into(),
+                    message: format!("session tenant mismatch ({status})"),
+                });
+                let _ = tx.send(ServerEnvelope::Ack {
+                    id: Uuid::new_v4().to_string(),
+                    r#ref: cmd_id,
+                    ok: false,
+                    error: Some("forbidden_session_scope".into()),
+                    session_id: Some(session_id),
+                });
+                return;
+            }
             let result = handle_task_pause(state, &session_id, durable.unwrap_or(true)).await;
             let _ = tx.send(ServerEnvelope::Ack {
                 id: Uuid::new_v4().to_string(),
@@ -436,6 +464,23 @@ async fn handle_command(
             });
         }
         CommandPayload::TaskResume { session_id } => {
+            if let Err((status, _)) =
+                crate::require_session_tenant(state, &session_id, auth_ctx).await
+            {
+                let _ = tx.send(ServerEnvelope::Error {
+                    id: Some(cmd_id.clone()),
+                    kind: "forbidden_session_scope".into(),
+                    message: format!("session tenant mismatch ({status})"),
+                });
+                let _ = tx.send(ServerEnvelope::Ack {
+                    id: Uuid::new_v4().to_string(),
+                    r#ref: cmd_id,
+                    ok: false,
+                    error: Some("forbidden_session_scope".into()),
+                    session_id: Some(session_id),
+                });
+                return;
+            }
             let result = handle_task_resume(state, &session_id).await;
             let _ = tx.send(ServerEnvelope::Ack {
                 id: Uuid::new_v4().to_string(),
@@ -446,6 +491,23 @@ async fn handle_command(
             });
         }
         CommandPayload::TaskCancel { session_id } => {
+            if let Err((status, _)) =
+                crate::require_session_tenant(state, &session_id, auth_ctx).await
+            {
+                let _ = tx.send(ServerEnvelope::Error {
+                    id: Some(cmd_id.clone()),
+                    kind: "forbidden_session_scope".into(),
+                    message: format!("session tenant mismatch ({status})"),
+                });
+                let _ = tx.send(ServerEnvelope::Ack {
+                    id: Uuid::new_v4().to_string(),
+                    r#ref: cmd_id,
+                    ok: false,
+                    error: Some("forbidden_session_scope".into()),
+                    session_id: Some(session_id),
+                });
+                return;
+            }
             let result = handle_task_cancel(state, &session_id).await;
             let _ = tx.send(ServerEnvelope::Ack {
                 id: Uuid::new_v4().to_string(),
