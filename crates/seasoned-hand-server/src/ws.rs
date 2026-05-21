@@ -285,6 +285,27 @@ async fn handle_command(
             session_id,
             from_event_id,
         } => {
+            // P5-HARD-IT8-H9: subscribe replays + live-streams a session's
+            // event feed. iter-6 tenant-scoped the task-lifecycle arms but
+            // not Subscribe — without this guard a WS client could read
+            // another tenant's entire event stream by session_id.
+            if let Err((status, _)) =
+                crate::require_session_tenant(state, &session_id, auth_ctx).await
+            {
+                let _ = tx.send(ServerEnvelope::Error {
+                    id: Some(cmd_id.clone()),
+                    kind: "forbidden_session_scope".into(),
+                    message: format!("session tenant mismatch ({status})"),
+                });
+                let _ = tx.send(ServerEnvelope::Ack {
+                    id: Uuid::new_v4().to_string(),
+                    r#ref: cmd_id,
+                    ok: false,
+                    error: Some("forbidden_session_scope".into()),
+                    session_id: Some(session_id),
+                });
+                return;
+            }
             replay_events(state, tx, &session_id, from_event_id.unwrap_or(0)).await;
             attach_subscription(state, tx, subscriptions, &session_id).await;
             let _ = tx.send(ServerEnvelope::Ack {
@@ -522,6 +543,26 @@ async fn handle_command(
             in_reply_to_call_id,
             content,
         } => {
+            // P5-HARD-IT8-H9: a user_response injects a Message event +
+            // resumes the runner for the session. Without this guard a WS
+            // client could answer/drive another tenant's session.
+            if let Err((status, _)) =
+                crate::require_session_tenant(state, &session_id, auth_ctx).await
+            {
+                let _ = tx.send(ServerEnvelope::Error {
+                    id: Some(cmd_id.clone()),
+                    kind: "forbidden_session_scope".into(),
+                    message: format!("session tenant mismatch ({status})"),
+                });
+                let _ = tx.send(ServerEnvelope::Ack {
+                    id: Uuid::new_v4().to_string(),
+                    r#ref: cmd_id,
+                    ok: false,
+                    error: Some("forbidden_session_scope".into()),
+                    session_id: Some(session_id),
+                });
+                return;
+            }
             let append = state
                 .events
                 .append(NewEvent {

@@ -956,3 +956,46 @@ EXHAUSTIVE pass (vs. targeted sweeps). The clearance table above is now complete
 route is GUARD/DERIVED/PUBLIC/TOKEN/N/A. iter-8 (Codex): VERIFY each row of the table
 independently + sweep any non-route surface (workers, CLI, stores) — if 0 new, that plus
 a final iter-9 confirm = saturation.
+
+---
+
+## HARDENING iter-8 (Codex finding + Claude completion, 2026-05-21)
+
+Codex began the iter-8 verification pass, found one real discrepancy in the iter-7
+clearance table, then hit a model-capacity throttle mid-task. Claude completed the fix +
+the non-route sweep.
+
+### New finding (FIXED)
+
+- **`P5-HARD-IT8-H9` (H)** — the iter-7 `/ws` GUARD label was INCOMPLETE. iter-6's H7 fix
+  added `require_session_tenant` to the WS task-lifecycle arms (`task_pause/resume/cancel`)
+  but NOT to two other message arms:
+  - `Subscribe` (ws.rs:284): replays + live-streams a session's entire event feed by
+    session_id — a WS client could read another tenant's event stream.
+  - `UserResponse` (ws.rs:541): appends a user Message + resumes the runner by session_id
+    — a WS client could answer/drive another tenant's session.
+  Fixed (Claude): both arms now call `require_session_tenant` and emit
+  `Error/Ack{forbidden_session_scope}` on mismatch, matching the iter-6 pattern. All 9 WS
+  integration tests still pass (subscribe + user_response flows on tenant-chained sessions
+  are unaffected).
+
+### Route clearance table — correction
+- `/ws` is now genuinely GUARD across ALL message arms (task_create stamps tenant;
+  task_pause/resume/cancel + Subscribe + UserResponse all `require_session_tenant`).
+
+### Non-route surface sweep (Claude completed)
+- **Workers**: curator tenant-scoped (story 5.17); curator-retention is project-scoped
+  (`WHERE project_id = ?`) which is transitively tenant-bounded (1 project = 1 tenant);
+  ttl-cron is a global maintenance GC (deletes expired sandbox dirs — no cross-tenant
+  data read); notify/delivery thread `tenant_id` on outbound. None take untrusted
+  per-request tenant input → not a cross-tenant-request surface. **0 findings.**
+- **Stores by id**: deliverable + checkpoint stores are reached only via the now-guarded
+  `:id` handlers (`require_task_tenant`/`require_session_tenant` gate the parent resource
+  before listing children), so they inherit the guard. **0 findings.**
+- **CLI**: sends tenant via SH_* env (default legacy-default) on every request; the
+  server-side guards are the enforcement point (CLI can't bypass them). **0 findings.**
+
+### Iter-8 conclusion
+1 new H (H9, fixed) + 0 non-route findings. The WS arm gap was the last incomplete-GUARD
+discrepancy. iter-9 (Claude independent confirm) is the saturation check: if it finds 0
+new across a fresh full pass, we declare SATURATION.
