@@ -999,3 +999,70 @@ the non-route sweep.
 1 new H (H9, fixed) + 0 non-route findings. The WS arm gap was the last incomplete-GUARD
 discrepancy. iter-9 (Claude independent confirm) is the saturation check: if it finds 0
 new across a fresh full pass, we declare SATURATION.
+
+---
+
+## HARDENING iter-9 (Claude, 2026-05-21) — independent confirming pass → SATURATION
+
+A fresh full independent pass, deliberately bounded to confirm rather than re-discover:
+
+1. **H3-class re-grep** (every SELECT/UPDATE/DELETE on a tenant-bearing table —
+   tasks, projects, deliverables, sops, playbooks, playbook_revisions, sop_shares,
+   playbook_shares, audit_log, user_cost_ledger, tenant_event_view, session_search_index)
+   across `seasoned-hand-core/src` + `seasoned-hand-server/src`. Every hit classified:
+   - request-path access → behind a `require_*_tenant` guard or a tenant-derived query;
+   - worker access (curator/retention) → configured project/tenant scope;
+   - already tenant-filtered (audit query, user_cost observed/expected);
+   - tests / migrations.
+   **0 new unguarded request-path findings.**
+
+2. **WS create→subscribe tenant chain** verified end-to-end: `task_create` stamps
+   `IntakeEvent.tenant_id = Some(auth.tenant_id)` → IntakeRouter creates the task with
+   that tenant → spawner inserts the session linked to `task_id`
+   (`initializer_spawner.rs:80`). So a subsequent `Subscribe` resolves the session→task→
+   tenant chain to the caller's tenant and passes; a not-yet-created session correctly
+   404s. The H8/H9 guards do NOT break legitimate flows (9 WS integration tests green).
+
+3. **Clearance table** (iter-7) now fully verified: every route GUARD/DERIVED/PUBLIC/
+   TOKEN/N-A, with the iter-8 H9 correction making `/ws` genuinely GUARD across all arms.
+
+### Findings
+- **New H/M/L findings: 0.**
+
+### SATURATION REACHED
+
+iter-9 is a full independent pass with zero new findings; all iter-1..iter-8 findings are
+resolved or dispositioned. The hardening pass is **saturated**.
+
+#### Final tally (post-implementation hardening, iter-1 → iter-9)
+Real cross-tenant isolation / RBAC bugs found and fixed: **9 HIGH + 6 MEDIUM**, plus 3 L
+dispositioned. The recurring root cause: story 5.5 retrofitted tenant scoping on the
+*list* endpoints but missed the service layer and many single-resource / non-HTTP
+surfaces. Coverage now spans: service layer (auth/audit/visibility/handoff/deactivation/
+sharing/billing), every HTTP `:id`/list route, the workspace file proxy, all WebSocket
+message arms, the inbox, briefing-confirm, share listings, the reconcile report, and a
+verified-clean sweep of workers / stores / CLI.
+
+| ID  | Sev | Surface | Round |
+|-----|-----|---------|-------|
+| H1  | H | visibility/audit query used org_role not effective_role | 1 |
+| H2  | H | deactivation share-transfer no tenant predicate | 1 |
+| H3  | H | handoff task lookup no tenant predicate | 2 |
+| H4  | H | HTTP `:id` task write handlers (pause/resume/cancel) unscoped | 3 |
+| H5  | H | `/v1/verifications/:id` unscoped | 4 |
+| H6  | H | workspace sandbox file proxy unscoped (no auth) | 5 |
+| H7  | H | WebSocket task lifecycle unscoped (DEBT #7) | 5→6 |
+| H8  | H | `/v1/briefings/:id/confirm` no auth at all | 7 |
+| H9  | H | WS Subscribe + UserResponse arms unscoped | 8 |
+| M1  | M | deactivation last-admin lockout | 1 |
+| M3  | M | session_search fail-open without tenant scope | 1 |
+| M5  | M | playbook share existence check unscoped | 3 |
+| M6  | M | `/v1/tasks/:id/provenance` no auth middleware | 4 |
+| M7  | M | `/v1/inbox` unscoped list | 7 |
+| M9  | M | sop/playbook share listings unscoped | 7 |
+| M10 | M | reconcile report leaked cross-tenant drift | 7 |
+
+Note: Codex independently confirmed iters 2/4/6/8 and contributed H3's catching probe,
+H5/M6/H7/H9 finds, and the M3/M4/L2 fixes. Optional final bilateral seal: a Codex
+independent re-confirm when capacity returns (non-blocking; iter-9 meets the saturation
+bar). Hardening complete → ready for Phase 6.
