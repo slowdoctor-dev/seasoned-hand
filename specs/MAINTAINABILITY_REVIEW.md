@@ -115,3 +115,44 @@ are distinct), `agent/mod.rs`, CLI `client.rs`.
 
 A (Claude commit) + C/D (Codex `c77ab7f`) + B (Claude commit) all land this
 round.
+
+### iter-5 (Claude + Codex) — final bilateral confirm
+
+Both parties ran an independent final sweep. **Codex: "0 new, concur
+saturation."** **Claude:** swept the mid-size modules not yet deeply audited
+(`notify`/`delivery`/`intake`/`events`/`router`/`capability`/`checkpoint`/
+`provenance`/`dispatch`/`plan`/`project`/`org`/`billing`/`cost`/`verifier`/
+`handoff`/`pubsub`) — all clean except one marginal item, dispositioned below.
+
+**Marginal item examined → deliberately NOT consolidated:** `SENTINEL_TENANT =
+"legacy-default"` is defined `pub` in `events/visibility.rs:36` and (privately,
+identically) in `billing/user_cost.rs:20`, with the bare literal in ~6 store
+files. These are **domain-local, documented constants** that coincidentally
+share the V013-bootstrap sentinel value — not a copy-paste helper. Nothing
+references the `events` one cross-module, and `billing`'s is part of a
+documented tenant/org/user *triplet*. Consolidating would either split that
+triplet (referencing only the tenant const from `events` — a worse asymmetry)
+or churn ~10 files to introduce a shared sentinel-consts module — net-neutral
+to negative for manageability, and over-engineering by the project's rule.
+Left as-is. (The store-level `"legacy-default"` fallbacks are likewise local
+defaults, not worth a cross-module dependency.)
+
+## Manageability track — SATURATION SEALED (2026-05-21)
+
+Bilateral confirm clean: Codex 0 new, Claude 0 new actionable (sole finding
+dispositioned as not-worth-consolidating). All prior items resolved or
+dispositioned; full gates green (`clippy --all-targets -D warnings` / `fmt
+--check` / `cargo test --workspace` 36 blocks / `spec-check` 10/10; frontend
+`typecheck` + `test`).
+
+**Fixed across the track:** `crate::text::truncate` (3 copies),
+`crate::hash::sha256_hex` (2), `time::now_micros` re-impls (2),
+`map_sandbox_response`, curator test-module extraction (6313→3277-line file),
+`server::api_err()` (116 ApiError tuples), `reject_if_foreign_session()` (5 WS
+guard blocks), frontend `API_BASE` export (4 sites), `resolve_user_id_by_email`
+(3 playbook lookups), `commands::common::resolve_database_url()` (4 CLI sites).
+**Deliberately deferred / dispositioned (anti-over-engineering):** curator
+production-code split (6b), `now_unix` seconds, per-tab fetch hook,
+`PlaybookShareRow` mapping, `SENTINEL_TENANT` constant. The codebase was already
+well-disciplined (shared `time.rs`, no dead-code allows, no commented cruft);
+the track removed the genuine copy-paste and the one categorical god-file.
