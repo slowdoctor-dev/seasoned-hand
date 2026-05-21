@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { API_BASE } from "@/lib/api";
 import type { ServerEvent } from "@/lib/ws-types";
 import { listDir } from "@/lib/workspace";
 import { Lightbox } from "@/components/agent-computer/lightbox";
@@ -26,11 +27,7 @@ const MAX_VISIBLE = 100;
 
 function toWorkspaceUrl(sessionId: string, path: string): string {
   const clean = path.replace(/^\/+/, "");
-  const base =
-    typeof window === "undefined"
-      ? ""
-      : process.env.NEXT_PUBLIC_API_URL ?? `http://${window.location.hostname}:3000`;
-  return `${base}/v1/workspace/${encodeURIComponent(sessionId)}/${encodeURI(clean)}`;
+  return `${API_BASE}/v1/workspace/${encodeURIComponent(sessionId)}/${encodeURI(clean)}`;
 }
 
 export function ScreenshotStrip({ sessionId, events }: Props) {

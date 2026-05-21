@@ -1,7 +1,4 @@
-const BASE_URL =
-  typeof window === "undefined"
-    ? ""
-    : process.env.NEXT_PUBLIC_API_URL ?? `http://${window.location.hostname}:3000`;
+import { API_BASE } from "./api";
 
 export type WorkspaceEntry = {
   name: string;
@@ -16,7 +13,7 @@ export async function listDir(
   path: string,
 ): Promise<DirListing> {
   const tail = path === "" ? "" : encodeURI(path).replace(/^\/+/, "");
-  const url = `${BASE_URL}/v1/workspace/${encodeURIComponent(sessionId)}/${tail}`;
+  const url = `${API_BASE}/v1/workspace/${encodeURIComponent(sessionId)}/${tail}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`listDir ${res.status}`);
   return (await res.json()) as DirListing;
@@ -27,7 +24,7 @@ export async function readFile(
   path: string,
 ): Promise<string> {
   const tail = encodeURI(path).replace(/^\/+/, "");
-  const url = `${BASE_URL}/v1/workspace/${encodeURIComponent(sessionId)}/${tail}`;
+  const url = `${API_BASE}/v1/workspace/${encodeURIComponent(sessionId)}/${tail}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`readFile ${res.status}`);
   return await res.text();

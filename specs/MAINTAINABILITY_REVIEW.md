@@ -89,3 +89,29 @@ status codes + error strings, full suite green. Net `server/lib.rs` −413 lines
 (commit `5ab0240`). Verified by Claude against `git diff` (lib.rs only) + the
 helper body + an independent gate run. Codex reported **0 new manageability
 findings** beyond item 5.
+
+### iter-3 (Claude + Codex) — bilateral broad audit + iter-4 fixes
+
+Round 1 was big-core-file-centric, so both parties ran an independent broad
+audit of the under-covered surfaces (the other large files, CLI, frontend,
+cross-cutting duplication). Findings were consolidated and the fixes split by
+file (no overlap) for parallel execution. Four real items, all
+behaviour-preserving:
+
+| # | Item | Sites | By | Fix |
+|---|------|-------|----|-----|
+| A | WS tenant-guard block (`require_session_tenant` → `forbidden_session_scope` Error+Ack+return) duplicated **5× verbatim** | `ws.rs:292/476/503/530/564` | Claude | extracted `reject_if_foreign_session(...) -> bool`; ~85 dup lines → 1 helper + 5 one-line calls. Both audits found this independently. The `BriefingConfirm` *task*-scope block is a near-twin but differs (task tenant, `session_id:None`) — left alone. |
+| B | Frontend control-plane base-URL expression duplicated **4×** (`BASE_URL`/`API_BASE`/`base`) | `lib/api.ts`, `lib/workspace.ts`, `deliverables-tab.tsx`, `screenshot-strip.tsx` | Claude | exported `API_BASE` from `lib/api.ts`, imported in the other three. typecheck/test green, 0 new lint errors. |
+| C | Playbook user-email→id lookup SQL duplicated **3×** (`SELECT id FROM users WHERE tenant_id=? AND email=?`) | `sharing/playbook.rs:186/288/447` | Codex | `resolve_user_id_by_email(...) -> Option<String>`; each caller keeps its own `None`-handling. |
+| D | CLI `SH_DATABASE_URL`/`DATABASE_URL` resolver duplicated **4×** | `cli/commands/{sop,playbook,session_search,curator}.rs` | Codex | `commands::common::resolve_database_url()` (new `commands/common.rs`). |
+
+**Marginal items examined and deliberately NOT changed** (verified, would be
+over-engineering / behaviour-changing): `now_unix()` seconds in `ws.rs` vs
+`cost/mod.rs` (signatures differ — infallible `i64` vs `Result`); a per-tab
+fetch `useEffect` that would need a speculative generic hook; the
+`PlaybookShareRow` 11-column mapping (subtle error-type differences). **Clean
+surfaces:** `gate.rs` (size is its test module), `main.rs` (per-worker env reads
+are distinct), `agent/mod.rs`, CLI `client.rs`.
+
+A (Claude commit) + C/D (Codex `c77ab7f`) + B (Claude commit) all land this
+round.

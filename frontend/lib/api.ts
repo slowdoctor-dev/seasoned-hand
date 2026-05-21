@@ -1,7 +1,9 @@
 // Minimal fetch wrapper for the Rust control plane's /v1 routes.
 // Used by frontend components that need REST (TaskList, EditorTab, etc.).
 
-const BASE_URL =
+// Single source of truth for the control-plane REST base URL. SSR-safe
+// (empty during prerender) and overridable via NEXT_PUBLIC_API_URL.
+export const API_BASE =
   typeof window === "undefined"
     ? ""
     : process.env.NEXT_PUBLIC_API_URL ?? `http://${window.location.hostname}:3000`;
@@ -24,13 +26,13 @@ export type SessionSummary = {
 };
 
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`);
+  const res = await fetch(`${API_BASE}${path}`);
   if (!res.ok) throw new Error(`GET ${path} -> ${res.status}`);
   return (await res.json()) as T;
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

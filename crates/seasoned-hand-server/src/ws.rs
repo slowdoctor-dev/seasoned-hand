@@ -272,6 +272,35 @@ async fn ws_session(socket: WebSocket, state: AppState, auth_ctx: AuthContext) {
     writer_handle.abort();
 }
 
+/// Tenant-scope guard shared by every by-`session_id` WS command arm
+/// (Subscribe / TaskPause / TaskResume / TaskCancel / UserResponse). On a
+/// tenant mismatch it emits the `forbidden_session_scope` Error + Ack frames
+/// and returns `true` (the caller must `return`); on success returns `false`.
+async fn reject_if_foreign_session(
+    state: &AppState,
+    auth_ctx: &AuthContext,
+    tx: &mpsc::UnboundedSender<ServerEnvelope>,
+    cmd_id: &str,
+    session_id: &str,
+) -> bool {
+    if let Err((status, _)) = crate::require_session_tenant(state, session_id, auth_ctx).await {
+        let _ = tx.send(ServerEnvelope::Error {
+            id: Some(cmd_id.to_string()),
+            kind: "forbidden_session_scope".into(),
+            message: format!("session tenant mismatch ({status})"),
+        });
+        let _ = tx.send(ServerEnvelope::Ack {
+            id: Uuid::new_v4().to_string(),
+            r#ref: cmd_id.to_string(),
+            ok: false,
+            error: Some("forbidden_session_scope".into()),
+            session_id: Some(session_id.to_string()),
+        });
+        return true;
+    }
+    false
+}
+
 async fn handle_command(
     state: &AppState,
     auth_ctx: &AuthContext,
@@ -289,21 +318,7 @@ async fn handle_command(
             // event feed. iter-6 tenant-scoped the task-lifecycle arms but
             // not Subscribe — without this guard a WS client could read
             // another tenant's entire event stream by session_id.
-            if let Err((status, _)) =
-                crate::require_session_tenant(state, &session_id, auth_ctx).await
-            {
-                let _ = tx.send(ServerEnvelope::Error {
-                    id: Some(cmd_id.clone()),
-                    kind: "forbidden_session_scope".into(),
-                    message: format!("session tenant mismatch ({status})"),
-                });
-                let _ = tx.send(ServerEnvelope::Ack {
-                    id: Uuid::new_v4().to_string(),
-                    r#ref: cmd_id,
-                    ok: false,
-                    error: Some("forbidden_session_scope".into()),
-                    session_id: Some(session_id),
-                });
+            if reject_if_foreign_session(state, auth_ctx, tx, &cmd_id, &session_id).await {
                 return;
             }
             replay_events(state, tx, &session_id, from_event_id.unwrap_or(0)).await;
@@ -473,21 +488,7 @@ async fn handle_command(
             session_id,
             durable,
         } => {
-            if let Err((status, _)) =
-                crate::require_session_tenant(state, &session_id, auth_ctx).await
-            {
-                let _ = tx.send(ServerEnvelope::Error {
-                    id: Some(cmd_id.clone()),
-                    kind: "forbidden_session_scope".into(),
-                    message: format!("session tenant mismatch ({status})"),
-                });
-                let _ = tx.send(ServerEnvelope::Ack {
-                    id: Uuid::new_v4().to_string(),
-                    r#ref: cmd_id,
-                    ok: false,
-                    error: Some("forbidden_session_scope".into()),
-                    session_id: Some(session_id),
-                });
+            if reject_if_foreign_session(state, auth_ctx, tx, &cmd_id, &session_id).await {
                 return;
             }
             let result = handle_task_pause(state, &session_id, durable.unwrap_or(true)).await;
@@ -500,21 +501,7 @@ async fn handle_command(
             });
         }
         CommandPayload::TaskResume { session_id } => {
-            if let Err((status, _)) =
-                crate::require_session_tenant(state, &session_id, auth_ctx).await
-            {
-                let _ = tx.send(ServerEnvelope::Error {
-                    id: Some(cmd_id.clone()),
-                    kind: "forbidden_session_scope".into(),
-                    message: format!("session tenant mismatch ({status})"),
-                });
-                let _ = tx.send(ServerEnvelope::Ack {
-                    id: Uuid::new_v4().to_string(),
-                    r#ref: cmd_id,
-                    ok: false,
-                    error: Some("forbidden_session_scope".into()),
-                    session_id: Some(session_id),
-                });
+            if reject_if_foreign_session(state, auth_ctx, tx, &cmd_id, &session_id).await {
                 return;
             }
             let result = handle_task_resume(state, &session_id).await;
@@ -527,21 +514,7 @@ async fn handle_command(
             });
         }
         CommandPayload::TaskCancel { session_id } => {
-            if let Err((status, _)) =
-                crate::require_session_tenant(state, &session_id, auth_ctx).await
-            {
-                let _ = tx.send(ServerEnvelope::Error {
-                    id: Some(cmd_id.clone()),
-                    kind: "forbidden_session_scope".into(),
-                    message: format!("session tenant mismatch ({status})"),
-                });
-                let _ = tx.send(ServerEnvelope::Ack {
-                    id: Uuid::new_v4().to_string(),
-                    r#ref: cmd_id,
-                    ok: false,
-                    error: Some("forbidden_session_scope".into()),
-                    session_id: Some(session_id),
-                });
+            if reject_if_foreign_session(state, auth_ctx, tx, &cmd_id, &session_id).await {
                 return;
             }
             let result = handle_task_cancel(state, &session_id).await;
@@ -561,21 +534,7 @@ async fn handle_command(
             // P5-HARD-IT8-H9: a user_response injects a Message event +
             // resumes the runner for the session. Without this guard a WS
             // client could answer/drive another tenant's session.
-            if let Err((status, _)) =
-                crate::require_session_tenant(state, &session_id, auth_ctx).await
-            {
-                let _ = tx.send(ServerEnvelope::Error {
-                    id: Some(cmd_id.clone()),
-                    kind: "forbidden_session_scope".into(),
-                    message: format!("session tenant mismatch ({status})"),
-                });
-                let _ = tx.send(ServerEnvelope::Ack {
-                    id: Uuid::new_v4().to_string(),
-                    r#ref: cmd_id,
-                    ok: false,
-                    error: Some("forbidden_session_scope".into()),
-                    session_id: Some(session_id),
-                });
+            if reject_if_foreign_session(state, auth_ctx, tx, &cmd_id, &session_id).await {
                 return;
             }
             let append = state
