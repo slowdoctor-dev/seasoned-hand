@@ -195,18 +195,8 @@ impl EventStore for SqliteEventStore {
                 sql.push_str(" ORDER BY id ASC LIMIT ?");
 
                 let mut stmt = conn.prepare(&sql)?;
-                let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(session_id.clone())];
-                if let Some(a) = after_id {
-                    params.push(Box::new(a));
-                }
-                if let Some(t) = &type_filter {
-                    params.push(Box::new(t.clone()));
-                }
-                params.push(Box::new(limit));
-
-                let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-
-                let rows = stmt.query_map(refs.as_slice(), |row| {
+                type EventRow = (i64, String, i64, String, String, String);
+                let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<EventRow> {
                     let type_str: String = row.get(3)?;
                     let data_str: String = row.get(5)?;
                     Ok((
@@ -217,11 +207,25 @@ impl EventStore for SqliteEventStore {
                         row.get::<_, String>(4)?,
                         data_str,
                     ))
-                })?;
+                };
+                let rows: Vec<EventRow> = match (after_id, type_filter.as_deref()) {
+                    (Some(a), Some(t)) => stmt
+                        .query_map(rusqlite::params![session_id, a, t, limit], map_row)?
+                        .collect::<Result<Vec<_>, _>>()?,
+                    (Some(a), None) => stmt
+                        .query_map(rusqlite::params![session_id, a, limit], map_row)?
+                        .collect::<Result<Vec<_>, _>>()?,
+                    (None, Some(t)) => stmt
+                        .query_map(rusqlite::params![session_id, t, limit], map_row)?
+                        .collect::<Result<Vec<_>, _>>()?,
+                    (None, None) => stmt
+                        .query_map(rusqlite::params![session_id, limit], map_row)?
+                        .collect::<Result<Vec<_>, _>>()?,
+                };
 
                 let mut events = Vec::new();
                 for row in rows {
-                    let (id, session_id, timestamp, type_str, source, data_str) = row?;
+                    let (id, session_id, timestamp, type_str, source, data_str) = row;
                     let event_type = EventType::from_str(&type_str)?;
                     let data: serde_json::Value = serde_json::from_str(&data_str)?;
                     events.push(Event {
