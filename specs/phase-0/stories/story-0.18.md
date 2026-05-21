@@ -71,7 +71,7 @@ placeholder page so subsequent stories (0.19+) have a home for the
 ### 1. Init
 
 ```bash
-cd /mnt/c/Users/user/Cowork/repos/slowdoctor-dev/seasoned-hand
+cd <repo-root>
 pnpm create next-app@latest frontend \
   --typescript --eslint --tailwind --app --no-src-dir \
   --import-alias "@/*" --no-turbo

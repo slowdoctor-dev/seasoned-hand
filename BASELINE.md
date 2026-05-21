@@ -12,8 +12,8 @@
 | Field | Value |
 |---|---|
 | **Name** | Seasoned Hand |
-| **Repo** | `github.com/slowdoctor-dev/seasoned-hand` (개인 계정, Public, MIT) |
-| **License** | MIT |
+| **Repo** | `github.com/slowdoctor-dev/seasoned-hand` (Public) |
+| **License** | Apache-2.0 |
 | **Tagline** | Every task makes the hand wiser. |
 | **Status** | Phase 5 complete → Phase 6 starting |
 | **Domain** | General-purpose autonomous AI agent platform (no domain assumptions) |
@@ -62,7 +62,7 @@ OS-shape foundation (see `/specs/phase-2/architecture.md`).
 | Model routing | 12-slot (3 main + 9 auxiliary) | ADR-003: Hermes-inspired |
 | Agent tool source-of-truth | AGENTS.md universal | ADR-006: LLM-agnostic via AGENTS.md |
 | Conservative learning | Verified work only | ADR-007: only verified work feeds playbooks |
-| License | MIT, public from day 0 | ADR-008: open from start |
+| License | Apache-2.0, public | ADR-008 (open from start) → ADR-015 (license set to Apache-2.0) |
 | Map / fan-out tool | Deferred to Phase 4+ | ADR-009: depth + learning first |
 | Tool catalog | 38 (29 Manus + 3 learning + 4 Phase 1 + 1 Phase 2 + 3 internal plan) | (no dedicated ADR — catalogue in ARCHITECTURE.md §7 + spec-check.sh:65-72; bumped to v1.1 per ADR-011) |
 | Event stream | 8 types append-only | (no dedicated ADR — schema in ARCHITECTURE.md §2.1, append-only in PRINCIPLES #3) |
@@ -107,7 +107,7 @@ Full roadmap: `/specs/06-roadmap/ROADMAP.md`
 
 These are set. Changing requires new ADR + version bump in `/specs/01-architecture/ARCHITECTURE.md`:
 
-1. **Open source from day one** (MIT, public repo)
+1. **Open source from day one** (Apache-2.0, public repo)
 2. **Model-agnostic** (12-slot routing via Bifrost)
 3. **Self-hostable** (no SaaS dependencies in core)
 4. **Domain-neutral core** (no medical/legal/specific verticals in MVP)
@@ -133,7 +133,8 @@ These are set. Changing requires new ADR + version bump in `/specs/01-architectu
 /AGENTS.md             ← AI agent source of truth
 /CLAUDE.md             ← Claude Code import wrapper
 /README.md             ← external entry point
-/LICENSE               ← MIT
+/LICENSE               ← Apache-2.0
+/NOTICE                ← Apache-2.0 attribution notice
 /CHANGELOG.md          ← version history (KeepAChangelog)
 /GLOSSARY.md           ← project terminology
 /CONTRIBUTING.md
@@ -162,8 +163,7 @@ These are set. Changing requires new ADR + version bump in `/specs/01-architectu
 
 /docs/
   manifesto.md, brand.md, methodology.md,
-  getting-started.md, using-claude-and-codex.md,
-  kickoff.md, setup-checklist.md
+  getting-started.md, using-claude-and-codex.md
 
 /prompts/              ← BMAD/GSD session prompts
 /scripts/              ← spec-check.sh, status.sh
@@ -182,7 +182,7 @@ These are set. Changing requires new ADR + version bump in `/specs/01-architectu
 2. `BASELINE.md` (this file)
 3. `/docs/manifesto.md` (why)
 4. `/docs/getting-started.md` (how)
-5. `/docs/first-week-plan.md` (first 7 days)
+5. `/CONTRIBUTING.md` (workflow + conventions)
 
 **Starting Phase N work?**
 1. `/specs/06-roadmap/ROADMAP.md` (where we are)

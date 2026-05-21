@@ -157,13 +157,13 @@ Never: filled glyphs, multi-color icons, animated icons.
 ## Examples of correct voice
 
 **Good** (English):
-> Seasoned Hand executes tasks autonomously and learns from verified outputs. Self-hosted, MIT-licensed.
+> Seasoned Hand executes tasks autonomously and learns from verified outputs. Self-hosted, Apache-2.0-licensed.
 
 **Bad**:
 > Seasoned Hand is a revolutionary AI-powered agent platform that empowers users to unleash next-gen productivity through cutting-edge autonomous workflows.
 
 **Good** (Korean):
-> Seasoned Hand는 자율적으로 작업을 끝내고, 검증된 결과로부터 학습합니다. 자체 호스팅 가능, MIT 라이선스.
+> Seasoned Hand는 자율적으로 작업을 끝내고, 검증된 결과로부터 학습합니다. 자체 호스팅 가능, Apache-2.0 라이선스.
 
 **Bad**:
 > Seasoned Hand는 차세대 AI 기반 혁신적인 에이전트로 여러분의 생산성을 극대화합니다!

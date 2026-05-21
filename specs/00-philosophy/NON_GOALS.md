@@ -41,9 +41,9 @@ will be from third parties, not the project itself.
 
 ## Not a closed system
 
-Closed system = vendor lock-in = death of trust. The license is MIT for
-this reason. No "open core, paid features." No "free for personal, paid
-for commercial." Just open.
+Closed system = vendor lock-in = death of trust. The license is Apache-2.0
+for this reason (was MIT through Phase 5; see ADR-015). No "open core, paid
+features." No "free for personal, paid for commercial." Just open.
 
 ## Not a chat memory store
 

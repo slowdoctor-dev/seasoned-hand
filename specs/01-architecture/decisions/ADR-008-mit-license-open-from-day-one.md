@@ -1,6 +1,10 @@
 # ADR-008: MIT license, open from day one
 
-Status: Accepted
+Status: Superseded by [ADR-015](ADR-015-relicense-apache-2.0.md) (2026-05-21) — the
+"open from day one" decision stands; the license itself moved MIT → Apache-2.0.
+The "Alternatives considered → Alternative A: Apache 2.0" note below explicitly
+anticipated this ("Could relicense to Apache 2.0 later … MIT → Apache 2.0 is a
+one-way OK transition").
 Date: 2026
 
 ## Context

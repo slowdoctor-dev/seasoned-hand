@@ -4,7 +4,7 @@
 
 An open-source autonomous agent platform.
 Deep task execution + learning that persists across sessions.
-Self-hosted, model-agnostic, MIT-licensed.
+Self-hosted, model-agnostic, Apache-2.0-licensed.
 
 ---
 
@@ -130,7 +130,7 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for details.
 
 ## License
 
-[MIT](LICENSE) — same as Hermes Agent. No strings.
+[Apache License 2.0](LICENSE) — permissive, with an explicit patent grant. No strings.
 
 ---
 
@@ -138,6 +138,6 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for details.
 
 **Every task makes the hand wiser** — 매 작업이 손을 더 영리하게.
 
-오픈소스 자율 에이전트 플랫폼입니다. 한 작업을 끝까지 해내는 깊이(Manus 결)와 시간이 지날수록 자라는 학습(Hermes 결)을 합성. 자체 호스팅 가능, 모델 무관, MIT 라이선스.
+오픈소스 자율 에이전트 플랫폼입니다. 한 작업을 끝까지 해내는 깊이(Manus 결)와 시간이 지날수록 자라는 학습(Hermes 결)을 합성. 자체 호스팅 가능, 모델 무관, Apache-2.0 라이선스.
 
 자세한 설계는 [`/specs/01-architecture/ARCHITECTURE.md`](specs/01-architecture/ARCHITECTURE.md)에서.

@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Relicensed MIT → Apache License 2.0** (ADR-015, supersedes the license clause
+  of ADR-008). Adds an explicit patent grant + patent-retaliation clause for the
+  public release. `LICENSE` now carries the canonical Apache 2.0 text; new top-level
+  `NOTICE` file added; `Cargo.toml` SPDX id set to `Apache-2.0`; README / BASELINE /
+  GLOSSARY / CONTRIBUTING references updated.
+
+### Removed
+- Pre-Phase-0 internal bootstrap docs that leaked private development context and
+  had no public value now that the project is built and public:
+  `docs/github-setup-guide.md`, `docs/first-week-plan.md`, `docs/setup-checklist.md`.
+  (Historical content remains in git history.)
+
+### Fixed
+- Public-hygiene cleanup before open-sourcing: genericized a personal dev-machine
+  path in `specs/phase-0/stories/story-0.18.md`; blanked the placeholder Bifrost
+  dev keys in `.env.example`; refreshed the ADR index (`specs/01-architecture/
+  decisions/README.md`) to list ADR-011 through ADR-015.
+
 ### Pending decisions
 - Default cloud sandbox provider
 - Telemetry opt-in approach

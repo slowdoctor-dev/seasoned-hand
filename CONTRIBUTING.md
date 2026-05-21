@@ -92,7 +92,9 @@ By participating, you agree to abide by the [Code of Conduct](CODE_OF_CONDUCT.md
 
 ## License
 
-By contributing, you agree your contributions will be licensed under the project's [MIT License](LICENSE).
+By contributing, you agree your contributions will be licensed under the project's
+[Apache License 2.0](LICENSE). Per Apache 2.0 §5, contributions you intentionally submit
+for inclusion are licensed under those same terms, with no additional terms required.
 
 ---
 

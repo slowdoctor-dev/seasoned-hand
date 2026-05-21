@@ -39,9 +39,14 @@ What else did we look at?
 | [ADR-005](ADR-005-sqlite-redis-persistence.md) | SQLite WAL + Redis for persistence | Accepted | 2026 |
 | [ADR-006](ADR-006-agents-md-source-of-truth.md) | AGENTS.md as universal source of truth | Accepted | 2026 |
 | [ADR-007](ADR-007-conservative-learning.md) | Conservative learning (verified work only) | Accepted | 2026 |
-| [ADR-008](ADR-008-mit-license-open-from-day-one.md) | MIT license, open from day one | Accepted | 2026 |
+| [ADR-008](ADR-008-mit-license-open-from-day-one.md) | MIT license, open from day one | Superseded by ADR-015 (license clause) | 2026 |
 | [ADR-009](ADR-009-map-tool-deferred.md) | Map tool (embarrassingly parallel) — deferred to Phase 4+ | Proposed (deferred) | 2026 |
 | [ADR-010](ADR-010-plan-as-process-control-block.md) | Plan as Process Control Block (PCB) | Accepted | 2026 |
+| [ADR-011](ADR-011-architecture-v1-1-text-drift-consolidation.md) | Architecture v1.1 text-drift consolidation | Accepted | 2026 |
+| [ADR-012](ADR-012-phase3-v010-learning-schema-reconciliation.md) | Phase 3 V010 learning-schema reconciliation | Accepted | 2026 |
+| [ADR-013](ADR-013-phase4-v011-curator-schema-reconciliation.md) | Phase 4 V011 curator-schema reconciliation | Accepted | 2026 |
+| [ADR-014](ADR-014-phase5-v013-tenant-rbac.md) | Phase 5 V013 tenant + RBAC + audit reconciliation | Accepted | 2026 |
+| [ADR-015](ADR-015-relicense-apache-2.0.md) | Relicense MIT → Apache License 2.0 | Accepted | 2026-05-21 |
 
 ## Adding a new ADR
 

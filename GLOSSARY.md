@@ -304,10 +304,10 @@ A few terms where bilingual clarity helps:
 |---|---|
 | ADR | Architecture Decision Record |
 | AIO | All-In-One (as in AIO Sandbox) |
+| Apache-2.0 | Apache License 2.0 — the project's license (permissive + explicit patent grant) |
 | BMAD | Business analyst / Architect / Manager / Dev (methodology) |
 | FTS | Full-Text Search (SQLite extension FTS5) |
 | GSD | Get Shit Done (daily workflow) |
-| MIT | Massachusetts Institute of Technology (license origin) |
 | PCB | Process Control Block (OS concept; our Plan plays this role) |
 | PR | Pull Request |
 | SDD | Spec-Driven Development |

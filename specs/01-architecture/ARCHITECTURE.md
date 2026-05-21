@@ -670,7 +670,7 @@ Every PR must pass:
 
 - [ ] Multi-tenant DB strategy: separate DB per user vs shared with user_id?
 - [ ] Auth: API key, OAuth, or both?
-- [ ] License: MIT vs Apache 2.0?
+- [x] License: MIT vs Apache 2.0? → **Apache-2.0** (ADR-015; was MIT per ADR-008)
 - [ ] Repo name: `seasoned-hand`, `seasoned-hand`, `something-else`?
 - [ ] Default cloud sandbox provider for users without local Docker?
 - [ ] Telemetry: opt-in usage stats? privacy policy?
