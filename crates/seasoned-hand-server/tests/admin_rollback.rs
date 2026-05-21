@@ -12,6 +12,7 @@ use std::net::SocketAddr;
 
 use axum::http::StatusCode;
 use seasoned_hand_core::checkpoint::{CheckpointStore, NewCheckpoint};
+use seasoned_hand_core::project::{NewProject, NewTask, ProjectStore, TaskStore};
 use seasoned_hand_core::router::SlotRouter;
 use seasoned_hand_core::sandbox::SandboxClient;
 use seasoned_hand_core::search::{SearchClient, SearchProvider};
@@ -44,13 +45,37 @@ async fn build_harness(session_state: &str, admin_token: Option<&str>) -> Harnes
     let sandbox_uri = sandbox_mock.uri();
 
     let pool = db::open(":memory:").await.expect("db");
+    let projects = ProjectStore::new(pool.clone());
+    let tasks = TaskStore::new(pool.clone());
+    let project_id = projects
+        .insert(NewProject {
+            tenant_id: Some("legacy-default".to_string()),
+            title: "Rollback Project".to_string(),
+            description: None,
+        })
+        .await
+        .expect("insert project");
+    let task_id = tasks
+        .insert(NewTask {
+            project_id: project_id.clone(),
+            tenant_id: Some("legacy-default".to_string()),
+            title: "Rollback Task".to_string(),
+            expected_due_at: None,
+        })
+        .await
+        .expect("insert task");
+
     let session_id = "sess-rollback".to_string();
     let sid_clone = session_id.clone();
     let state_str = session_state.to_string();
+    let project_id_clone = project_id.clone();
+    let task_id_clone = task_id.clone();
     pool.with_conn(move |conn| {
         conn.execute(
-            "INSERT INTO sessions (id, created_at, updated_at, state) VALUES (?, 0, 0, ?)",
-            rusqlite::params![sid_clone, state_str],
+            "INSERT INTO sessions (
+                id, task_id, project_id, created_at, updated_at, state, title, cost_cents, tool_calls
+            ) VALUES (?, ?, ?, 0, 0, ?, 'rollback-session', 0, 0)",
+            rusqlite::params![sid_clone, task_id_clone, project_id_clone, state_str],
         )
         .unwrap();
     })
@@ -126,6 +151,13 @@ fn url(addr: &SocketAddr, session_id: &str, checkpoint_id: &str) -> String {
     format!("http://{addr}/v1/sessions/{session_id}/checkpoints/{checkpoint_id}/rollback")
 }
 
+fn with_auth_headers(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    req.header("x-seasoned-hand-tenant-id", "legacy-default")
+        .header("x-seasoned-hand-organization-id", "org-legacy-default")
+        .header("x-seasoned-hand-actor-user-id", "user-test")
+        .header("x-seasoned-hand-org-role", "admin")
+}
+
 async fn checkpoint_row_state(
     pool: &db::DbPool,
     id: &str,
@@ -152,8 +184,7 @@ async fn checkpoint_row_state(
 async fn admin_rollback_happy_path_returns_202_and_marks_row() {
     let h = build_harness("SUSPENDED", Some(TEST_TOKEN)).await;
     let client = reqwest::Client::new();
-    let resp = client
-        .post(url(&h.addr, &h.session_id, &h.checkpoint_id))
+    let resp = with_auth_headers(client.post(url(&h.addr, &h.session_id, &h.checkpoint_id)))
         .header("X-Seasoned-Hand-Admin-Token", TEST_TOKEN)
         .json(&json!({"reason": "manual test"}))
         .send()
@@ -175,8 +206,7 @@ async fn admin_rollback_happy_path_returns_202_and_marks_row() {
 async fn admin_rollback_refuses_without_token() {
     let h = build_harness("SUSPENDED", Some(TEST_TOKEN)).await;
     let client = reqwest::Client::new();
-    let resp = client
-        .post(url(&h.addr, &h.session_id, &h.checkpoint_id))
+    let resp = with_auth_headers(client.post(url(&h.addr, &h.session_id, &h.checkpoint_id)))
         .json(&json!({"reason": "no token here"}))
         .send()
         .await
@@ -190,8 +220,7 @@ async fn admin_rollback_refuses_without_token() {
 async fn admin_rollback_refuses_with_wrong_token() {
     let h = build_harness("SUSPENDED", Some(TEST_TOKEN)).await;
     let client = reqwest::Client::new();
-    let resp = client
-        .post(url(&h.addr, &h.session_id, &h.checkpoint_id))
+    let resp = with_auth_headers(client.post(url(&h.addr, &h.session_id, &h.checkpoint_id)))
         .header("X-Seasoned-Hand-Admin-Token", "not-the-real-token")
         .json(&json!({"reason": "x"}))
         .send()
@@ -204,8 +233,7 @@ async fn admin_rollback_refuses_with_wrong_token() {
 async fn admin_rollback_refuses_while_running() {
     let h = build_harness("RUNNING", Some(TEST_TOKEN)).await;
     let client = reqwest::Client::new();
-    let resp = client
-        .post(url(&h.addr, &h.session_id, &h.checkpoint_id))
+    let resp = with_auth_headers(client.post(url(&h.addr, &h.session_id, &h.checkpoint_id)))
         .header("X-Seasoned-Hand-Admin-Token", TEST_TOKEN)
         .json(&json!({"reason": "test"}))
         .send()
@@ -220,8 +248,7 @@ async fn admin_rollback_refuses_while_running() {
 async fn admin_rollback_refuses_while_verifying() {
     let h = build_harness("VERIFYING", Some(TEST_TOKEN)).await;
     let client = reqwest::Client::new();
-    let resp = client
-        .post(url(&h.addr, &h.session_id, &h.checkpoint_id))
+    let resp = with_auth_headers(client.post(url(&h.addr, &h.session_id, &h.checkpoint_id)))
         .header("X-Seasoned-Hand-Admin-Token", TEST_TOKEN)
         .json(&json!({"reason": "test"}))
         .send()
@@ -237,8 +264,7 @@ async fn admin_rollback_503_when_admin_token_unset() {
     // admin_token=None ⇒ AppState.admin_token is empty ⇒ 503.
     let h = build_harness("SUSPENDED", None).await;
     let client = reqwest::Client::new();
-    let resp = client
-        .post(url(&h.addr, &h.session_id, &h.checkpoint_id))
+    let resp = with_auth_headers(client.post(url(&h.addr, &h.session_id, &h.checkpoint_id)))
         .header("X-Seasoned-Hand-Admin-Token", TEST_TOKEN)
         .json(&json!({"reason": "test"}))
         .send()
@@ -253,8 +279,7 @@ async fn admin_rollback_503_when_admin_token_unset() {
 async fn admin_rollback_404_when_checkpoint_missing() {
     let h = build_harness("SUSPENDED", Some(TEST_TOKEN)).await;
     let client = reqwest::Client::new();
-    let resp = client
-        .post(url(&h.addr, &h.session_id, "no-such-checkpoint"))
+    let resp = with_auth_headers(client.post(url(&h.addr, &h.session_id, "no-such-checkpoint")))
         .header("X-Seasoned-Hand-Admin-Token", TEST_TOKEN)
         .json(&json!({"reason": "test"}))
         .send()

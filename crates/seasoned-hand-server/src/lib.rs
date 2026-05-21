@@ -888,6 +888,108 @@ async fn require_task_tenant(state: &AppState, task_id: &str, auth: &AuthContext
     Ok(())
 }
 
+async fn require_project_tenant(
+    state: &AppState,
+    project_id: &str,
+    auth: &AuthContext,
+) -> ApiResult<()> {
+    let project = state.projects.get(project_id).await.map_err(|e| match e {
+        seasoned_hand_core::project::ProjectError::NotFound(_) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "project_not_found".into(),
+            }),
+        ),
+        other => {
+            tracing::error!(error = %other, "require_project_tenant::lookup");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            )
+        }
+    })?;
+    if project.tenant_id.as_deref() != Some(auth.tenant_id.as_str()) {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "project_not_found".into(),
+            }),
+        ));
+    }
+    Ok(())
+}
+
+async fn require_session_tenant(
+    state: &AppState,
+    session_id: &str,
+    auth: &AuthContext,
+) -> ApiResult<()> {
+    let sid = session_id.to_string();
+    let tenant = auth.tenant_id.clone();
+    let exists = state
+        .db
+        .with_conn(move |conn| {
+            conn.query_row::<i64, _, _>(
+                "SELECT 1
+                   FROM sessions s
+                   LEFT JOIN projects p ON p.id = s.project_id
+                   LEFT JOIN tasks t ON t.id = s.task_id
+                  WHERE s.id = ?
+                    AND COALESCE(p.tenant_id, t.tenant_id) = ?",
+                rusqlite::params![sid, tenant],
+                |row| row.get(0),
+            )
+            .is_ok()
+        })
+        .await;
+    if !exists {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "session_not_found".into(),
+            }),
+        ));
+    }
+    Ok(())
+}
+
+async fn require_verification_tenant(
+    state: &AppState,
+    verification_id: &str,
+    auth: &AuthContext,
+) -> ApiResult<()> {
+    let verification_id = verification_id.to_string();
+    let tenant_id = auth.tenant_id.clone();
+    let exists = state
+        .db
+        .with_conn(move |conn| {
+            conn.query_row::<i64, _, _>(
+                "SELECT 1
+                   FROM verifications v
+                   JOIN sessions s ON s.id = v.session_id
+              LEFT JOIN projects p ON p.id = s.project_id
+              LEFT JOIN tasks t ON t.id = s.task_id
+                  WHERE v.id = ?
+                    AND COALESCE(p.tenant_id, t.tenant_id) = ?",
+                rusqlite::params![verification_id, tenant_id],
+                |row| row.get(0),
+            )
+            .is_ok()
+        })
+        .await;
+    if !exists {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "verification_not_found".into(),
+            }),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct ProgressQuery {
     lines: Option<usize>,
@@ -1141,9 +1243,12 @@ async fn list_sessions(
 async fn get_session(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionDetail>, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskRead, &auth_ctx)?;
+    require_session_tenant(&state, &session_id, &auth_ctx).await?;
     let id_for_query = session_id.clone();
     let summary = state
         .db
@@ -1356,9 +1461,12 @@ async fn cost_snapshot(
 async fn get_feature_list(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<Json<FeatureList>, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskRead, &auth_ctx)?;
+    require_session_tenant(&state, &session_id, &auth_ctx).await?;
     let bytes = state
         .sandbox
         .read_workspace_file(&session_id, "feature-list.json")
@@ -1397,10 +1505,13 @@ async fn get_feature_list(
 async fn get_progress(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Query(q): Query<ProgressQuery>,
 ) -> Result<String, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskRead, &auth_ctx)?;
+    require_session_tenant(&state, &session_id, &auth_ctx).await?;
     let bytes = state
         .sandbox
         .read_workspace_file(&session_id, "progress.txt")
@@ -1431,7 +1542,10 @@ pub fn app(state: AppState) -> Router {
             "/v1/sessions",
             with_auth(get(list_sessions), Action::TaskRead),
         )
-        .route("/v1/sessions/:id", get(get_session))
+        .route(
+            "/v1/sessions/:id",
+            with_auth(get(get_session), Action::TaskRead),
+        )
         .route(
             "/v1/sessions/:id/events",
             with_auth(get(list_events), Action::TaskRead),
@@ -1450,23 +1564,35 @@ pub fn app(state: AppState) -> Router {
             "/v1/admin/events/:session_id/raw",
             with_auth(get(list_raw_events_admin), Action::EventRawRead),
         )
-        .route("/v1/sessions/:id/feature-list", get(get_feature_list))
-        .route("/v1/sessions/:id/progress", get(get_progress))
+        .route(
+            "/v1/sessions/:id/feature-list",
+            with_auth(get(get_feature_list), Action::TaskRead),
+        )
+        .route(
+            "/v1/sessions/:id/progress",
+            with_auth(get(get_progress), Action::TaskRead),
+        )
         .route("/v1/workspace/:session_id/*sub_path", get(workspace_proxy))
         .route("/v1/workspace/:session_id", get(workspace_root))
         .route("/v1/workspace/:session_id/", get(workspace_root))
         .route(
             "/v1/sessions/:id/verifications",
-            get(list_verifications_handler),
+            with_auth(get(list_verifications_handler), Action::TaskRead),
         )
-        .route("/v1/verifications/:id", get(get_verification_handler))
+        .route(
+            "/v1/verifications/:id",
+            with_auth(get(get_verification_handler), Action::TaskRead),
+        )
         .route(
             "/v1/sessions/:id/checkpoints",
-            get(list_checkpoints_handler),
+            with_auth(get(list_checkpoints_handler), Action::TaskRead),
         )
         .route(
             "/v1/sessions/:id/checkpoints/:checkpoint_id/rollback",
-            axum::routing::post(post_checkpoint_rollback_handler),
+            with_auth(
+                axum::routing::post(post_checkpoint_rollback_handler),
+                Action::TaskWrite,
+            ),
         )
         // Story 2.17 / Phase 0 DEBT #16: admin-token-gated manual
         // workspace cleanup. Same 3-guard pattern as the rollback
@@ -1493,7 +1619,10 @@ pub fn app(state: AppState) -> Router {
         // deliverable's manifest by default, or a specific deliverable's
         // when `?deliverable_id=...` is supplied. Spilled (file-ref)
         // manifests are transparently inflated.
-        .route("/v1/tasks/:id/provenance", get(get_task_provenance_handler))
+        .route(
+            "/v1/tasks/:id/provenance",
+            with_auth(get(get_task_provenance_handler), Action::TaskRead),
+        )
         // Story 2.21a: project + task surface for the `seasoned-hand`
         // CLI binary. Loopback-only (Phase 2 single-operator); Phase 5
         // multi-user will lift the constraint behind real auth.
@@ -1963,11 +2092,14 @@ struct RollbackResponse {
 async fn post_checkpoint_rollback_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     headers: HeaderMap,
     Path((session_id, checkpoint_id)): Path<(String, String)>,
     Json(body): Json<RollbackBody>,
 ) -> ApiResult<(StatusCode, Json<RollbackResponse>)> {
     require_admin_route(&state, remote, &headers)?;
+    authorize_in_handler(Action::TaskWrite, &auth_ctx)?;
+    require_session_tenant(&state, &session_id, &auth_ctx).await?;
     // Guard 4: reason length.
     if body.reason.len() > 200 {
         return Err((
@@ -2151,10 +2283,13 @@ fn render_outcome<T: serde::Serialize>(
 async fn list_checkpoints_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Query(q): Query<seasoned_hand_core::checkpoint::routes::ListQuery>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskRead, &auth_ctx)?;
+    require_session_tenant(&state, &session_id, &auth_ctx).await?;
     use seasoned_hand_core::checkpoint::routes::list_checkpoints;
     render_outcome(
         "list_checkpoints",
@@ -2170,10 +2305,13 @@ async fn list_checkpoints_handler(
 async fn list_verifications_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Query(q): Query<VerifyListQuery>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskRead, &auth_ctx)?;
+    require_session_tenant(&state, &session_id, &auth_ctx).await?;
     render_outcome(
         "list_verifications",
         list_verifications(&state.verifications, &session_id, q).await,
@@ -2183,9 +2321,12 @@ async fn list_verifications_handler(
 async fn get_verification_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskRead, &auth_ctx)?;
+    require_verification_tenant(&state, &id, &auth_ctx).await?;
     render_outcome(
         "get_verification",
         get_verification(&state.verifications, &id).await,
@@ -2199,6 +2340,7 @@ async fn get_verification_handler(
 async fn get_task_provenance_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Path(task_id): Path<String>,
     Query(q): Query<seasoned_hand_core::provenance::GetTaskProvenanceQuery>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
@@ -2207,6 +2349,8 @@ async fn get_task_provenance_handler(
     // metadata) so they must not leak at HOST=0.0.0.0 binds. See REVIEW
     // §5 cross-cutting issue #1 / proposed DEBT #34.
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskRead, &auth_ctx)?;
+    require_task_tenant(&state, &task_id, &auth_ctx).await?;
     use seasoned_hand_core::provenance::{GetTaskProvenanceDeps, get_task_provenance};
     let deps = GetTaskProvenanceDeps {
         deliverables: state.deliverables.as_ref(),
@@ -2334,22 +2478,7 @@ async fn archive_project_handler(
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
     authorize_in_handler(Action::TaskWrite, &auth_ctx)?;
-    let project = state.projects.get(&id).await.map_err(|_| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "project_not_found".into(),
-            }),
-        )
-    })?;
-    if project.tenant_id.as_deref() != Some(auth_ctx.tenant_id.as_str()) {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "project_not_found".into(),
-            }),
-        ));
-    }
+    require_project_tenant(&state, &id, &auth_ctx).await?;
     match state
         .projects
         .set_status(&id, seasoned_hand_core::project::ProjectStatus::Archived)
@@ -2390,6 +2519,7 @@ async fn list_project_tasks_handler(
 ) -> Result<Json<Vec<seasoned_hand_core::project::Task>>, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
     authorize_in_handler(Action::TaskRead, &auth_ctx)?;
+    require_project_tenant(&state, &project_id, &auth_ctx).await?;
     let status = match q.status.as_deref() {
         Some(s) => match seasoned_hand_core::project::TaskStatus::from_db_str(s) {
             Ok(st) => Some(st),
@@ -2429,18 +2559,9 @@ async fn get_task_handler(
 ) -> Result<Json<seasoned_hand_core::project::Task>, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
     authorize_in_handler(Action::TaskRead, &auth_ctx)?;
+    require_task_tenant(&state, &id, &auth_ctx).await?;
     match state.tasks.get(&id).await {
-        Ok(task) => {
-            if task.tenant_id.as_deref() != Some(auth_ctx.tenant_id.as_str()) {
-                return Err((
-                    StatusCode::NOT_FOUND,
-                    Json(ApiError {
-                        error: "task_not_found".into(),
-                    }),
-                ));
-            }
-            Ok(Json(task))
-        }
+        Ok(task) => Ok(Json(task)),
         Err(seasoned_hand_core::project::TaskError::NotFound(_)) => Err((
             StatusCode::NOT_FOUND,
             Json(ApiError {
@@ -2477,23 +2598,7 @@ async fn list_task_deliverables_handler(
 ) -> Result<Json<TaskDeliverablesResponse>, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
     authorize_in_handler(Action::TaskRead, &auth_ctx)?;
-    state.tasks.get(&task_id).await.map_err(|e| match e {
-        seasoned_hand_core::project::TaskError::NotFound(_) => (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "task_not_found".into(),
-            }),
-        ),
-        other => {
-            tracing::error!(error = %other, "list_task_deliverables::lookup");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
-            )
-        }
-    })?;
+    require_task_tenant(&state, &task_id, &auth_ctx).await?;
     let deliverables = state
         .deliverables
         .list_by_task_and_tenant(&task_id, &auth_ctx.tenant_id)
@@ -3651,6 +3756,16 @@ mod tests {
         AppState::new(pool, redis, sandbox, search, router, Default::default())
     }
 
+    fn test_auth() -> AuthContext {
+        AuthContext {
+            tenant_id: "legacy-default".into(),
+            organization_id: "org-legacy-default".into(),
+            actor_user_id: "user-test".into(),
+            org_role: seasoned_hand_core::auth::Role::Admin,
+            project_override_role: None,
+        }
+    }
+
     /// Story 1.13b regression: a non-loopback remote address must
     /// short-circuit to 403 `forbidden_non_loopback` before the token
     /// check runs, regardless of whether the admin token was supplied.
@@ -3668,6 +3783,7 @@ mod tests {
         let outcome = post_checkpoint_rollback_handler(
             State(state),
             axum::extract::ConnectInfo(remote),
+            Extension(test_auth()),
             headers,
             Path(("sess-x".to_string(), "cp-x".to_string())),
             Json(RollbackBody { reason: "x".into() }),
@@ -3760,6 +3876,7 @@ mod tests {
         let outcome = post_checkpoint_rollback_handler(
             State(state),
             axum::extract::ConnectInfo(remote),
+            Extension(test_auth()),
             headers,
             Path(("sess-x".to_string(), "cp-x".to_string())),
             Json(RollbackBody { reason: "x".into() }),
@@ -3848,6 +3965,7 @@ mod tests {
             get_session(
                 State(state.clone()),
                 axum::extract::ConnectInfo(remote),
+                Extension(test_auth()),
                 Path("any".into()),
             )
         })
@@ -3899,6 +4017,7 @@ mod tests {
             get_feature_list(
                 State(state.clone()),
                 axum::extract::ConnectInfo(remote),
+                Extension(test_auth()),
                 Path("any".into()),
             )
         })
@@ -3912,6 +4031,7 @@ mod tests {
             get_progress(
                 State(state.clone()),
                 axum::extract::ConnectInfo(remote),
+                Extension(test_auth()),
                 Path("any".into()),
                 Query(ProgressQuery { lines: None }),
             )
@@ -3926,6 +4046,7 @@ mod tests {
             list_checkpoints_handler(
                 State(state.clone()),
                 axum::extract::ConnectInfo(remote),
+                Extension(test_auth()),
                 Path("any".into()),
                 Query(seasoned_hand_core::checkpoint::routes::ListQuery::default()),
             )
@@ -3940,6 +4061,7 @@ mod tests {
             list_verifications_handler(
                 State(state.clone()),
                 axum::extract::ConnectInfo(remote),
+                Extension(test_auth()),
                 Path("any".into()),
                 Query(VerifyListQuery::default()),
             )
@@ -3954,6 +4076,7 @@ mod tests {
             get_verification_handler(
                 State(state.clone()),
                 axum::extract::ConnectInfo(remote),
+                Extension(test_auth()),
                 Path("any".into()),
             )
         })

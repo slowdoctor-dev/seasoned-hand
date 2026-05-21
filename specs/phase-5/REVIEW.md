@@ -736,3 +736,76 @@ single-resource :id). **iter-4 required**: complete the `:id` read-handler + pro
 session-chain tenant retrofit, then re-sweep. Codex to drive iter-4 when capacity
 returns (the `require_task_tenant` pattern + the events-handler session-chain reference
 are established); Claude continues solo if Codex stays throttled.
+
+## HARDENING iter-4 (Codex, 2026-05-21)
+
+### A) Grade requested dispositions
+
+- **`P5-HARD-IT1-M2` pushback — ACK.**
+  The pushback remains correct under V013's `organizations.tenant_id UNIQUE` invariant
+  (effective 1-tenant↔1-org in Phase 5). Same-tenant handoff implies same-org.
+
+- **`P5-HARD-IT1-M4` partial — ACK.**
+  The valid risk was forged foreign **task-id** writes; the cross-org deactivation branch
+  is not reachable under current schema invariants and is documentation-only.
+
+### B) iter-4 implementation (H4 retrofit completion)
+
+Applied in `crates/seasoned-hand-server/src/lib.rs`:
+
+- Added helper: `require_project_tenant(...)`.
+- Added helper: `require_session_tenant(...)` (session->project/task tenant chain).
+- Added helper: `require_verification_tenant(...)`.
+- Retrofitted read/write handlers with explicit tenant ownership checks:
+  - `get_task_handler`
+  - `list_task_deliverables_handler`
+  - `get_task_provenance_handler`
+  - `archive_project_handler`
+  - `list_project_tasks_handler`
+  - `get_session`
+  - `get_progress`
+  - `get_feature_list`
+  - `list_verifications_handler`
+  - `list_checkpoints_handler`
+  - `post_checkpoint_rollback_handler`
+  - `get_verification_handler`
+- Route-layer hardening:
+  - `/v1/verifications/:id` now wrapped with `with_auth(..., Action::TaskRead)`.
+  - `/v1/tasks/:id/provenance` now wrapped with `with_auth(..., Action::TaskRead)`.
+
+### C) New findings from iter-4
+
+- **`P5-HARD-IT4-M6` (M) — FIXED.**
+  `/v1/tasks/:id/provenance` was not behind auth middleware; handler expected
+  `Extension<AuthContext>` and failed at runtime (500 missing extension). Fixed by
+  wrapping route with `with_auth(..., Action::TaskRead)` and keeping handler-level
+  `authorize_in_handler + require_task_tenant` defense.
+
+- **`P5-HARD-IT4-H5` (H) — FIXED.**
+  `/v1/verifications/:id` was RBAC/tenant-unscoped (loopback-only but cross-tenant
+  readable from a local caller). Fixed by:
+  1) `with_auth(..., Action::TaskRead)` route gate and
+  2) `require_verification_tenant(...)` join-chain ownership check before read.
+
+### D) Regression coverage added
+
+- `crates/seasoned-hand-server/tests/middleware_auth.rs`:
+  `middleware_auth_tenant_a_gets_404_for_tenant_b_id_endpoints` now probes the queued
+  `:id` family against tenant-B resources from tenant-A context and asserts 404:
+  - `/v1/tasks/:id`
+  - `/v1/tasks/:id/deliverables`
+  - `/v1/tasks/:id/provenance`
+  - `/v1/projects/:id/tasks`
+  - `/v1/projects/:id/archive`
+  - `/v1/sessions/:id`
+  - `/v1/sessions/:id/progress`
+  - `/v1/sessions/:id/feature-list`
+  - `/v1/sessions/:id/verifications`
+  - `/v1/sessions/:id/checkpoints`
+  - `/v1/sessions/:id/checkpoints/:checkpoint_id/rollback`
+  - `/v1/verifications/:id`
+
+### iter-4 conclusion
+
+iter-4 found **1 new H + 1 new M**, both fixed inline. Saturation not yet reached
+(non-zero new H/M in this round). A confirming iter-5 full re-sweep is still required.
