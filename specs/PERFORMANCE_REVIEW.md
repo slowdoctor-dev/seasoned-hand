@@ -42,4 +42,23 @@ curator `ConflictDetector` per-pair mutex (bounded background job, LLM-dominated
 N+1 (billing/retention batched in one tx); indexes (all hot columns covered).
 
 Both fixes are behaviour-preserving (cached value / hoisted invariant — same
-result each call). Awaiting Codex's independent iter-2 pass.
+result each call). Committed `d5d5f77`.
+
+### iter-2 (Codex) — IN PROGRESS at session pause (2026-05-22)
+
+Codex's independent pass found one hot-path allocation issue and is committing
+it (gate validation running at session close):
+
+- **P3 (Codex):** `SqliteEventStore`'s event-read query (`events/sqlite.rs`,
+  the `WHERE session_id = ? [...] ORDER BY id ASC LIMIT ?` read used by
+  `build_messages` **every agent-loop iteration**) built its bind params as a
+  `Vec<Box<dyn ToSql>>` + a `Vec<&dyn ToSql>` — heap-boxing each param + two
+  vecs per call. Codex replaced it with a `match` over the 4 (after_id ×
+  type_filter) combinations using stack `rusqlite::params![]`, removing the
+  per-call allocations. Behaviour-preserving (same SQL, params, rows).
+
+**Status at pause:** P3 verified behaviour-preserving by Claude (read the diff);
+Codex was running its final `cargo test --workspace` before committing
+`events/sqlite.rs`. **Next session:** confirm Codex committed + pushed P3,
+record its hash, then run the independent **iter-3** confirm. Saturation =
+a bilateral round where neither party finds a new hot-path issue.
