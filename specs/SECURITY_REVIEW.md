@@ -450,3 +450,79 @@ escape)**, now fixed. Because a real new finding landed this round, the track is
 Claude and Codex find 0 new H/M. Next: iter-5 — Claude solo re-sweep + Codex
 independent confirm, each verifying any claimed finding against committed code
 before recording it.
+
+### iter-5 (Codex) — independent confirm pass — CLEAN
+
+Independent confirm pass against committed tree `466c75f`, with "diff-truth
+first" discipline: every claim verified against committed code before recording.
+
+- **Prior fixes graded**: H-2 **ACK** (loopback gate on all three SOP-share
+  handlers + non-loopback regression tests green); M-1 **ACK**
+  (`redirect::Policy::none()` + `webhook_delivery_does_not_follow_redirects`
+  present); M-2 **ACK** (read-path canonicalization/containment + write-path
+  symlink refusal in `sandbox/mod.rs` + regression tests present).
+- **Re-audit angles, all CLEAN**: WS command arms (`Subscribe`,
+  `TaskPause/Resume/Cancel`, `UserResponse`, `BriefingConfirm`) all enforce
+  tenant/session/task scope before mutate/read; untrusted payload parsing
+  returns structured errors with no externally-reachable panic/unwrap; DoS cap
+  posture intact; outbound TLS has no insecure-cert overrides and webhook stays
+  non-following; sandbox file boundary holds.
+- **New H/M: 0. Verdict: concur saturation** (pending the matching clean Claude
+  iter-5 pass below).
+
+### iter-5 (Claude) — SQL/FTS5 / git-command / replay / audit-log integrity
+
+Re-audited the angles still thin after iter-1..4. **0 H, 0 M, 1 LOW.**
+
+| Angle | Verdict |
+|---|---|
+| SQL / FTS5 query construction (all stores) | clean except L-1 below — all store SQL is parameterized (no `format!`-built SQL; dynamic `push_str` only appends static fragments with bound `?`); audit/session-search/visibility/events all bound; curator FTS `MATCH` sites are `#[cfg(test)]`-only |
+| git / checkpoint / sandbox command construction | clean — `git commit -F <file>` (phase title written to a workspace file, never the shell); `git revert --no-commit <sha>` gated by `is_valid_git_sha` (hex, len 40/64) and the tool is masked from every LLM mode; bootstrap git commands are constant strings; no task value reaches a shell-interpreted string |
+| replay / checkpoint / artifact deserialization | clean — stored JSON read via `serde_json::from_value` inside `if let Ok` + `.get().and_then(as_str)`, no panic on malformed data; workspace write paths are constants; the one non-test `unwrap` in `checkpoint/persistence.rs` is provably `Some` (guarded) |
+| audit-log integrity | clean — `tenant_id`/`organization_id`/`actor_user_id` come solely from the trusted `AuthContext`; the record body cannot override identity columns; INSERT + query filters fully parameterized; query forces `tenant_id = ?` and clamps a User-role caller to its own `actor_user_id` |
+
+#### L-1 (LOW, fixed) — `playbook_search` FTS5 query not metachar-safe
+
+`matcher::production_match` (`crates/seasoned-hand-core/src/matcher/mod.rs`) built
+the FTS5 `MATCH` expression by appending `*` to each whitespace token of a brief,
+keeping FTS5 syntax characters (`"`, `:`, `^`, `*`, `(`, `-`). The value is *bound*
+(no SQL/FTS injection), but a brief containing those characters — ordinary in real
+briefs like `fix the "login" bug:`, and reachable via the LLM `playbook_search`
+tool (which is not masked) — produced a malformed expression and a SQLite error,
+surfaced as a handled `ToolError::Backend`. No panic, no 500, no cross-tenant
+impact: a self-inflicted, recoverable tool error that also degraded the matcher
+for benign quoted/colonized briefs.
+
+Fix (`SEC-IT5-L1`): `sanitize_fts_token` strips each token to alphanumerics before
+the `*` suffix, so the expression is always well-formed and matching degrades
+gracefully. Regression test `matcher::tests::production_match_tolerates_fts5_metacharacters`
+feeds quotes/`NEAR`/`^`/unbalanced parens and asserts `Ok`, not an FTS5 error.
+
+**Not changed (verified, by design):** `events::search_session_events` also binds a
+raw query to `MATCH`, but it is reached only from the operator **CLI**
+(`seasoned-hand-cli session-search`), where FTS5 operators (phrase quotes, `NEAR`)
+are an intended feature and erroring on malformed operator-typed syntax is correct —
+sanitizing there would remove a capability, not close a hole.
+
+#### iter-5 (Claude) verdict
+
+0 H, 0 M; 1 LOW found and fixed (L-1). Combined with Codex's clean iter-5
+confirm, **this round is bilaterally clean on H/M** with the sole LOW resolved.
+
+## Security track — SATURATION SEALED (2026-05-21)
+
+The dedicated Security hardening track is **saturated**. Tally across the
+Claude + Codex bilateral loop:
+
+- **Fixed**: H-2 (SOP-share loopback), M-1 (webhook redirect SSRF), M-2 (sandbox
+  symlink escape), L-1 (FTS5 metachar query). H-1 (header-trust auth) mitigated
+  (loopback default + warning + docs) and carried to Phase 6 as the real-authn
+  decision; project-override clamp logged as DEBT #S-2.
+- **Retracted**: 1 Codex false positive (H-3, already-fixed H10).
+- **Seal**: iter-5 is bilaterally clean — Claude (0 H / 0 M / 1 L-fixed) **and**
+  Codex (0 new H/M, concur) in the same round, each verifying claims against the
+  committed tree. No new H/M from either party with all prior findings resolved.
+
+Carry-forward to Phase 6: H-1 real end-user authentication (API key / OAuth,
+BASELINE §8) and DEBT #S-2 (clamp `effective_role()` project override ≤ org role
+once self-service auth lands).

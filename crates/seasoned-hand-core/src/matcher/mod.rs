@@ -55,6 +55,14 @@ pub fn normalize_brief(input: &str) -> String {
     lowered.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// SEC-IT5-L1: strip a single brief token to alphanumerics so it is safe to
+/// embed in an FTS5 `MATCH` prefix expression (`token*`). FTS5 reserves `"`,
+/// `:`, `^`, `*`, `(`, `-`, etc. as query syntax; leaving them in produces a
+/// malformed expression and a SQLite error rather than a graceful no-match.
+fn sanitize_fts_token(token: &str) -> String {
+    token.chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
 pub fn match_playbooks(
     conn: &Connection,
     request: &MatchRequest,
@@ -144,8 +152,16 @@ fn production_match(
     if normalized.is_empty() {
         return Ok(Vec::new());
     }
+    // SEC-IT5-L1: the FTS5 MATCH expression is built by appending the `*`
+    // prefix operator to each token. FTS5 treats `"` `:` `^` `*` `(` `-` etc.
+    // as query syntax, so a brief / `playbook_search` query containing any of
+    // them (ordinary briefs do, e.g. `fix the "login" bug:`) would produce a
+    // malformed expression and a SQLite error. The value is bound (no
+    // injection), but strip each token to alphanumerics so the expression is
+    // always well-formed and matching degrades gracefully instead of erroring.
     let tokens = normalized
         .split(' ')
+        .map(sanitize_fts_token)
         .filter(|t| !t.is_empty())
         .collect::<Vec<_>>();
     if tokens.is_empty() {
@@ -186,9 +202,10 @@ fn production_match(
     }
 
     let now_micros = now_micros();
+    let token_refs = tokens.iter().map(String::as_str).collect::<Vec<_>>();
     let mut scored = candidates
         .into_iter()
-        .map(|c| score_candidate(c, MatcherMode::Production, &tokens, now_micros))
+        .map(|c| score_candidate(c, MatcherMode::Production, &token_refs, now_micros))
         .filter(|m| m.match_score >= 1.0)
         .collect::<Vec<_>>();
     scored.sort_by(ranking_cmp);
@@ -397,6 +414,73 @@ mod tests {
         assert_eq!(out[1].playbook_id, "pb-a");
         assert_eq!(out[2].playbook_id, "pb-c");
         assert!(out[0].match_score >= 1.0);
+    }
+
+    // SEC-IT5-L1: a brief containing FTS5 metacharacters (quotes, colons,
+    // carets — ordinary in real briefs, and reachable via `playbook_search`)
+    // must NOT produce a malformed MATCH expression / SQLite error. The
+    // alphanumeric tokens are still extracted so matching degrades gracefully.
+    #[tokio::test]
+    async fn production_match_tolerates_fts5_metacharacters() {
+        let pool = db::open(":memory:").await.unwrap();
+        pool.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO sessions (id, created_at, updated_at, state)
+                 VALUES ('s1', 1, 1, 'RUNNING')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, tenant_id, status, title, created_at, updated_at)
+                 VALUES ('p1', 'legacy-default', 'active', 'P1', 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tasks (id, project_id, tenant_id, status, title, created_at, updated_at)
+                 VALUES ('t1', 'p1', 'legacy-default', 'Running', 'Task 1', 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute("UPDATE sessions SET task_id = 't1' WHERE id = 's1'", [])
+                .unwrap();
+            conn.execute(
+                "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id,
+                 created_at, updated_at, trigger_keywords, content, success_count, failure_count, avg_duration_ms,
+                 avg_tool_calls, status, version)
+                 VALUES ('pb-login', 'legacy-default', 'Login retry', '', 1, 't1', 1, 1,
+                 '[\"login\"]', 'login retry logic', 3, 0, NULL, NULL, 'active', 1)",
+                [],
+            )
+            .unwrap();
+        })
+        .await;
+
+        for brief in [
+            "fix the \"login\" bug: retry",
+            "login^2 NEAR(a b)",
+            "((login*",
+            "\"\":^*-",
+        ] {
+            let res = pool
+                .with_conn(|conn| {
+                    match_playbooks(
+                        conn,
+                        &MatchRequest {
+                            session_id: "s1".into(),
+                            fixture_id: None,
+                            brief: brief.into(),
+                            mode: MatcherMode::Production,
+                            limit: 3,
+                        },
+                    )
+                })
+                .await;
+            assert!(
+                res.is_ok(),
+                "brief {brief:?} must not raise an FTS5 syntax error, got {res:?}"
+            );
+        }
     }
 
     #[tokio::test]
