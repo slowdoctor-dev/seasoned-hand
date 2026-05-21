@@ -859,7 +859,11 @@ fn authorize_in_handler(action: Action, ctx: &AuthContext) -> ApiResult<()> {
 /// pause/resume/cancel/read tenant-B's task by id. Returns 404 (not
 /// 403) on a tenant mismatch so cross-tenant existence isn't leaked,
 /// identical to a genuinely missing id.
-async fn require_task_tenant(state: &AppState, task_id: &str, auth: &AuthContext) -> ApiResult<()> {
+pub(crate) async fn require_task_tenant(
+    state: &AppState,
+    task_id: &str,
+    auth: &AuthContext,
+) -> ApiResult<()> {
     let task = state.tasks.get(task_id).await.map_err(|e| match e {
         seasoned_hand_core::project::TaskError::NotFound(_) => (
             StatusCode::NOT_FOUND,

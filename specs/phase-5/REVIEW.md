@@ -1066,3 +1066,28 @@ Note: Codex independently confirmed iters 2/4/6/8 and contributed H3's catching 
 H5/M6/H7/H9 finds, and the M3/M4/L2 fixes. Optional final bilateral seal: a Codex
 independent re-confirm when capacity returns (non-blocking; iter-9 meets the saturation
 bar). Hardening complete → ready for Phase 6.
+
+---
+
+## HARDENING iter-10 (Codex bilateral confirm, 2026-05-21) — found H10
+
+The optional bilateral seal was NOT clean — Codex's independent confirm found one more
+cross-tenant gap, vindicating the seal step.
+
+- **`P5-HARD-IT10-H10` (H) — FIXED.** The WS `BriefingConfirm` command arm (ws.rs
+  `handle_command`) was unguarded. Distinct from H8 (the HTTP `/v1/briefings/:id/confirm`
+  route): the WebSocket `briefing_confirm` cmd forwards a confirm/edit/cancel into the
+  Initializer's per-task gate by `task_id` with no tenant check — a WS client could
+  confirm/cancel/edit another tenant's briefed task. Fixed (Codex): the arm now calls
+  `require_task_tenant` (promoted to `pub(crate)`) and emits
+  `Error/Ack{forbidden_task_scope}` on mismatch. Test
+  `ws_tenant_a_cannot_confirm_tenant_b_briefing` added.
+
+### Corrected conclusion
+iter-9's saturation declaration was premature — it audited the WS `Subscribe`/`UserResponse`
+arms (H9) but the `BriefingConfirm` arm was a separate command not covered. With H10 fixed,
+the WS surface is now fully tenant-scoped across ALL five command arms (task_create,
+task_pause/resume/cancel, Subscribe, UserResponse, BriefingConfirm). Running tally:
+**10 HIGH + 6 MEDIUM**. A fresh confirming pass (iter-11) is still owed before re-declaring
+cross-tenant saturation. (Superseded in practice by the dedicated Security hardening track
+that follows, which subsumes and extends this.)

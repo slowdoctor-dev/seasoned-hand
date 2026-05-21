@@ -424,6 +424,21 @@ async fn handle_command(
             action,
             edits,
         } => {
+            if let Err((status, _)) = crate::require_task_tenant(state, &task_id, auth_ctx).await {
+                let _ = tx.send(ServerEnvelope::Error {
+                    id: Some(cmd_id.clone()),
+                    kind: "forbidden_task_scope".into(),
+                    message: format!("task tenant mismatch ({status})"),
+                });
+                let _ = tx.send(ServerEnvelope::Ack {
+                    id: Uuid::new_v4().to_string(),
+                    r#ref: cmd_id,
+                    ok: false,
+                    error: Some("forbidden_task_scope".into()),
+                    session_id: None,
+                });
+                return;
+            }
             // Story 2.8b: forward the user's confirm/edit/cancel action
             // into the per-task mpsc the Initializer's confirm gate is
             // waiting on. Missing sender → the gate already returned

@@ -370,10 +370,13 @@ async fn ws_briefing_confirm_unknown_task_acks_not_pending() {
     ))
     .await
     .unwrap();
-    let value = recv_envelope(&mut ws).await;
-    assert_eq!(value["type"], "ack");
-    assert_eq!(value["ok"], false);
-    assert_eq!(value["error"], "no_pending_briefing");
+    let first = recv_envelope(&mut ws).await;
+    assert_eq!(first["type"], "error");
+    assert_eq!(first["kind"], "forbidden_task_scope");
+    let second = recv_envelope(&mut ws).await;
+    assert_eq!(second["type"], "ack");
+    assert_eq!(second["ok"], false);
+    assert_eq!(second["error"], "forbidden_task_scope");
 }
 
 /// Story 2.9: the WS `task_create` command now routes through the
@@ -606,4 +609,57 @@ async fn ws_tenant_a_cannot_pause_tenant_b_session() {
         })
         .await;
     assert_eq!(state_after, "RUNNING");
+}
+
+#[tokio::test]
+async fn ws_tenant_a_cannot_confirm_tenant_b_briefing() {
+    let (url, state) = boot().await;
+    let projects = ProjectStore::new(state.db.clone());
+    let tasks = TaskStore::new(state.db.clone());
+    let project_b = projects
+        .insert(NewProject {
+            tenant_id: Some("tenant-b".to_string()),
+            title: "Tenant B Project".to_string(),
+            description: None,
+        })
+        .await
+        .unwrap();
+    let task_b = tasks
+        .insert(NewTask {
+            project_id: project_b,
+            tenant_id: Some("tenant-b".to_string()),
+            title: "Tenant B Briefing Task".to_string(),
+            expected_due_at: None,
+        })
+        .await
+        .unwrap();
+
+    let (mut ws, _) = connect_async(ws_request(&url, "tenant-a", "admin"))
+        .await
+        .unwrap();
+    ws.send(Message::Text(
+        json!({
+            "type": "command",
+            "id": "brief-foreign",
+            "ts": 1,
+            "payload": {
+                "cmd": "briefing_confirm",
+                "task_id": task_b,
+                "in_reply_to_call_id": "call-x",
+                "action": "confirm"
+            }
+        })
+        .to_string(),
+    ))
+    .await
+    .unwrap();
+
+    let first = recv_envelope(&mut ws).await;
+    assert_eq!(first["type"], "error");
+    assert_eq!(first["kind"], "forbidden_task_scope");
+    let second = recv_envelope(&mut ws).await;
+    assert_eq!(second["type"], "ack");
+    assert_eq!(second["ref"], "brief-foreign");
+    assert_eq!(second["ok"], false);
+    assert_eq!(second["error"], "forbidden_task_scope");
 }
