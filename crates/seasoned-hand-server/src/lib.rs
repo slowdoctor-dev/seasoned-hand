@@ -829,6 +829,10 @@ struct ApiError {
 type ApiErrorResponse = (StatusCode, Json<ApiError>);
 type ApiResult<T> = Result<T, ApiErrorResponse>;
 
+fn api_err(status: StatusCode, code: String) -> ApiErrorResponse {
+    (status, Json(ApiError { error: code }))
+}
+
 fn with_auth(route: MethodRouter<AppState>, action: Action) -> MethodRouter<AppState> {
     route
         .route_layer(middleware::from_fn(auth::middleware::require_auth_context))
@@ -837,18 +841,12 @@ fn with_auth(route: MethodRouter<AppState>, action: Action) -> MethodRouter<AppS
 
 fn authorize_in_handler(action: Action, ctx: &AuthContext) -> ApiResult<()> {
     authorize(action, &AuthResource::default(), ctx).map_err(|err| match err {
-        seasoned_hand_core::auth::AuthError::MissingTenantContext => (
-            StatusCode::UNAUTHORIZED,
-            Json(ApiError {
-                error: "unauthorized_context".into(),
-            }),
-        ),
-        seasoned_hand_core::auth::AuthError::Unauthorized { .. } => (
-            StatusCode::FORBIDDEN,
-            Json(ApiError {
-                error: "forbidden_action".into(),
-            }),
-        ),
+        seasoned_hand_core::auth::AuthError::MissingTenantContext => {
+            api_err(StatusCode::UNAUTHORIZED, "unauthorized_context".into())
+        }
+        seasoned_hand_core::auth::AuthError::Unauthorized { .. } => {
+            api_err(StatusCode::FORBIDDEN, "forbidden_action".into())
+        }
     })
 }
 
@@ -865,29 +863,16 @@ pub(crate) async fn require_task_tenant(
     auth: &AuthContext,
 ) -> ApiResult<()> {
     let task = state.tasks.get(task_id).await.map_err(|e| match e {
-        seasoned_hand_core::project::TaskError::NotFound(_) => (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "task_not_found".into(),
-            }),
-        ),
+        seasoned_hand_core::project::TaskError::NotFound(_) => {
+            api_err(StatusCode::NOT_FOUND, "task_not_found".into())
+        }
         other => {
             tracing::error!(error = %other, "require_task_tenant::lookup");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
-            )
+            api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
         }
     })?;
     if task.tenant_id.as_deref() != Some(auth.tenant_id.as_str()) {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "task_not_found".into(),
-            }),
-        ));
+        return Err(api_err(StatusCode::NOT_FOUND, "task_not_found".into()));
     }
     Ok(())
 }
@@ -898,29 +883,16 @@ async fn require_project_tenant(
     auth: &AuthContext,
 ) -> ApiResult<()> {
     let project = state.projects.get(project_id).await.map_err(|e| match e {
-        seasoned_hand_core::project::ProjectError::NotFound(_) => (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "project_not_found".into(),
-            }),
-        ),
+        seasoned_hand_core::project::ProjectError::NotFound(_) => {
+            api_err(StatusCode::NOT_FOUND, "project_not_found".into())
+        }
         other => {
             tracing::error!(error = %other, "require_project_tenant::lookup");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
-            )
+            api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
         }
     })?;
     if project.tenant_id.as_deref() != Some(auth.tenant_id.as_str()) {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "project_not_found".into(),
-            }),
-        ));
+        return Err(api_err(StatusCode::NOT_FOUND, "project_not_found".into()));
     }
     Ok(())
 }
@@ -949,12 +921,7 @@ async fn require_session_tenant(
         })
         .await;
     if !exists {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "session_not_found".into(),
-            }),
-        ));
+        return Err(api_err(StatusCode::NOT_FOUND, "session_not_found".into()));
     }
     Ok(())
 }
@@ -984,11 +951,9 @@ async fn require_verification_tenant(
         })
         .await;
     if !exists {
-        return Err((
+        return Err(api_err(
             StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "verification_not_found".into(),
-            }),
+            "verification_not_found".into(),
         ));
     }
     Ok(())
@@ -1009,14 +974,10 @@ async fn list_events(
     require_loopback(remote)?;
     authorize_in_handler(Action::TaskRead, &auth_ctx)?;
     let event_type = match params.event_type.as_deref() {
-        Some(s) => Some(EventType::from_str(s).map_err(|_| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(ApiError {
-                    error: "unknown_event_type".into(),
-                }),
-            )
-        })?),
+        Some(s) => Some(
+            EventType::from_str(s)
+                .map_err(|_| api_err(StatusCode::BAD_REQUEST, "unknown_event_type".into()))?,
+        ),
         None => None,
     };
 
@@ -1045,29 +1006,19 @@ async fn list_events(
         })
         .await;
     if !session_exists {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "session_not_found".into(),
-            }),
-        ));
+        return Err(api_err(StatusCode::NOT_FOUND, "session_not_found".into()));
     }
 
     match state.events.query(&session_id, filter).await {
         Ok(events) => Ok(Json(events)),
-        Err(seasoned_hand_core::events::EventError::SessionNotFound(_)) => Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "session_not_found".into(),
-            }),
-        )),
+        Err(seasoned_hand_core::events::EventError::SessionNotFound(_)) => {
+            Err(api_err(StatusCode::NOT_FOUND, "session_not_found".into()))
+        }
         Err(other) => {
             tracing::error!(error = %other, "events query failed");
-            Err((
+            Err(api_err(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
+                "internal_error".into(),
             ))
         }
     }
@@ -1107,11 +1058,9 @@ async fn list_redacted_events(
         Ok(rows) => Ok(Json(rows)),
         Err(err) => {
             tracing::error!(error = %err, "visibility::query failed");
-            Err((
+            Err(api_err(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
+                "internal_error".into(),
             ))
         }
     }
@@ -1149,19 +1098,14 @@ async fn list_raw_events_admin(
     .await
     {
         Ok(rows) => Ok(Json(rows)),
-        Err(seasoned_hand_core::events::visibility::VisibilityQueryError::Auth(_)) => Err((
-            StatusCode::FORBIDDEN,
-            Json(ApiError {
-                error: "forbidden_action".into(),
-            }),
-        )),
+        Err(seasoned_hand_core::events::visibility::VisibilityQueryError::Auth(_)) => {
+            Err(api_err(StatusCode::FORBIDDEN, "forbidden_action".into()))
+        }
         Err(err) => {
             tracing::error!(error = %err, "visibility::query_raw failed");
-            Err((
+            Err(api_err(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
+                "internal_error".into(),
             ))
         }
     }
@@ -1234,12 +1178,7 @@ async fn list_sessions(
         .await
         .map_err(|e| {
             tracing::error!(%e, "list_sessions db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "db_error".into(),
-                }),
-            )
+            api_err(StatusCode::INTERNAL_SERVER_ERROR, "db_error".into())
         })?;
     Ok(Json(sessions))
 }
@@ -1280,22 +1219,11 @@ async fn get_session(
         .await
         .map_err(|e| {
             tracing::error!(%e, "get_session db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "db_error".into(),
-                }),
-            )
+            api_err(StatusCode::INTERNAL_SERVER_ERROR, "db_error".into())
         })?;
 
-    let summary = summary.ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "session_not_found".into(),
-            }),
-        )
-    })?;
+    let summary =
+        summary.ok_or_else(|| api_err(StatusCode::NOT_FOUND, "session_not_found".into()))?;
 
     let sandbox = state.sandbox.get(&session_id).await.map(|h| SandboxInfo {
         api_url: h.api_url,
@@ -1357,20 +1285,13 @@ async fn workspace_proxy_inner(
     use axum::response::Response;
 
     if sub_path.starts_with('/') || sub_path.split('/').any(|seg| seg == "..") {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: "path_traversal".into(),
-            }),
-        ));
+        return Err(api_err(StatusCode::BAD_REQUEST, "path_traversal".into()));
     }
 
     let Some(handle) = state.sandbox.get(&session_id).await else {
-        return Err((
+        return Err(api_err(
             StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "no_sandbox_for_session".into(),
-            }),
+            "no_sandbox_for_session".into(),
         ));
     };
 
@@ -1390,47 +1311,28 @@ async fn workspace_proxy_inner(
     let canonical_root = tokio::fs::canonicalize(&handle.workspace_host_path)
         .await
         .map_err(|_e| {
-            (
+            api_err(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "workspace_root_unavailable".into(),
-                }),
+                "workspace_root_unavailable".into(),
             )
         })?;
-    let target = tokio::fs::canonicalize(&target).await.map_err(|_e| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "workspace_not_found".into(),
-            }),
-        )
-    })?;
+    let target = tokio::fs::canonicalize(&target)
+        .await
+        .map_err(|_e| api_err(StatusCode::NOT_FOUND, "workspace_not_found".into()))?;
     if !target.starts_with(&canonical_root) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: "path_traversal".into(),
-            }),
-        ));
+        return Err(api_err(StatusCode::BAD_REQUEST, "path_traversal".into()));
     }
 
-    let metadata = tokio::fs::metadata(&target).await.map_err(|_e| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "workspace_not_found".into(),
-            }),
-        )
-    })?;
+    let metadata = tokio::fs::metadata(&target)
+        .await
+        .map_err(|_e| api_err(StatusCode::NOT_FOUND, "workspace_not_found".into()))?;
 
     if metadata.is_dir() {
         let mut entries = Vec::new();
         let mut read_dir = tokio::fs::read_dir(&target).await.map_err(|_e| {
-            (
+            api_err(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "workspace_readdir_failed".into(),
-                }),
+                "workspace_readdir_failed".into(),
             )
         })?;
         while let Ok(Some(entry)) = read_dir.next_entry().await {
@@ -1464,20 +1366,16 @@ async fn workspace_proxy_inner(
             cap = WORKSPACE_FILE_CAP_BYTES,
             "workspace file exceeds response cap"
         );
-        return Err((
+        return Err(api_err(
             StatusCode::PAYLOAD_TOO_LARGE,
-            Json(ApiError {
-                error: "workspace_file_too_large".into(),
-            }),
+            "workspace_file_too_large".into(),
         ));
     }
 
     let bytes = tokio::fs::read(&target).await.map_err(|_e| {
-        (
+        api_err(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: "workspace_read_failed".into(),
-            }),
+            "workspace_read_failed".into(),
         )
     })?;
     Ok(Response::builder()
@@ -1494,11 +1392,9 @@ async fn cost_snapshot(
         Ok(snapshot) => Ok(Json(snapshot)),
         Err(error) => {
             tracing::warn!(%error, "cost snapshot proxy failed");
-            Err((
+            Err(api_err(
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(ApiError {
-                    error: "cost_unavailable".into(),
-                }),
+                "cost_unavailable".into(),
             ))
         }
     }
@@ -1523,12 +1419,7 @@ async fn get_feature_list(
                 %error,
                 "feature-list.json read failed (returning 404)",
             );
-            (
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: "feature_list_not_found".into(),
-                }),
-            )
+            api_err(StatusCode::NOT_FOUND, "feature_list_not_found".into())
         })?;
     let parsed = serde_json::from_slice::<FeatureList>(&bytes).map_err(|error| {
         tracing::warn!(
@@ -1538,11 +1429,9 @@ async fn get_feature_list(
             %error,
             "feature-list.json parse failed (returning 500)",
         );
-        (
+        api_err(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: "feature_list_invalid".into(),
-            }),
+            "feature_list_invalid".into(),
         )
     })?;
     Ok(Json(parsed))
@@ -1568,12 +1457,7 @@ async fn get_progress(
                 %error,
                 "progress.txt read failed (returning 404)",
             );
-            (
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: "progress_not_found".into(),
-                }),
-            )
+            api_err(StatusCode::NOT_FOUND, "progress_not_found".into())
         })?;
     let text = String::from_utf8_lossy(&bytes);
     Ok(progress::tail_lines(&text, q.lines.unwrap_or(200)))
@@ -1854,14 +1738,7 @@ async fn get_channel_health_handler(
         .find(|h| h.name == name)
         .map(ChannelHealthDto::from)
         .map(Json)
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: "channel_not_found".into(),
-                }),
-            )
-        })
+        .ok_or_else(|| api_err(StatusCode::NOT_FOUND, "channel_not_found".into()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1892,12 +1769,7 @@ async fn post_channel_test_handler(
         "delivery" => state.channels.get_delivery(&name).is_some(),
         "notify" => state.channels.get_notify(&name).is_some(),
         _other => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ApiError {
-                    error: "unknown_role".into(),
-                }),
-            ));
+            return Err(api_err(StatusCode::BAD_REQUEST, "unknown_role".into()));
         }
     };
     if !registered {
@@ -1909,7 +1781,7 @@ async fn post_channel_test_handler(
         } else {
             "channel_not_found"
         };
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: err.into() })));
+        return Err(api_err(StatusCode::NOT_FOUND, err.to_string()));
     }
     Ok(Json(ChannelTestResponse {
         name,
@@ -1977,19 +1849,15 @@ async fn post_intake_webhook_handler(
 
     match token_check {
         TokenCheck::NotConfigured => {
-            return Err((
+            return Err(api_err(
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(ApiError {
-                    error: "intake_token_not_configured".into(),
-                }),
+                "intake_token_not_configured".into(),
             ));
         }
         TokenCheck::Mismatch => {
-            return Err((
+            return Err(api_err(
                 StatusCode::UNAUTHORIZED,
-                Json(ApiError {
-                    error: "unauthorized_token".into(),
-                }),
+                "unauthorized_token".into(),
             ));
         }
         TokenCheck::Ok => {}
@@ -1997,12 +1865,7 @@ async fn post_intake_webhook_handler(
 
     let Json(body) = body.map_err(|error| {
         tracing::warn!(%error, "webhook intake: invalid JSON body (returning 400)");
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: "invalid_json_body".into(),
-            }),
-        )
+        api_err(StatusCode::BAD_REQUEST, "invalid_json_body".into())
     })?;
 
     let mut metadata = body.metadata.unwrap_or_else(|| serde_json::json!({}));
@@ -2030,11 +1893,9 @@ async fn post_intake_webhook_handler(
                 briefing_call_id: None,
             }),
         )),
-        Ok(HandleOutcome::DuplicateSkipped) => Err((
+        Ok(HandleOutcome::DuplicateSkipped) => Err(api_err(
             StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "intake_rejected:duplicate_intake_id".into(),
-            }),
+            "intake_rejected:duplicate_intake_id".into(),
         )),
         Ok(HandleOutcome::Rejected(reason)) => {
             // DEBT #12 close-out for the webhook surface: validation
@@ -2046,20 +1907,16 @@ async fn post_intake_webhook_handler(
                 RejectionReason::EmptyBrief => "empty_brief",
                 RejectionReason::UnknownChannel(_) => "unknown_channel",
             };
-            Err((
+            Err(api_err(
                 StatusCode::BAD_REQUEST,
-                Json(ApiError {
-                    error: format!("intake_rejected:{reason_code}"),
-                }),
+                format!("intake_rejected:{reason_code}"),
             ))
         }
         Err(error) => {
             tracing::error!(%error, "webhook intake: IntakeRouter error");
-            Err((
+            Err(api_err(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
+                "internal_error".into(),
             ))
         }
     }
@@ -2079,11 +1936,9 @@ fn require_loopback(remote: SocketAddr) -> ApiResult<()> {
     if remote.ip().is_loopback() {
         Ok(())
     } else {
-        Err((
+        Err(api_err(
             StatusCode::FORBIDDEN,
-            Json(ApiError {
-                error: "forbidden_non_loopback".into(),
-            }),
+            "forbidden_non_loopback".into(),
         ))
     }
 }
@@ -2092,11 +1947,9 @@ const ADMIN_TOKEN_HEADER: &str = "X-Seasoned-Hand-Admin-Token";
 
 fn require_admin_token_configured(state: &AppState) -> ApiResult<()> {
     if state.admin_token.is_empty() {
-        return Err((
+        return Err(api_err(
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ApiError {
-                error: "admin_token_not_configured".into(),
-            }),
+            "admin_token_not_configured".into(),
         ));
     }
     Ok(())
@@ -2114,11 +1967,9 @@ fn require_admin_token_header(state: &AppState, headers: &HeaderMap) -> ApiResul
     if ok {
         Ok(())
     } else {
-        Err((
+        Err(api_err(
             StatusCode::UNAUTHORIZED,
-            Json(ApiError {
-                error: "unauthorized_token".into(),
-            }),
+            "unauthorized_token".into(),
         ))
     }
 }
@@ -2162,12 +2013,7 @@ async fn post_checkpoint_rollback_handler(
     require_session_tenant(&state, &session_id, &auth_ctx).await?;
     // Guard 4: reason length.
     if body.reason.len() > 200 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: "reason_too_long".into(),
-            }),
-        ));
+        return Err(api_err(StatusCode::BAD_REQUEST, "reason_too_long".into()));
     }
 
     // Guard 5: session state must NOT be RUNNING or VERIFYING.
@@ -2188,29 +2034,14 @@ async fn post_checkpoint_rollback_handler(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "rollback: session state query");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
-            )
+            api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
         })?;
     match session_state.as_deref() {
         Some("RUNNING") | Some("VERIFYING") => {
-            return Err((
-                StatusCode::CONFLICT,
-                Json(ApiError {
-                    error: "wrong_state".into(),
-                }),
-            ));
+            return Err(api_err(StatusCode::CONFLICT, "wrong_state".into()));
         }
         None => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: "session_not_found".into(),
-                }),
-            ));
+            return Err(api_err(StatusCode::NOT_FOUND, "session_not_found".into()));
         }
         _ => {}
     }
@@ -2218,20 +2049,10 @@ async fn post_checkpoint_rollback_handler(
     // Guard 6: sandbox must not be paused.
     let paused = state.sandbox.is_paused(&session_id).await.map_err(|e| {
         tracing::warn!(error = %e, "rollback: sandbox paused-state probe failed");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: "internal_error".into(),
-            }),
-        )
+        api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
     })?;
     if paused {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "sandbox_paused".into(),
-            }),
-        ));
+        return Err(api_err(StatusCode::CONFLICT, "sandbox_paused".into()));
     }
 
     // All guards passed — dispatch the internal tool. The mask layer
@@ -2271,7 +2092,7 @@ async fn post_checkpoint_rollback_handler(
             "revert_failed" => StatusCode::INTERNAL_SERVER_ERROR,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        return Err((status, Json(ApiError { error: err_kind })));
+        return Err(api_err(status, err_kind));
     }
     let rolled_back_at = out
         .output
@@ -2327,14 +2148,12 @@ fn render_outcome<T: serde::Serialize>(
                 .body(axum::body::Body::from(bytes))
                 .unwrap_or_else(|_| Response::new(axum::body::Body::empty())))
         }
-        RouteOutcome::NotFound(msg) => Err((StatusCode::NOT_FOUND, Json(ApiError { error: msg }))),
+        RouteOutcome::NotFound(msg) => Err(api_err(StatusCode::NOT_FOUND, msg)),
         RouteOutcome::Internal(msg) => {
             tracing::error!(error = %msg, route = label, "route failed");
-            Err((
+            Err(api_err(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
+                "internal_error".into(),
             ))
         }
     }
@@ -2458,12 +2277,7 @@ async fn list_projects_handler(
         Some("active") => Some(seasoned_hand_core::project::ProjectStatus::Active),
         Some("archived") => Some(seasoned_hand_core::project::ProjectStatus::Archived),
         Some(_other) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ApiError {
-                    error: "unknown_status".into(),
-                }),
-            ));
+            return Err(api_err(StatusCode::BAD_REQUEST, "unknown_status".into()));
         }
         None => None,
     };
@@ -2475,12 +2289,7 @@ async fn list_projects_handler(
         .map(Json)
         .map_err(|e| {
             tracing::error!(error = %e, "list_projects");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
-            )
+            api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
         })
 }
 
@@ -2494,12 +2303,7 @@ async fn create_project_handler(
     require_loopback(remote)?;
     authorize_in_handler(Action::TaskWrite, &auth_ctx)?;
     if body.title.trim().is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: "empty_title".into(),
-            }),
-        ));
+        return Err(api_err(StatusCode::BAD_REQUEST, "empty_title".into()));
     }
     let id = state
         .projects
@@ -2511,21 +2315,11 @@ async fn create_project_handler(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "create_project");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
-            )
+            api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
         })?;
     let row = state.projects.get(&id).await.map_err(|e| {
         tracing::error!(error = %e, "create_project::get");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: "internal_error".into(),
-            }),
-        )
+        api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
     })?;
     Ok((StatusCode::CREATED, Json(row)))
 }
@@ -2545,19 +2339,14 @@ async fn archive_project_handler(
         .await
     {
         Ok(()) => Ok(StatusCode::NO_CONTENT),
-        Err(seasoned_hand_core::project::ProjectError::NotFound(_)) => Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "project_not_found".into(),
-            }),
-        )),
+        Err(seasoned_hand_core::project::ProjectError::NotFound(_)) => {
+            Err(api_err(StatusCode::NOT_FOUND, "project_not_found".into()))
+        }
         Err(e) => {
             tracing::error!(error = %e, "archive_project");
-            Err((
+            Err(api_err(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
+                "internal_error".into(),
             ))
         }
     }
@@ -2584,12 +2373,7 @@ async fn list_project_tasks_handler(
         Some(s) => match seasoned_hand_core::project::TaskStatus::from_db_str(s) {
             Ok(st) => Some(st),
             Err(_) => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(ApiError {
-                        error: "unknown_status".into(),
-                    }),
-                ));
+                return Err(api_err(StatusCode::BAD_REQUEST, "unknown_status".into()));
             }
         },
         None => None,
@@ -2602,12 +2386,7 @@ async fn list_project_tasks_handler(
         .map(Json)
         .map_err(|e| {
             tracing::error!(error = %e, "list_project_tasks");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
-            )
+            api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
         })
 }
 
@@ -2622,19 +2401,14 @@ async fn get_task_handler(
     require_task_tenant(&state, &id, &auth_ctx).await?;
     match state.tasks.get(&id).await {
         Ok(task) => Ok(Json(task)),
-        Err(seasoned_hand_core::project::TaskError::NotFound(_)) => Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "task_not_found".into(),
-            }),
-        )),
+        Err(seasoned_hand_core::project::TaskError::NotFound(_)) => {
+            Err(api_err(StatusCode::NOT_FOUND, "task_not_found".into()))
+        }
         Err(e) => {
             tracing::error!(error = %e, "get_task");
-            Err((
+            Err(api_err(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
+                "internal_error".into(),
             ))
         }
     }
@@ -2665,12 +2439,7 @@ async fn list_task_deliverables_handler(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "list_task_deliverables");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
-            )
+            api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
         })?;
     let latest_session_id = ws::lookup_latest_session_for_task(&state, &task_id).await;
     Ok(Json(TaskDeliverablesResponse {
@@ -2700,12 +2469,7 @@ async fn post_task_pause_handler(
     let durable = body.and_then(|Json(b)| b.durable).unwrap_or(true);
     let session_id = ws::lookup_latest_session_for_task(&state, &task_id)
         .await
-        .ok_or((
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "no_active_session".into(),
-            }),
-        ))?;
+        .ok_or(api_err(StatusCode::CONFLICT, "no_active_session".into()))?;
     map_lifecycle_result(ws::handle_task_pause(&state, &session_id, durable).await)
 }
 
@@ -2721,12 +2485,7 @@ async fn post_task_resume_handler(
     require_task_tenant(&state, &task_id, &auth_ctx).await?;
     let session_id = ws::lookup_latest_session_for_task(&state, &task_id)
         .await
-        .ok_or((
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "no_active_session".into(),
-            }),
-        ))?;
+        .ok_or(api_err(StatusCode::CONFLICT, "no_active_session".into()))?;
     map_lifecycle_result(ws::handle_task_resume(&state, &session_id).await)
 }
 
@@ -2752,28 +2511,19 @@ async fn post_task_cancel_handler(
     {
         Ok(()) => {}
         Err(seasoned_hand_core::project::TaskError::NotFound(_)) => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(ApiError {
-                    error: "task_not_found".into(),
-                }),
-            ));
+            return Err(api_err(StatusCode::NOT_FOUND, "task_not_found".into()));
         }
         Err(seasoned_hand_core::project::TaskError::IllegalTransition { from, .. }) => {
-            return Err((
+            return Err(api_err(
                 StatusCode::CONFLICT,
-                Json(ApiError {
-                    error: format!("wrong_state:{}", from.as_db_str()),
-                }),
+                format!("wrong_state:{}", from.as_db_str()),
             ));
         }
         Err(other) => {
             tracing::error!(error = %other, "task_cancel::set_status");
-            return Err((
+            return Err(api_err(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
+                "internal_error".into(),
             ));
         }
     }
@@ -2954,12 +2704,10 @@ async fn list_audit_handler(
     authorize_in_handler(Action::AuditRead, &auth_ctx)?;
     let logger = AuditLogger::new(state.db.clone(), state.events.clone());
     let action = match q.action.as_deref() {
-        Some(v) => Some(parse_audit_action(v).ok_or((
-            StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: "invalid_action".into(),
-            }),
-        ))?),
+        Some(v) => Some(
+            parse_audit_action(v)
+                .ok_or(api_err(StatusCode::BAD_REQUEST, "invalid_action".into()))?,
+        ),
         None => None,
     };
     let since_micros = q
@@ -2967,14 +2715,7 @@ async fn list_audit_handler(
         .as_deref()
         .map(parse_since_to_micros)
         .transpose()
-        .map_err(|_| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(ApiError {
-                    error: "invalid_since".into(),
-                }),
-            )
-        })?;
+        .map_err(|_| api_err(StatusCode::BAD_REQUEST, "invalid_since".into()))?;
     let rows = logger
         .query(
             &auth_ctx,
@@ -3006,22 +2747,15 @@ async fn post_user_cost_reconcile_handler(
     require_loopback(remote)?;
     authorize_in_handler(Action::AuditRead, &auth_ctx)?;
     if !is_valid_month_yyyymm(&body.month_yyyymm) {
-        return Err((
+        return Err(api_err(
             StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: "invalid_month_yyyymm".into(),
-            }),
+            "invalid_month_yyyymm".into(),
         ));
     }
     let job = ReconciliationJob::new(state.db.clone(), state.events.clone());
     let mut report = job.run(&body.month_yyyymm).await.map_err(|error| {
         tracing::error!(%error, "user_cost reconcile failed");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: "internal_error".into(),
-            }),
-        )
+        api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
     })?;
     // P5-HARD-IT7-M10: the reconciliation job aggregates across ALL
     // tenants (it's a global ops cron). The HTTP trigger is admin-gated,
@@ -3092,42 +2826,22 @@ fn parse_audit_action(value: &str) -> Option<seasoned_hand_core::audit::AuditAct
 
 fn map_invitation_error(err: InvitationError) -> ApiErrorResponse {
     match err {
-        InvitationError::Auth(seasoned_hand_core::auth::AuthError::MissingTenantContext) => (
-            StatusCode::UNAUTHORIZED,
-            Json(ApiError {
-                error: "unauthorized_context".into(),
-            }),
-        ),
-        InvitationError::Auth(seasoned_hand_core::auth::AuthError::Unauthorized { .. }) => (
-            StatusCode::FORBIDDEN,
-            Json(ApiError {
-                error: "forbidden_action".into(),
-            }),
-        ),
-        InvitationError::OrganizationNotFound(_) => (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "organization_not_found".into(),
-            }),
-        ),
-        InvitationError::CrossTenantDenied => (
-            StatusCode::FORBIDDEN,
-            Json(ApiError {
-                error: "cross_tenant_denied".into(),
-            }),
-        ),
-        InvitationError::InvalidRole(_) => (
-            StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: "invalid_role".into(),
-            }),
-        ),
-        InvitationError::Sqlite(_) | InvitationError::AuditWrite(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: "internal_error".into(),
-            }),
-        ),
+        InvitationError::Auth(seasoned_hand_core::auth::AuthError::MissingTenantContext) => {
+            api_err(StatusCode::UNAUTHORIZED, "unauthorized_context".into())
+        }
+        InvitationError::Auth(seasoned_hand_core::auth::AuthError::Unauthorized { .. }) => {
+            api_err(StatusCode::FORBIDDEN, "forbidden_action".into())
+        }
+        InvitationError::OrganizationNotFound(_) => {
+            api_err(StatusCode::NOT_FOUND, "organization_not_found".into())
+        }
+        InvitationError::CrossTenantDenied => {
+            api_err(StatusCode::FORBIDDEN, "cross_tenant_denied".into())
+        }
+        InvitationError::InvalidRole(_) => api_err(StatusCode::BAD_REQUEST, "invalid_role".into()),
+        InvitationError::Sqlite(_) | InvitationError::AuditWrite(_) => {
+            api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
+        }
     }
 }
 
@@ -3146,71 +2860,29 @@ fn is_valid_month_yyyymm(value: &str) -> bool {
 fn map_handoff_error(err: seasoned_hand_core::handoff::HandoffError) -> ApiErrorResponse {
     use seasoned_hand_core::handoff::HandoffError;
     match err {
-        HandoffError::Auth(seasoned_hand_core::auth::AuthError::MissingTenantContext) => (
-            StatusCode::UNAUTHORIZED,
-            Json(ApiError {
-                error: "unauthorized_context".into(),
-            }),
-        ),
-        HandoffError::Auth(seasoned_hand_core::auth::AuthError::Unauthorized { .. }) => (
-            StatusCode::FORBIDDEN,
-            Json(ApiError {
-                error: "forbidden_action".into(),
-            }),
-        ),
-        HandoffError::TaskNotFound(_) => (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "task_not_found".into(),
-            }),
-        ),
-        HandoffError::UserNotFound(_) => (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "user_not_found".into(),
-            }),
-        ),
-        HandoffError::TerminalState(_) => (
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "task_terminal".into(),
-            }),
-        ),
-        HandoffError::MustPauseFirst(_) => (
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "pause_required".into(),
-            }),
-        ),
-        HandoffError::StaleRevision { .. } => (
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "stale_revision".into(),
-            }),
-        ),
-        HandoffError::InvalidStatus(_) => (
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "invalid_task_status".into(),
-            }),
-        ),
+        HandoffError::Auth(seasoned_hand_core::auth::AuthError::MissingTenantContext) => {
+            api_err(StatusCode::UNAUTHORIZED, "unauthorized_context".into())
+        }
+        HandoffError::Auth(seasoned_hand_core::auth::AuthError::Unauthorized { .. }) => {
+            api_err(StatusCode::FORBIDDEN, "forbidden_action".into())
+        }
+        HandoffError::TaskNotFound(_) => api_err(StatusCode::NOT_FOUND, "task_not_found".into()),
+        HandoffError::UserNotFound(_) => api_err(StatusCode::NOT_FOUND, "user_not_found".into()),
+        HandoffError::TerminalState(_) => api_err(StatusCode::CONFLICT, "task_terminal".into()),
+        HandoffError::MustPauseFirst(_) => api_err(StatusCode::CONFLICT, "pause_required".into()),
+        HandoffError::StaleRevision { .. } => {
+            api_err(StatusCode::CONFLICT, "stale_revision".into())
+        }
+        HandoffError::InvalidStatus(_) => {
+            api_err(StatusCode::CONFLICT, "invalid_task_status".into())
+        }
         HandoffError::Sqlite(error) => {
             tracing::error!(%error, "handoff sqlite error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
-            )
+            api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
         }
         HandoffError::Event(error) => {
             tracing::error!(%error, "handoff event error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
-            )
+            api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
         }
     }
 }
@@ -3218,32 +2890,18 @@ fn map_handoff_error(err: seasoned_hand_core::handoff::HandoffError) -> ApiError
 fn map_audit_query_error(err: seasoned_hand_core::audit::AuditQueryError) -> ApiErrorResponse {
     use seasoned_hand_core::audit::AuditQueryError;
     match err {
-        AuditQueryError::Auth(seasoned_hand_core::auth::AuthError::MissingTenantContext) => (
-            StatusCode::UNAUTHORIZED,
-            Json(ApiError {
-                error: "unauthorized_context".into(),
-            }),
-        ),
-        AuditQueryError::Auth(seasoned_hand_core::auth::AuthError::Unauthorized { .. }) => (
-            StatusCode::FORBIDDEN,
-            Json(ApiError {
-                error: "forbidden_action".into(),
-            }),
-        ),
-        AuditQueryError::InvalidAction(_) => (
-            StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: "invalid_action_db".into(),
-            }),
-        ),
+        AuditQueryError::Auth(seasoned_hand_core::auth::AuthError::MissingTenantContext) => {
+            api_err(StatusCode::UNAUTHORIZED, "unauthorized_context".into())
+        }
+        AuditQueryError::Auth(seasoned_hand_core::auth::AuthError::Unauthorized { .. }) => {
+            api_err(StatusCode::FORBIDDEN, "forbidden_action".into())
+        }
+        AuditQueryError::InvalidAction(_) => {
+            api_err(StatusCode::BAD_REQUEST, "invalid_action_db".into())
+        }
         AuditQueryError::Sqlite(error) => {
             tracing::error!(%error, "audit query sqlite error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
-            )
+            api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
         }
     }
 }
@@ -3295,12 +2953,7 @@ async fn delete_sop_share_handler(
         .await
         .map_err(map_sop_share_error)?;
     if !deleted {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "share_not_found".into(),
-            }),
-        ));
+        return Err(api_err(StatusCode::NOT_FOUND, "share_not_found".into()));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -3327,61 +2980,31 @@ fn parse_sop_permission(value: &str) -> ApiResult<SopPermission> {
         "viewer" => Ok(SopPermission::Viewer),
         "editor" => Ok(SopPermission::Editor),
         "owner" => Ok(SopPermission::Owner),
-        _ => Err((
+        _ => Err(api_err(
             StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: "invalid_permission".into(),
-            }),
+            "invalid_permission".into(),
         )),
     }
 }
 
 fn map_sop_share_error(err: SopShareError) -> ApiErrorResponse {
     match err {
-        SopShareError::Auth(seasoned_hand_core::auth::AuthError::MissingTenantContext) => (
-            StatusCode::UNAUTHORIZED,
-            Json(ApiError {
-                error: "unauthorized_context".into(),
-            }),
-        ),
-        SopShareError::Auth(seasoned_hand_core::auth::AuthError::Unauthorized { .. }) => (
-            StatusCode::FORBIDDEN,
-            Json(ApiError {
-                error: "forbidden_action".into(),
-            }),
-        ),
-        SopShareError::SopNotFound(_) => (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "sop_not_found".into(),
-            }),
-        ),
-        SopShareError::UserNotFound(_) => (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "user_not_found".into(),
-            }),
-        ),
-        SopShareError::InvalidPermission(_) => (
+        SopShareError::Auth(seasoned_hand_core::auth::AuthError::MissingTenantContext) => {
+            api_err(StatusCode::UNAUTHORIZED, "unauthorized_context".into())
+        }
+        SopShareError::Auth(seasoned_hand_core::auth::AuthError::Unauthorized { .. }) => {
+            api_err(StatusCode::FORBIDDEN, "forbidden_action".into())
+        }
+        SopShareError::SopNotFound(_) => api_err(StatusCode::NOT_FOUND, "sop_not_found".into()),
+        SopShareError::UserNotFound(_) => api_err(StatusCode::NOT_FOUND, "user_not_found".into()),
+        SopShareError::InvalidPermission(_) => api_err(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                error: "invalid_permission_db".into(),
-            }),
+            "invalid_permission_db".into(),
         ),
-        SopShareError::StaleRevision(_) => (
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "stale_revision".into(),
-            }),
-        ),
+        SopShareError::StaleRevision(_) => api_err(StatusCode::CONFLICT, "stale_revision".into()),
         SopShareError::Db(error) => {
             tracing::error!(%error, "sop_share db error");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
-            )
+            api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
         }
     }
 }
@@ -3397,7 +3020,7 @@ fn map_lifecycle_result(
                 "unknown_session" => StatusCode::NOT_FOUND,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
-            Err((status, Json(ApiError { error: reason })))
+            Err(api_err(status, reason))
         }
     }
 }
@@ -3474,11 +3097,9 @@ async fn post_intake_cli_handler(
     require_loopback(remote)?;
 
     if body.brief.trim().is_empty() {
-        return Err((
+        return Err(api_err(
             StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: "intake_rejected:empty_brief".into(),
-            }),
+            "intake_rejected:empty_brief".into(),
         ));
     }
 
@@ -3527,11 +3148,9 @@ async fn post_intake_cli_handler(
             if let Some(_rx) = rx_opt {
                 state.cli_channel.drop_pending(&intake_id);
             }
-            return Err((
+            return Err(api_err(
                 StatusCode::CONFLICT,
-                Json(ApiError {
-                    error: "intake_rejected:duplicate_intake_id".into(),
-                }),
+                "intake_rejected:duplicate_intake_id".into(),
             ));
         }
         Ok(HandleOutcome::Rejected(reason)) => {
@@ -3542,11 +3161,9 @@ async fn post_intake_cli_handler(
                 RejectionReason::EmptyBrief => "empty_brief",
                 RejectionReason::UnknownChannel(_) => "unknown_channel",
             };
-            return Err((
+            return Err(api_err(
                 StatusCode::BAD_REQUEST,
-                Json(ApiError {
-                    error: format!("intake_rejected:{reason_code}"),
-                }),
+                format!("intake_rejected:{reason_code}"),
             ));
         }
         Err(error) => {
@@ -3554,11 +3171,9 @@ async fn post_intake_cli_handler(
                 state.cli_channel.drop_pending(&intake_id);
             }
             tracing::error!(%error, "cli intake: IntakeRouter error");
-            return Err((
+            return Err(api_err(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
+                "internal_error".into(),
             ));
         }
     };
@@ -3603,11 +3218,9 @@ async fn post_intake_cli_handler(
             // deliverable. Surface 504 so the CLI knows to look at
             // the inbox / fallback dir.
             tracing::warn!(%task_id, %intake_id, "cli intake deliver sender dropped before response");
-            Err((
+            Err(api_err(
                 StatusCode::GATEWAY_TIMEOUT,
-                Json(ApiError {
-                    error: "deliver_dropped:pending_delivery".into(),
-                }),
+                "deliver_dropped:pending_delivery".into(),
             ))
         }
         Err(_elapsed) => {
@@ -3616,11 +3229,9 @@ async fn post_intake_cli_handler(
             // oneshot, gets a dropped-receiver, and falls back to the
             // file path. The operator can still recover the artifact.
             tracing::warn!(%task_id, %intake_id, "cli intake timed out waiting for delivery");
-            Err((
+            Err(api_err(
                 StatusCode::GATEWAY_TIMEOUT,
-                Json(ApiError {
-                    error: "deliver_timeout:pending_delivery".into(),
-                }),
+                "deliver_timeout:pending_delivery".into(),
             ))
         }
     }
@@ -3708,12 +3319,7 @@ async fn get_inbox_handler(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "inbox query failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
-            )
+            api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
         })?;
 
     let entries = rows
@@ -3766,21 +3372,11 @@ async fn post_briefing_confirm_handler(
         "edit" => match body.edits {
             Some(edits) => BriefingAction::Edit { edits },
             None => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(ApiError {
-                        error: "missing_edits".into(),
-                    }),
-                ));
+                return Err(api_err(StatusCode::BAD_REQUEST, "missing_edits".into()));
             }
         },
         _ => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ApiError {
-                    error: "invalid_action".into(),
-                }),
-            ));
+            return Err(api_err(StatusCode::BAD_REQUEST, "invalid_action".into()));
         }
     };
 
@@ -3799,26 +3395,17 @@ async fn post_briefing_confirm_handler(
         .get(&task_id)
         .map(|entry| entry.value().clone());
     let Some(sender) = sender else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "no_pending_briefing".into(),
-            }),
-        ));
+        return Err(api_err(StatusCode::NOT_FOUND, "no_pending_briefing".into()));
     };
 
     let response = UserResponse {
         in_reply_to_call_id: task_id.clone(),
         action,
     };
-    sender.send(response).await.map_err(|_| {
-        (
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "briefing_receiver_closed".into(),
-            }),
-        )
-    })?;
+    sender
+        .send(response)
+        .await
+        .map_err(|_| api_err(StatusCode::CONFLICT, "briefing_receiver_closed".into()))?;
 
     Ok(StatusCode::ACCEPTED)
 }
