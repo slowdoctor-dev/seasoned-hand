@@ -36,7 +36,8 @@ copy-paste helpers, one mechanical boilerplate collapse, and one oversized file.
 | 3 | `now_micros_for_rollback` (`tools/builtin.rs`) + `now_unix_micros` (`server/lib.rs`) re-impl the clock with a *wrapping* cast | Duplication | Low | **fixed** → `crate::time::now_micros` (also unifies overflow semantics, the reason `time.rs` exists) |
 | 4 | `sandbox_get_raw`/`sandbox_post_raw` share a ~20-line response-mapping tail (`tools/builtin.rs`) | Duplication | Low | **fixed** → `map_sandbox_response` |
 | 5 | ~116 inline `(StatusCode::X, Json(ApiError{error:"code".into()}))` tuples in `server/lib.rs` | Duplication/Complexity | Low | **assigned to Codex iter-2** (`api_err` constructor) |
-| 6 | `curator/mod.rs` is a 6313-line god-file (~3037 prod + ~3036 test) | God-file | Med | **Claude, in progress** — split `mod tests` → `curator/tests.rs` (near-zero risk, halves the file) then production seams (`sqlite.rs`, `embedding.rs`, `helpers.rs`) |
+| 6a | `curator/mod.rs` test module (~3036 lines) inline | God-file | Low | **fixed** — `mod tests` extracted to `curator/tests.rs` (mirrors sibling `tenant_boundaries_tests`); mod.rs 6313 → 3277 lines, 59 curator tests still green |
+| 6b | `curator/mod.rs` production code still ~3037 lines | God-file | Med | **Claude, next** — split production seams (`sqlite.rs` trait impls, `embedding.rs`, `helpers.rs` pure fns) |
 
 **Non-issues (checked + cleared, do not "fix"):** `SimpleLru` does not duplicate
 a dependency (no `lru`/`hashlink` crate present — hand-roll is correct under
