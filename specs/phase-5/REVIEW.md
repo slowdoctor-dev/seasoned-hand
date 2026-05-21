@@ -901,3 +901,58 @@ Findings:
 
 iter-6 introduced no new residual findings beyond closing H7. This round is clean on
 new H/M and leaves the stack ready for the final saturation re-sweep (iter-7).
+
+---
+
+## HARDENING iter-7 (Claude, 2026-05-21) — exhaustive route + service-list audit
+
+Codex's iter-6 re-sweep reported 0 new, but a full route-by-route + service-method
+audit here found FOUR more — single sweeps were missing surfaces. So iter-7 did an
+EXHAUSTIVE pass and records the complete clearance table below so iter-8 can verify
+against a checklist instead of re-discovering.
+
+### Findings (all FIXED)
+
+- **`P5-HARD-IT7-H8` (H)** — `/v1/briefings/:id/confirm` (`post_briefing_confirm_handler`)
+  had NO auth at all (route lacked `with_auth`, handler had no AuthContext) and
+  confirms/cancels/edits a task's lifecycle by id. Any local caller could drive another
+  tenant's briefed task. Fixed: route `with_auth(..., TaskWrite)` + `authorize_in_handler`
+  + `require_task_tenant`.
+- **`P5-HARD-IT7-M7` (M)** — `/v1/inbox` (`get_inbox_handler`) had no `with_auth` and
+  `SELECT ... FROM tasks WHERE status='briefed'` with no tenant predicate — returned every
+  tenant's briefed-task titles + brief content. Fixed: `with_auth` + tenant-scoped query.
+- **`P5-HARD-IT7-M9` (M)** — `SopShareService::list_for_sop` + `PlaybookShareService::list_for_playbook`
+  queried `WHERE ss.{sop,playbook}_id = ?` with no tenant predicate. Admins pass
+  `authorize_share` unconditionally, so an admin could read another tenant's share metadata
+  (subject emails, permissions, granters). Fixed: `AND ss.tenant_id = ?` on both.
+- **`P5-HARD-IT7-M10` (M)** — `/v1/user-cost/reconcile` returned the global
+  `ReconciliationReport` (drifts across ALL tenants — tenant_id/user_id/cost) to a
+  tenant-scoped admin. Fixed: handler filters `report.drifts` to `auth.tenant_id` +
+  recomputes `drifted_rows`.
+
+### COMPLETE ROUTE CLEARANCE TABLE (every app() route)
+
+Legend: GUARD = `require_*_tenant`; DERIVED = tenant comes from AuthContext inside the
+query (visibility/audit/search/list_by_tenant); PUBLIC = intentionally unauthenticated;
+TOKEN = own token gate; N/A = no tenant data.
+
+- `/healthz` PUBLIC · `/ws` GUARD (iter-6: with_auth + require_session_tenant) · `/v1/cost` N/A (global Bifrost)
+- `/v1/sessions` DERIVED (list_sessions tenant filter) · `/v1/sessions/:id` GUARD · `/v1/sessions/:id/events` DERIVED (projects.tenant_id JOIN)
+- `/v1/events/:session_id` DERIVED (visibility::query) · `/v1/admin/events/:session_id/raw` DERIVED+GUARD (query_raw tenant short-circuit + EventRawRead)
+- `/v1/sessions/:id/{feature-list,progress,verifications,checkpoints}` GUARD · `/v1/sessions/:id/checkpoints/:cid/rollback` GUARD
+- `/v1/workspace/:session_id[/*]` GUARD (iter-5) · `/v1/verifications/:id` GUARD (iter-4)
+- `/v1/admin/sandbox/cleanup` TOKEN · `/v1/channels[/:name/health|/test]` N/A (global channel infra)
+- `/v1/intake/webhook` TOKEN+tenant-stamps · `/v1/intake/cli` tenant-stamps from header · `/v1/inbox` GUARD (iter-7)
+- `/v1/tasks/:id/provenance` GUARD (iter-4) · `/v1/projects` DERIVED (create stamps tenant; list_by_tenant)
+- `/v1/projects/:id/archive` GUARD · `/v1/projects/:id/tasks` GUARD · `/v1/tasks/:id` GUARD · `/v1/tasks/:id/deliverables` GUARD
+- `/v1/tasks/:id/{pause,resume,cancel}` GUARD (iter-3) · `/v1/tasks/:id/handoff[/can]` service-layer tenant lookup (H3 fix)
+- `/v1/audit` DERIVED (AuditLogger::query) · `/v1/organizations/:slug/users` (invite/list) DERIVED (CrossTenantDenied on slug→org)
+- `/v1/user-cost/reconcile` GUARD (iter-7 report filter) · `/v1/sops/:id/shares` (get/post/delete) tenant-scoped (authorize_share + M9 list fix)
+- `/v1/briefings/:id/confirm` GUARD (iter-7)
+
+### Iter-7 conclusion
+4 new findings (H8 + M7/M9/M10), all fixed → NOT zero-finding. But this was the first
+EXHAUSTIVE pass (vs. targeted sweeps). The clearance table above is now complete: every
+route is GUARD/DERIVED/PUBLIC/TOKEN/N/A. iter-8 (Codex): VERIFY each row of the table
+independently + sweep any non-route surface (workers, CLI, stores) — if 0 new, that plus
+a final iter-9 confirm = saturation.

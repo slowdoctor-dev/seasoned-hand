@@ -1756,10 +1756,16 @@ pub fn app(state: AppState) -> Router {
             "/v1/intake/cli",
             axum::routing::post(post_intake_cli_handler),
         )
-        .route("/v1/inbox", get(get_inbox_handler))
+        .route(
+            "/v1/inbox",
+            with_auth(get(get_inbox_handler), Action::TaskRead),
+        )
         .route(
             "/v1/briefings/:id/confirm",
-            axum::routing::post(post_briefing_confirm_handler),
+            with_auth(
+                axum::routing::post(post_briefing_confirm_handler),
+                Action::TaskWrite,
+            ),
         )
         .with_state(state)
 }
@@ -2976,7 +2982,7 @@ async fn post_user_cost_reconcile_handler(
         ));
     }
     let job = ReconciliationJob::new(state.db.clone(), state.events.clone());
-    let report = job.run(&body.month_yyyymm).await.map_err(|error| {
+    let mut report = job.run(&body.month_yyyymm).await.map_err(|error| {
         tracing::error!(%error, "user_cost reconcile failed");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2985,6 +2991,13 @@ async fn post_user_cost_reconcile_handler(
             }),
         )
     })?;
+    // P5-HARD-IT7-M10: the reconciliation job aggregates across ALL
+    // tenants (it's a global ops cron). The HTTP trigger is admin-gated,
+    // but an admin is scoped to their own tenant — so restrict the
+    // returned drift findings (which carry tenant_id/user_id/cost) to
+    // the caller's tenant before responding.
+    report.drifts.retain(|d| d.tenant_id == auth_ctx.tenant_id);
+    report.drifted_rows = report.drifts.len();
     Ok(Json(report))
 }
 
@@ -3602,11 +3615,17 @@ type InboxRow = (String, String, String, Option<String>, i64);
 async fn get_inbox_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Query(q): Query<InboxQuery>,
 ) -> Result<Json<Vec<InboxEntry>>, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
+    authorize_in_handler(Action::TaskRead, &auth_ctx)?;
     let limit = q.limit.unwrap_or(50).clamp(1, 200) as i64;
     let project_id = q.project_id.clone();
+    // P5-HARD-IT7-M7: the inbox is a LIST endpoint story 5.5 missed — it
+    // returned every tenant's briefed-task titles + brief content. Scope
+    // it to the caller's tenant.
+    let tenant = auth_ctx.tenant_id.clone();
     let rows: Vec<InboxRow> = state
         .db
         .with_conn(move |conn| -> rusqlite::Result<Vec<InboxRow>> {
@@ -3614,14 +3633,14 @@ async fn get_inbox_handler(
                 Some(_) => (
                     "SELECT id, project_id, title, brief, created_at \
                            FROM tasks \
-                          WHERE status = 'briefed' AND project_id = ? \
+                          WHERE status = 'briefed' AND tenant_id = ? AND project_id = ? \
                           ORDER BY created_at DESC LIMIT ?",
                     true,
                 ),
                 None => (
                     "SELECT id, project_id, title, brief, created_at \
                            FROM tasks \
-                          WHERE status = 'briefed' \
+                          WHERE status = 'briefed' AND tenant_id = ? \
                           ORDER BY created_at DESC LIMIT ?",
                     false,
                 ),
@@ -3638,10 +3657,11 @@ async fn get_inbox_handler(
             };
             if mapped {
                 let pid = project_id.unwrap();
-                stmt.query_map(rusqlite::params![pid, limit], mapper)?
+                stmt.query_map(rusqlite::params![tenant, pid, limit], mapper)?
                     .collect()
             } else {
-                stmt.query_map(rusqlite::params![limit], mapper)?.collect()
+                stmt.query_map(rusqlite::params![tenant, limit], mapper)?
+                    .collect()
             }
         })
         .await
@@ -3685,12 +3705,18 @@ struct BriefingConfirmBody {
 async fn post_briefing_confirm_handler(
     State(state): State<AppState>,
     axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Path(briefing_id): Path<String>,
     Json(body): Json<BriefingConfirmBody>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     use seasoned_hand_core::agent::init::briefing::{BriefingAction, UserResponse};
 
     require_loopback(remote)?;
+    // P5-HARD-IT7-H8: confirming/cancelling/editing a briefing advances
+    // a task's lifecycle — it was reachable with NO auth and NO tenant
+    // check, letting any local caller drive another tenant's briefed
+    // task. Gate it (TaskWrite) + tenant-scope the task below.
+    authorize_in_handler(Action::TaskWrite, &auth_ctx)?;
 
     // Translate the wire action → BriefingAction enum.
     let action = match body.action.as_str() {
@@ -3719,6 +3745,9 @@ async fn post_briefing_confirm_handler(
 
     // Phase 2 alias: briefing_id := task_id (see InboxEntry doc).
     let task_id = briefing_id;
+
+    // P5-HARD-IT7-H8: tenant-scope before touching the task's briefing.
+    require_task_tenant(&state, &task_id, &auth_ctx).await?;
 
     // The Initializer reuses the same per-task receiver across every
     // call_id it emits, so the `in_reply_to_call_id` echo is loose

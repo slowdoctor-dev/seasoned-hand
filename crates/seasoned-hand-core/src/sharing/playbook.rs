@@ -323,16 +323,20 @@ impl PlaybookShareService {
     ) -> Result<Vec<PlaybookShareRow>, PlaybookShareError> {
         self.authorize_share(auth, playbook_id).await?;
         let playbook_id = playbook_id.to_string();
+        // P5-HARD-IT7-M9: tenant-scope the share listing (admins pass
+        // authorize_share unconditionally; without this an admin could
+        // read another tenant's playbook share metadata).
+        let tenant = auth.tenant_id.clone();
         self.db
             .with_conn(move |conn| {
                 let mut stmt = conn.prepare(
                     "SELECT ss.id, ss.tenant_id, ss.playbook_id, ss.subject_type, ss.subject_id, u.email, ss.permission, ss.visibility_state, ss.granted_by_user_id, ss.created_at, ss.updated_at
                      FROM playbook_shares ss
                      LEFT JOIN users u ON u.id = ss.subject_id
-                     WHERE ss.playbook_id = ?
+                     WHERE ss.playbook_id = ? AND ss.tenant_id = ?
                      ORDER BY ss.subject_type ASC, ss.subject_id ASC",
                 )?;
-                let mapped = stmt.query_map(params![playbook_id], |r| {
+                let mapped = stmt.query_map(params![playbook_id, tenant], |r| {
                     let permission_raw: String = r.get(6)?;
                     let permission = PlaybookPermission::from_db(&permission_raw)
                         .ok_or_else(|| rusqlite::Error::InvalidColumnType(6, "permission".into(), rusqlite::types::Type::Text))?;

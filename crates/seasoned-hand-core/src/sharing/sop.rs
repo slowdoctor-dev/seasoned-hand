@@ -289,16 +289,22 @@ impl SopShareService {
     ) -> Result<Vec<SopShareRow>, SopShareError> {
         self.authorize_share(auth, sop_id).await?;
         let sop_id = sop_id.to_string();
+        // P5-HARD-IT7-M9: tenant-scope the share listing. SOPs are a
+        // global namespace and admins pass authorize_share
+        // unconditionally, so without this an admin could read another
+        // tenant's share metadata (subject emails, permissions, granters)
+        // for a shared sop_id.
+        let tenant = auth.tenant_id.clone();
         self.db
             .with_conn(move |conn| {
                 let mut stmt = conn.prepare(
                     "SELECT ss.id, ss.tenant_id, ss.sop_id, ss.subject_type, ss.subject_id, u.email, ss.permission, ss.granted_by_user_id, ss.created_at, ss.updated_at
                      FROM sop_shares ss
                      LEFT JOIN users u ON u.id = ss.subject_id
-                     WHERE ss.sop_id = ?
+                     WHERE ss.sop_id = ? AND ss.tenant_id = ?
                      ORDER BY ss.subject_type ASC, ss.subject_id ASC",
                 )?;
-                let mapped = stmt.query_map(params![sop_id], |r| {
+                let mapped = stmt.query_map(params![sop_id, tenant], |r| {
                     let permission_raw: String = r.get(6)?;
                     let permission = SopPermission::from_db(&permission_raw)
                         .ok_or_else(|| rusqlite::Error::InvalidColumnType(6, "permission".into(), rusqlite::types::Type::Text))?;
