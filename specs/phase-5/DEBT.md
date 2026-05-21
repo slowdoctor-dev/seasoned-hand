@@ -107,6 +107,31 @@ Phase 5-specific shortcuts/deferrals during implementation.
   (PEM keys, IPv6, Authorization headers, etc.) stripped via `verifier::extraction::redact_pii`.
   Stories 5.15/5.16 layer RBAC predicates + admin raw-event route on top of the projection.
 
+### #S-2 `effective_role()` does not clamp project override to org role (NEW carry-forward) — OPEN, Phase 6
+- **Source**: `specs/SECURITY_REVIEW.md` Security-track iter-3 observation (2026-05-21).
+- **Current state**: `effective_role() = project_override_role.unwrap_or(org_role)`
+  (`crates/seasoned-hand-core/src/auth/context.rs`) takes the project override
+  verbatim — it does **not** clamp it to be no higher than the caller's org
+  role. A viewer-org member presenting `project-override-role: admin` would
+  resolve to admin for that project.
+- **Why this is NOT a live vulnerability today**: the override only ever
+  arrives via the gateway-asserted `x-seasoned-hand-project-override-role`
+  header (the iter-1 H-1 honest-gateway trust model), and the store methods
+  that *persist* role overrides (`org::ProjectRoleOverrideStore::insert`,
+  `org::update_role`) are wired only to internal/CLI paths, not to any
+  self-service HTTP route. So there is no untrusted escalation path under the
+  current auth model.
+- **Why it becomes load-bearing in Phase 6**: the BASELINE §8 "real authn"
+  decision (API key / OAuth) plus any self-service org/project role-management
+  UI removes the honest-gateway assumption. At that point an unclamped
+  override is a privilege-escalation primitive.
+- **Plan**: when Phase 6 adds verifiable end-user auth, clamp
+  `effective_role()` to `min(project_override, org_role)` (override may only
+  *narrow*, never widen, the org role) and add a regression test.
+- **Owner**: Phase 6 BMAD Architect (auth decision).
+- **Target phase/story**: Phase 6 (auth surface).
+- **Status**: open
+
 ## Expected disposition in Phase 5 close-out
 
 - Expected to close: `#91`, `#97`, `#S-1`.

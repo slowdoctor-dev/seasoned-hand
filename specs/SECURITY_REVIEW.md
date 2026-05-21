@@ -304,7 +304,36 @@ the target is never hit.
 ### iter-2 verdict
 
 1 MEDIUM (M-1, fixed). All other surfaces clean. Two independent Claude
-passes (iter-1, iter-2) now stand. Saturation still requires Codex's
-independent re-audit (iter-3) to find zero new H/M — the bilateral confirm is
-the seal (cf. Phase-5 cross-tenant pass, where it caught H10). Dispatch to
-Codex pending its capacity recovery.
+passes (iter-1, iter-2) now stand. Saturation still requires a clean Claude
+pass plus Codex's independent confirm — the bilateral seal (cf. Phase-5
+cross-tenant pass, where it caught H10).
+
+### iter-3 (Claude) — escalation / secrets / billing / concurrency — CLEAN
+
+iter-3 audited four angles deliberately distinct from iter-1/iter-2 and from
+the exhausted cross-tenant pass, assuming an *honest gateway* but a caller who
+tries to escalate or evade *within* a trusted identity.
+
+| Angle | Verdict |
+|---|---|
+| RBAC privilege escalation | clean — role parsing fails closed (unknown/blank role → 401); `(Role::Admin, _)` bypass is reached only after a non-empty `tenant_id` check, so admin is per-tenant; `invite_user` is `MembershipManage`-gated and only inserts when no membership exists, so re-invite can't bump a role; the role/override *write* paths are internal/CLI, not self-service routes |
+| Secret-at-rest / in-response | clean — invitation tokens are sha256 `token_hash` PRIMARY KEY (V020), plaintext disclosed exactly once in `InviteOutcome.login_token`; intake/admin/webhook tokens live as `Arc<String>` on a non-`Serialize` `AppState` and are never logged; all token compares use `subtle::ConstantTimeEq` |
+| Cost / billing integrity | clean — the cost cap is a per-task in-loop guard recomputed from recorded step cost (no shared cross-task tenant quota exists to race); ledger flush is idempotent recompute-from-source UPSERT keyed by `(tenant,user,month)`; negative/overflow costs surface as drift findings, not corruption; reconcile output is tenant-scoped (iter-1 `.retain`) and the cron sibling keys audit events per `finding.tenant_id` |
+| TOCTOU / optimistic concurrency | clean — `DbPool` is `Arc<Mutex<Connection>>`; every `expected_updated_at` read-check-write runs inside a single `with_conn` closure (mutex held throughout) so check+mutate is atomic; handoff additionally uses an explicit `conn.transaction()`. The future multi-connection-pool risk is already documented as a hard paydown prerequisite in `sharing/concurrency.rs` |
+
+**Observation carried forward (NOT a live finding):** `effective_role() =
+project_override_role.unwrap_or(org_role)` does not clamp the override to be
+≤ the org role. Not exploitable today (override arrives only via the trusted
+gateway header; persistence paths are internal/CLI), but it becomes a real
+escalation primitive once Phase 6 adds self-service auth/role management.
+Logged as DEBT `#S-2` (Phase 6 owner).
+
+### iter-3 verdict
+
+0 new H/M/L. A full solo Claude pass is now **clean** — iter-1/iter-2 fixes
+hold and no new surface yields a finding. This is the Claude half of the
+bilateral seal. **Remaining for saturation:** Codex's independent re-audit
+must also return zero new H/M. Codex is at-capacity throttled; per the
+rate-limit-handoff workflow the dispatch is queued for its capacity recovery.
+Until that confirm lands, the Security track is **clean-pending-bilateral**,
+not yet sealed.
