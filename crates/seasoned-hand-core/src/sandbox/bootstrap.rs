@@ -96,13 +96,7 @@ pub(crate) async fn install_renderer_toolchain(
     Ok(())
 }
 
-fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        s.chars().take(n).collect()
-    }
-}
+use crate::text::truncate;
 
 /// Public wrapper around [`post_shell_exec`] used by the renderer
 /// dispatcher (story 2.6). Lets one-off shell invocations land

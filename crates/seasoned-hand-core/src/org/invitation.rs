@@ -1,12 +1,12 @@
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::audit::{AuditAction, AuditLogger, AuditRecord};
 use crate::auth::{Action, AuthContext, AuthError, AuthResource, Role, authorize};
 use crate::db::DbPool;
+use crate::hash::sha256_hex;
 use crate::time::now_micros;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -294,8 +294,4 @@ fn base64url_no_pad(input: &[u8]) -> String {
         out.push(TABLE[((n >> 6) & 0x3f) as usize] as char);
     }
     out
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
 }

@@ -192,13 +192,7 @@ fn trim_trailing_slash(mut s: String) -> String {
     s
 }
 
-fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        s.chars().take(n).collect()
-    }
-}
+use crate::text::truncate;
 
 /// Internal helper trait — the `NotifyEvent` shape doesn't expose a
 /// dedicated `metadata` field today (see `channel::notify::NotifyEvent`).

@@ -19,24 +19,31 @@ use crate::plan::{Phase, PhaseStatus, PlanMutationSource};
 use crate::time::now_micros;
 
 pub(super) async fn sandbox_post_raw(url: &str, body: Value) -> Result<ToolOutput, ToolError> {
-    let client = reqwest::Client::new();
-    let resp = client
+    let resp = reqwest::Client::new()
         .post(url)
         .json(&body)
         .send()
         .await
         .map_err(|e| ToolError::Backend(e.to_string()))?;
+    Ok(map_sandbox_response(resp).await)
+}
+
+/// Map a sandbox HTTP response to a [`ToolOutput`]: parse the JSON body
+/// (best-effort, `Null` on parse failure) and flag success vs an
+/// `sandbox_http` error from the status code. Shared by the GET/POST raw
+/// sandbox callers so the success/error shaping lives in one place.
+async fn map_sandbox_response(resp: reqwest::Response) -> ToolOutput {
     let status = resp.status();
     let parsed: Value = resp.json().await.unwrap_or(Value::Null);
     if status.is_success() {
-        Ok(ToolOutput {
+        ToolOutput {
             ok: true,
             output: parsed,
             file_ref: None,
             error: None,
-        })
+        }
     } else {
-        Ok(ToolOutput {
+        ToolOutput {
             ok: false,
             output: parsed,
             file_ref: None,
@@ -44,7 +51,7 @@ pub(super) async fn sandbox_post_raw(url: &str, body: Value) -> Result<ToolOutpu
                 kind: "sandbox_http".into(),
                 message: format!("HTTP {}", status.as_u16()),
             }),
-        })
+        }
     }
 }
 
@@ -57,32 +64,12 @@ async fn sandbox_post(ctx: &ToolContext, path: &str, body: Value) -> Result<Tool
 }
 
 pub(super) async fn sandbox_get_raw(url: &str) -> Result<ToolOutput, ToolError> {
-    let client = reqwest::Client::new();
-    let resp = client
+    let resp = reqwest::Client::new()
         .get(url)
         .send()
         .await
         .map_err(|e| ToolError::Backend(e.to_string()))?;
-    let status = resp.status();
-    let parsed: Value = resp.json().await.unwrap_or(Value::Null);
-    if status.is_success() {
-        Ok(ToolOutput {
-            ok: true,
-            output: parsed,
-            file_ref: None,
-            error: None,
-        })
-    } else {
-        Ok(ToolOutput {
-            ok: false,
-            output: parsed,
-            file_ref: None,
-            error: Some(ToolErrorPayload {
-                kind: "sandbox_http".into(),
-                message: format!("HTTP {}", status.as_u16()),
-            }),
-        })
-    }
+    Ok(map_sandbox_response(resp).await)
 }
 
 async fn sandbox_get(ctx: &ToolContext, path: &str) -> Result<ToolOutput, ToolError> {
@@ -1565,7 +1552,7 @@ impl Tool for CheckpointRollback {
             ));
         }
 
-        let rolled_back_at = now_micros_for_rollback();
+        let rolled_back_at = now_micros();
         ctx.checkpoints
             .mark_rolled_back(&checkpoint_id, rolled_back_at, &rolled_back_by)
             .await
@@ -1626,14 +1613,6 @@ fn tool_err(kind: &str, output: Value) -> ToolOutput {
             message: kind.to_string(),
         }),
     }
-}
-
-fn now_micros_for_rollback() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or(0)
 }
 
 /// Belt-and-suspenders validator for `checkpoints.git_sha` before it

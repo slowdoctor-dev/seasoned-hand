@@ -2019,7 +2019,7 @@ async fn post_intake_webhook_handler(
         reply_target: body.reply_target,
         metadata,
         tenant_id: None,
-        received_at: now_unix_micros(),
+        received_at: now_micros(),
     };
 
     match state.intake_router.handle_event(intake_event).await {
@@ -2065,13 +2065,7 @@ async fn post_intake_webhook_handler(
     }
 }
 
-fn now_unix_micros() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or(0)
-}
+use seasoned_hand_core::time::now_micros;
 
 // ---------------------------------------------------------------------------
 // Loopback guard helper — shared by Phase 1 admin routes (1.13b rollback,
@@ -3523,7 +3517,7 @@ async fn post_intake_cli_handler(
         }),
         metadata,
         tenant_id: Some(tenant_id),
-        received_at: now_unix_micros(),
+        received_at: now_micros(),
     };
 
     let task_id = match state.intake_router.handle_event(event).await {

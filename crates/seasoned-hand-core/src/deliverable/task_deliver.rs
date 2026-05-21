@@ -618,18 +618,8 @@ fn format_to_str(format: &DeliverableFormat) -> &'static str {
     }
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    format!("{:x}", Sha256::digest(bytes))
-}
-
-fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        s.chars().take(n).collect()
-    }
-}
+use crate::hash::sha256_hex;
+use crate::text::truncate;
 
 /// Reject any `target_filename` that isn't a strict basename. See the
 /// call site for the threat model (REVIEW §1/B, proposed DEBT #36).
