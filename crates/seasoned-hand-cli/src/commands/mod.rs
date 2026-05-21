@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod brief;
 pub mod channel;
+pub mod common;
 pub mod curator;
 pub mod inbox;
 pub mod init;

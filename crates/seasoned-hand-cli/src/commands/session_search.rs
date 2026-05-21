@@ -105,9 +105,7 @@ pub async fn run(cmd: SessionCmd, json: bool) -> Result<()> {
 }
 
 fn database_url() -> String {
-    std::env::var("SH_DATABASE_URL")
-        .or_else(|_| std::env::var("DATABASE_URL"))
-        .unwrap_or_else(|_| "sqlite:./data/seasoned-hand.db".to_string())
+    crate::commands::common::resolve_database_url()
 }
 
 fn load_router() -> SlotRouter {

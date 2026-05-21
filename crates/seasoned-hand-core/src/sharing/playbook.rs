@@ -181,13 +181,7 @@ impl PlaybookShareService {
                 if !pb_exists {
                     return Err(PlaybookShareError::PlaybookNotFound(playbook_id.clone()));
                 }
-                let subject_id: String = conn
-                    .query_row(
-                        "SELECT id FROM users WHERE tenant_id = ? AND email = ?",
-                        params![tenant, user_email],
-                        |row| row.get(0),
-                    )
-                    .optional()?
+                let subject_id: String = resolve_user_id_by_email(conn, &tenant, &user_email)?
                     .ok_or_else(|| PlaybookShareError::UserNotFound(user_email.clone()))?;
                 // Story 5.21: optimistic concurrency for re-shares.
                 let existing: Option<(String, i64)> = conn
@@ -283,13 +277,7 @@ impl PlaybookShareService {
         let user_email = user_email.to_string();
         self.db
             .with_conn(move |conn| {
-                let subject_id: Option<String> = conn
-                    .query_row(
-                        "SELECT id FROM users WHERE tenant_id = ? AND email = ?",
-                        params![tenant, user_email],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
+                let subject_id = resolve_user_id_by_email(conn, &tenant, &user_email)?;
                 let Some(subject_id) = subject_id else {
                     return Ok(false);
                 };
@@ -442,13 +430,7 @@ impl PlaybookShareService {
         let now = now_micros();
         self.db
             .with_conn(move |conn| {
-                let subject_id: Option<String> = conn
-                    .query_row(
-                        "SELECT id FROM users WHERE tenant_id = ? AND email = ?",
-                        params![tenant, user_email],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
+                let subject_id = resolve_user_id_by_email(conn, &tenant, &user_email)?;
                 let Some(subject_id) = subject_id else {
                     return Ok(false);
                 };
@@ -585,6 +567,19 @@ impl PlaybookShareService {
         )?;
         Ok(())
     }
+}
+
+fn resolve_user_id_by_email(
+    conn: &rusqlite::Connection,
+    tenant_id: &str,
+    user_email: &str,
+) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT id FROM users WHERE tenant_id = ? AND email = ?",
+        params![tenant_id, user_email],
+        |row| row.get(0),
+    )
+    .optional()
 }
 
 #[cfg(test)]
