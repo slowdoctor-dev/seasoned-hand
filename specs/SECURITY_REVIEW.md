@@ -330,10 +330,123 @@ Logged as DEBT `#S-2` (Phase 6 owner).
 
 ### iter-3 verdict
 
-0 new H/M/L. A full solo Claude pass is now **clean** — iter-1/iter-2 fixes
-hold and no new surface yields a finding. This is the Claude half of the
-bilateral seal. **Remaining for saturation:** Codex's independent re-audit
-must also return zero new H/M. Codex is at-capacity throttled; per the
-rate-limit-handoff workflow the dispatch is queued for its capacity recovery.
-Until that confirm lands, the Security track is **clean-pending-bilateral**,
-not yet sealed.
+0 new H/M/L across these four angles. iter-1/iter-2 fixes hold. But iter-3 was
+not the seal — iter-4 (below) probed yet-different surfaces and found a real
+isolation-breaking bug, which is exactly why a single clean pass is never the
+seal (cf. Phase-5 cross-tenant pass, where the bilateral confirm caught H10).
+
+### iter-4 (Claude) — WS internals / untrusted parsing / overflow / DoS / TLS / sandbox FS
+
+iter-4 probed the surfaces iter-1..3 skimmed: WebSocket frame handling,
+deserialization of sandbox/tool *outputs*, integer overflow on external
+values, DoS caps, TLS/cert verification on every outbound client, and the
+sandbox↔host filesystem boundary.
+
+| Angle | Verdict |
+|---|---|
+| WebSocket internals | clean — every command arm is tenant-guarded; malformed JSON → `bad_envelope` Error (no close, no panic); no indexing/`unwrap` on frame content. The unbounded outbound `mpsc` + uncapped inbound text frame are loopback-only (local DoS, out of scope under the honest-gateway model) |
+| Untrusted deserialization / panics | clean — sandbox/tool/bootstrap response parsing maps errors; `tools::builtin` uses `.unwrap_or(Value::Null)`; bootstrap `truncate` is char-boundary-safe via `.chars().take()`; all `unwrap`/`expect`/`panic!` in sandbox/tools/agent/playbook are test-only |
+| Integer / arithmetic overflow on external values | clean — the only `as`/arithmetic on the agent path runs on internally-capped i64 cost + monotonic event ids; no payload/sandbox-controlled size/count feeds unchecked arithmetic |
+| DoS / resource caps | clean(-ish) — HTTP routes inherit axum's 2 MB body limit via `Json`/`Bytes`; workspace file serving capped at 1 MB (`WORKSPACE_FILE_CAP_BYTES`); the only uncapped reads (WS frame, bootstrap response) are loopback/operator-bounded |
+| TLS / cert verification | clean — every reqwest client is `rustls-tls` with default-features off; no `danger_accept_invalid_certs`/`_hostnames`/custom verifier anywhere; IMAP uses matching rustls; the sandbox API is `http://127.0.0.1:<port>` (loopback, no secrets) |
+| Sandbox ↔ host filesystem boundary | **M-2 (fixed)** — see below |
+
+### M-2 (MEDIUM, fixed) — symlink escape from sandbox to arbitrary host file read/write
+
+The control plane reads and writes workspace files on the **host** side of the
+sandbox bind mount: `SandboxClient::read_workspace_file` /
+`write_workspace_file` (`crates/seasoned-hand-core/src/sandbox/mod.rs`) and the
+HTTP workspace proxy `workspace_proxy_inner`
+(`crates/seasoned-hand-server/src/lib.rs`). Both join a relative path onto the
+workspace root and then call symlink-following ops (`tokio::fs::read` /
+`metadata` / `read_dir` / `write`). The only guard,
+`normalize_workspace_relative_path`, rejects `..` and null bytes in the
+*request path* — it does **not** inspect on-disk symlinks.
+
+Untrusted agent-generated code runs inside the sandbox with write access to
+the bind-mounted workspace. It can plant `ln -s /etc/passwd /workspace/leak`
+(or `-> ../../host-secret`), after which:
+- the owning tenant reading `GET /v1/workspace/<sid>/leak` (loopback + RBAC +
+  tenant-scoped, but that's the legitimate owner) gets an **arbitrary host
+  file**; and
+- any control-plane `write_workspace_file` whose relative path the sandbox
+  pre-symlinked becomes an **arbitrary host file write**.
+
+This escalates confined-sandbox file access into host-file read/write,
+breaking the ADR-004 isolation boundary.
+
+Fix (comment tag `SEC-IT4-M2`): both read sinks now resolve the real path with
+`tokio::fs::canonicalize` and require it to `starts_with` the canonicalized
+workspace root (`canonical_within_workspace`); the write sink refuses to write
+through an existing symlink and requires the resolved parent to stay inside
+the root (`reject_workspace_write_escape`); the HTTP proxy canonicalizes the
+target and checks containment before any FS access. Regression tests
+`sandbox::tests::read_workspace_file_rejects_symlink_escape` and
+`write_workspace_file_refuses_to_write_through_symlink` plant a real symlink to
+an out-of-workspace secret and assert it is rejected (and the host file is left
+untouched), while legitimate in-workspace files still read/write.
+
+### iter-4 verdict
+
+1 MEDIUM (M-2, fixed). All other angles clean. Because iter-4 found a real
+bug, the "clean pass" counter resets — saturation now requires a FRESH clean
+Claude pass (iter-5) **and** Codex's independent confirm, both returning zero
+new H/M. Codex remains at-capacity throttled (dispatch queued in its input).
+Track status: **not sealed** — iterating.
+
+### Security-track iter-4 (Codex, 2026-05-21) — independent confirm pass
+
+Independent re-audit focus (angles under-covered in iter-1..3): WebSocket command
+surface beyond pause/resume/cancel, request-body parsing failure paths, panic/unwrap
+reachability from untrusted payloads, resource caps around long-lived command channels,
+TLS verification posture on outbound HTTP, and sandbox file-boundary hardening.
+
+#### Grade of prior fixes
+
+- **H-2 (`require_loopback` on SOP-share handlers)**: **ACK**. Verified all three handlers
+  (`list/post/delete /v1/sops/:id/shares`) call `require_loopback(remote)?` before work,
+  and regression guard tests exist in server test suite.
+- **M-1 (webhook redirect SSRF bypass)**: **ACK**. Verified webhook channel client uses
+  `reqwest::redirect::Policy::none()` and test
+  `webhook_delivery_does_not_follow_redirects` proves non-follow behavior.
+
+#### Reported "new finding" H-3 — RETRACTED (false positive)
+
+> **Claude correction (commit-truth verification).** Codex's iter-4 pass reported
+> H-3: "WS `briefing_confirm` lacked a tenant/task scope check" and claimed to fix
+> it (export `require_task_tenant`, add a guard in `ws.rs`, add test
+> `ws_tenant_a_cannot_confirm_tenant_b_briefing`). **None of this is a new finding
+> or a new change.** That exact guard and that exact test already exist in
+> committed code from the cross-tenant pass's H10 fix (`1d1b63c`):
+> - guard: `crates/seasoned-hand-server/src/ws.rs:427` —
+>   `require_task_tenant(state, &task_id, auth_ctx)` returns `forbidden_task_scope`
+>   on the `BriefingConfirm` arm before `forward_briefing_confirm`;
+> - test: `crates/seasoned-hand-server/tests/ws.rs:615`
+>   `ws_tenant_a_cannot_confirm_tenant_b_briefing` (tenant-a confirming tenant-b's
+>   briefing → `forbidden_task_scope`).
+>
+> `git diff` confirms Codex modified **neither** `ws.rs` nor `tests/ws.rs` — its
+> claimed edits were no-ops against already-present code. H-3 is therefore a
+> **re-discovery of already-mitigated H10, not a new vulnerability**. Disposition:
+> **no code change; already fixed**. (Lesson reinforced: verify an agent's claimed
+> edits against `git diff` before recording them — cf. the iter-9 premature-
+> saturation lesson in `specs/phase-5/REVIEW.md`.)
+
+#### Non-findings (iter-4 sweep)
+
+- No new H/M in webhook/email intake parser paths, sandbox bootstrap HTTP/TLS handling, or
+  panic/unwrap exposure from network payload decoding.
+- Existing M-2 symlink-escape fix holds (workspace canonicalization + write-symlink refusal).
+
+#### iter-4 (Codex) verdict — corrected
+
+Codex correctly **ACK'd** the H-2, M-1, and M-2 fixes (verified against the tree).
+Its sole "new finding" H-3 is **retracted as a false positive** (already-mitigated
+H10; see correction above) — so Codex's independent pass found **0 real new H/M**.
+
+The only real new finding this round was **M-2 (Claude iter-4, sandbox symlink
+escape)**, now fixed. Because a real new finding landed this round, the track is
+**not yet saturated**: per the bilateral rule we need one more round where BOTH
+Claude and Codex find 0 new H/M. Next: iter-5 — Claude solo re-sweep + Codex
+independent confirm, each verifying any claimed finding against committed code
+before recording it.

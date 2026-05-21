@@ -107,9 +107,16 @@ impl SandboxClient {
             .get(session_id)
             .await
             .ok_or_else(|| SandboxError::NotFound(session_id.to_string()))?;
-        let path = handle
+        let joined = handle
             .workspace_host_path
             .join(normalize_workspace_relative_path(relative_path)?);
+        // SEC-IT4-M2: untrusted code in the sandbox can plant a symlink in
+        // the bind-mounted workspace (e.g. `ln -s /etc/passwd leak`). The
+        // `..`/null-byte rejector only inspects the request path, not on-disk
+        // symlinks, so a host-side read here would follow the link and leak
+        // an arbitrary host file. Resolve the real path and require it to
+        // stay inside the workspace root.
+        let path = canonical_within_workspace(&handle.workspace_host_path, &joined).await?;
         Ok(tokio::fs::read(path).await?)
     }
 
@@ -129,6 +136,10 @@ impl SandboxClient {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
+        // SEC-IT4-M2: refuse to write THROUGH a symlink. A planted symlink at
+        // the target (or a parent component) would turn a workspace write
+        // into an arbitrary host-file write, escaping the bind mount.
+        reject_workspace_write_escape(&handle.workspace_host_path, &path).await?;
         tokio::fs::write(path, contents).await?;
         Ok(())
     }
@@ -650,6 +661,55 @@ pub(crate) fn normalize_workspace_relative_path(path: &str) -> Result<&str, Sand
         }
     }
     Ok(stripped)
+}
+
+/// SEC-IT4-M2: resolve `joined` (an already-`..`/null-byte-checked path under
+/// the workspace root) to its real, symlink-followed host path and require it
+/// to stay inside `root`. The target must exist (this is the READ path). This
+/// defeats a sandbox that plants `ln -s /etc/passwd leak` inside the
+/// bind-mounted workspace and then reads it back through a host-side helper.
+pub(crate) async fn canonical_within_workspace(
+    root: &std::path::Path,
+    joined: &std::path::Path,
+) -> Result<std::path::PathBuf, SandboxError> {
+    let root = tokio::fs::canonicalize(root).await?;
+    let real = tokio::fs::canonicalize(joined).await?;
+    if !real.starts_with(&root) {
+        return Err(SandboxError::InvalidWorkspace(format!(
+            "workspace path escapes root via symlink: {}",
+            joined.display()
+        )));
+    }
+    Ok(real)
+}
+
+/// SEC-IT4-M2: write-path counterpart of [`canonical_within_workspace`]. The
+/// final file may not exist yet, so we (a) reject if the target itself is an
+/// existing symlink (writing through it would escape) and (b) require the
+/// already-created parent directory to resolve inside `root` (catching a
+/// symlinked ancestor component).
+pub(crate) async fn reject_workspace_write_escape(
+    root: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), SandboxError> {
+    if let Ok(md) = tokio::fs::symlink_metadata(target).await
+        && md.file_type().is_symlink()
+    {
+        return Err(SandboxError::InvalidWorkspace(format!(
+            "refusing to write through symlink: {}",
+            target.display()
+        )));
+    }
+    let root = tokio::fs::canonicalize(root).await?;
+    let parent = target.parent().unwrap_or(target);
+    let real_parent = tokio::fs::canonicalize(parent).await?;
+    if !real_parent.starts_with(&root) {
+        return Err(SandboxError::InvalidWorkspace(format!(
+            "workspace write parent escapes root: {}",
+            parent.display()
+        )));
+    }
+    Ok(())
 }
 
 pub fn container_name(session_id: &str) -> String {

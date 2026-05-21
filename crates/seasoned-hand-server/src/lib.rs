@@ -1380,6 +1380,40 @@ async fn workspace_proxy_inner(
         handle.workspace_host_path.join(&sub_path)
     };
 
+    // SEC-IT4-M2: the `..`/leading-slash guard above only inspects the request
+    // path, not on-disk symlinks. Untrusted sandbox code can plant a symlink
+    // inside the bind-mounted workspace (`ln -s /etc/passwd leak`); the
+    // metadata/read calls below follow symlinks, so without this the owning
+    // tenant could read arbitrary host files through the proxy. Resolve the
+    // real path and require it to stay inside the (canonicalized) workspace
+    // root before touching the filesystem.
+    let canonical_root = tokio::fs::canonicalize(&handle.workspace_host_path)
+        .await
+        .map_err(|_e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "workspace_root_unavailable".into(),
+                }),
+            )
+        })?;
+    let target = tokio::fs::canonicalize(&target).await.map_err(|_e| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "workspace_not_found".into(),
+            }),
+        )
+    })?;
+    if !target.starts_with(&canonical_root) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "path_traversal".into(),
+            }),
+        ));
+    }
+
     let metadata = tokio::fs::metadata(&target).await.map_err(|_e| {
         (
             StatusCode::NOT_FOUND,

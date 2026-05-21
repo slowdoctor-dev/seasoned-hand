@@ -130,6 +130,88 @@ async fn get_returns_none_for_unknown_session() {
     assert!(client.get("nope").await.is_none());
 }
 
+// SEC-IT4-M2: untrusted code in the sandbox can plant a symlink in the
+// bind-mounted workspace. The host-side read/write helpers must not follow it
+// out of the workspace root.
+#[cfg(unix)]
+async fn client_with_workspace_and_secret() -> (tempfile::TempDir, SandboxClient, std::path::PathBuf)
+{
+    let tmp = tempfile::tempdir().unwrap();
+    // A host file that lives OUTSIDE any session workspace.
+    let secret = tmp.path().join("host-secret.txt");
+    tokio::fs::write(&secret, b"TOP SECRET HOST FILE")
+        .await
+        .unwrap();
+    // The workspace root is a subdir; the session workspace is root/s1.
+    let root = tmp.path().join("ws-root");
+    let ws = root.join("s1");
+    tokio::fs::create_dir_all(&ws).await.unwrap();
+    let client = SandboxClient::new("ghcr.io/agent-infra/sandbox:1.0.0.152", &root).unwrap();
+    client
+        .insert_handle_for_test(SandboxHandle {
+            session_id: "s1".into(),
+            container_id: "c1".into(),
+            api_url: "http://127.0.0.1:1".into(),
+            novnc_url: "http://127.0.0.1:2".into(),
+            ttyd_url: "ws://127.0.0.1:3".into(),
+            workspace_host_path: ws,
+        })
+        .await;
+    (tmp, client, secret)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn read_workspace_file_rejects_symlink_escape() {
+    let (tmp, client, secret) = client_with_workspace_and_secret().await;
+    let ws = tmp.path().join("ws-root").join("s1");
+    // Sandbox plants `s1/leak -> ../../host-secret.txt`.
+    tokio::fs::symlink(&secret, ws.join("leak")).await.unwrap();
+
+    let err = client
+        .read_workspace_file("s1", "leak")
+        .await
+        .expect_err("symlink escape must be rejected, not followed");
+    match err {
+        SandboxError::InvalidWorkspace(msg) => assert!(msg.contains("escapes root")),
+        other => panic!("expected InvalidWorkspace, got {other:?}"),
+    }
+
+    // A normal in-workspace file still reads fine.
+    tokio::fs::write(ws.join("ok.txt"), b"hello").await.unwrap();
+    let got = client.read_workspace_file("s1", "ok.txt").await.unwrap();
+    assert_eq!(got, b"hello");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn write_workspace_file_refuses_to_write_through_symlink() {
+    let (tmp, client, secret) = client_with_workspace_and_secret().await;
+    let ws = tmp.path().join("ws-root").join("s1");
+    // Sandbox plants `s1/leak -> ../../host-secret.txt`, then the control
+    // plane is induced to write to "leak".
+    tokio::fs::symlink(&secret, ws.join("leak")).await.unwrap();
+
+    let err = client
+        .write_workspace_file("s1", "leak", b"OVERWRITTEN")
+        .await
+        .expect_err("writing through a symlink must be rejected");
+    match err {
+        SandboxError::InvalidWorkspace(msg) => assert!(msg.contains("symlink")),
+        other => panic!("expected InvalidWorkspace, got {other:?}"),
+    }
+    // The host file outside the workspace is untouched.
+    let still = tokio::fs::read(&secret).await.unwrap();
+    assert_eq!(still, b"TOP SECRET HOST FILE");
+
+    // A normal in-workspace write still works.
+    client
+        .write_workspace_file("s1", "ok.txt", b"hi")
+        .await
+        .unwrap();
+    assert_eq!(tokio::fs::read(ws.join("ok.txt")).await.unwrap(), b"hi");
+}
+
 // ============================================================================
 // Live lifecycle test — requires Docker, pulls the pinned image once,
 // runs a full create-inspect-destroy cycle.
