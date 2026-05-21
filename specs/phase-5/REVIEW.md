@@ -685,3 +685,54 @@ zero-finding round. All iter-1 + iter-2 findings are now resolved or disposition
   L1 (single-conn atomicity invariant + pool-paydown prerequisite), L3 (delta_pct semantics)
 A confirming **iter-3** is required (saturation = a full round with 0 new H/M). Codex is
 capacity-throttled, so Claude runs iter-3 solo; Codex to confirm when capacity returns.
+
+---
+
+## HARDENING iter-3 (Claude, 2026-05-21) — H3-class re-sweep (Codex capacity-throttled)
+
+iter-2 surfaced H3 (a missing tenant predicate on an id-based lookup), so iter-3
+focused on that exact class everywhere. Two more instances found — the class was
+broader than H3 alone.
+
+### Findings
+
+- **`P5-HARD-IT3-M5` (M) — FIXED.** `sharing::playbook::share` existence check was
+  `SELECT 1 FROM playbooks WHERE id = ?` with no tenant predicate. `playbooks.tenant_id`
+  is NOT NULL (V016); an admin (who bypasses the `actor_can_share` gate) could create a
+  share row referencing another tenant's playbook. Fixed: `... WHERE id = ? AND
+  tenant_id = ?` → foreign id reads as PlaybookNotFound. +regression test
+  `admin_cannot_share_a_foreign_tenant_playbook`. (The matcher's project-scoping blocked
+  the actual content leak, hence M not H, but it's a real isolation-integrity gap.)
+
+- **`P5-HARD-IT3-H4` (H) — WRITES FIXED, READS QUEUED for iter-4.** The single-resource
+  `:id` HTTP handlers in `seasoned-hand-server/src/lib.rs` are RBAC-gated
+  (`with_auth(..., Action::TaskWrite/TaskRead)`) but NOT tenant-scoped on the row. Story
+  5.5 retrofitted the LIST endpoints only. A tenant-A caller could pause/resume/cancel
+  (and read) tenant-B's task by id. `post_task_cancel_handler` was the worst — it called
+  `set_status(&task_id, Cancelled)` directly (cross-tenant WRITE, no lookup at all).
+  - **Fixed now (writes):** added `require_task_tenant(state, task_id, auth)` helper
+    (loads the task, 404s on tenant mismatch — 404 not 403 to avoid leaking existence)
+    and wired it into `post_task_{pause,resume,cancel}_handler`.
+  - **Queued for iter-4 (reads + remaining writes):** `get_task_handler`,
+    `list_task_deliverables_handler`, `get_task_provenance_handler`,
+    `post_project_archive_handler` (a write), `/v1/projects/:id/tasks`, and the
+    `/v1/sessions/:id/*` read family (`get_session`, `get_progress`, `get_feature_list`,
+    `list_verifications_handler`, `list_checkpoints_handler`, rollback) — each needs a
+    `require_task_tenant`-style guard (task / project / session→tenant chain). The
+    `/v1/sessions/:id/events` handler is ALREADY tenant-scoped (it joins
+    `projects.tenant_id`); use it as the reference for the session-chain helper.
+
+### Disposition note (SOPs)
+- `sops` has NO `tenant_id` column — SOPs are a global namespace; tenant isolation for
+  SOPs rests entirely on the tenant-scoped `sop_shares`. Pre-existing Phase 3 design,
+  not a Phase 5 regression. Recorded as a security-review observation for Phase 6
+  (decide whether SOP content should be tenant-partitioned); NOT changed here (schema move).
+
+### Iter-3 conclusion
+Round produced **1 H (H4, writes fixed / reads queued) + 1 M (M5, fixed)** → NOT a
+zero-finding round. The H3→M5→H4 chain shows "missing tenant predicate on id-based
+access" is a recurring class that story 5.5 only partially closed (lists, not
+single-resource :id). **iter-4 required**: complete the `:id` read-handler + project +
+session-chain tenant retrofit, then re-sweep. Codex to drive iter-4 when capacity
+returns (the `require_task_tenant` pattern + the events-handler session-chain reference
+are established); Claude continues solo if Codex stays throttled.

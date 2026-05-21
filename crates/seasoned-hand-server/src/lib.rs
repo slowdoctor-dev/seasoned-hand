@@ -852,6 +852,42 @@ fn authorize_in_handler(action: Action, ctx: &AuthContext) -> ApiResult<()> {
     })
 }
 
+/// Hardening P5-HARD-IT3-H4: confirm a task belongs to the caller's
+/// tenant before any single-resource `:id` operation. The RBAC
+/// `with_auth(..., Action::TaskWrite/TaskRead)` layer gates the *verb*
+/// but not the *row* — without this guard a tenant-A caller could
+/// pause/resume/cancel/read tenant-B's task by id. Returns 404 (not
+/// 403) on a tenant mismatch so cross-tenant existence isn't leaked,
+/// identical to a genuinely missing id.
+async fn require_task_tenant(state: &AppState, task_id: &str, auth: &AuthContext) -> ApiResult<()> {
+    let task = state.tasks.get(task_id).await.map_err(|e| match e {
+        seasoned_hand_core::project::TaskError::NotFound(_) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "task_not_found".into(),
+            }),
+        ),
+        other => {
+            tracing::error!(error = %other, "require_task_tenant::lookup");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: "internal_error".into(),
+                }),
+            )
+        }
+    })?;
+    if task.tenant_id.as_deref() != Some(auth.tenant_id.as_str()) {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: "task_not_found".into(),
+            }),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct ProgressQuery {
     lines: Option<usize>,
@@ -2493,25 +2529,9 @@ async fn post_task_pause_handler(
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
     authorize_in_handler(Action::TaskWrite, &auth_ctx)?;
-    // Confirm the task exists so the 404 path mirrors `get_task_handler`
-    // before we touch session state.
-    state.tasks.get(&task_id).await.map_err(|e| match e {
-        seasoned_hand_core::project::TaskError::NotFound(_) => (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "task_not_found".into(),
-            }),
-        ),
-        other => {
-            tracing::error!(error = %other, "task_pause::lookup");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
-            )
-        }
-    })?;
+    // Confirm the task exists AND belongs to the caller's tenant
+    // (P5-HARD-IT3-H4) before we touch session state.
+    require_task_tenant(&state, &task_id, &auth_ctx).await?;
     let durable = body.and_then(|Json(b)| b.durable).unwrap_or(true);
     let session_id = ws::lookup_latest_session_for_task(&state, &task_id)
         .await
@@ -2532,23 +2552,8 @@ async fn post_task_resume_handler(
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
     authorize_in_handler(Action::TaskWrite, &auth_ctx)?;
-    state.tasks.get(&task_id).await.map_err(|e| match e {
-        seasoned_hand_core::project::TaskError::NotFound(_) => (
-            StatusCode::NOT_FOUND,
-            Json(ApiError {
-                error: "task_not_found".into(),
-            }),
-        ),
-        other => {
-            tracing::error!(error = %other, "task_resume::lookup");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError {
-                    error: "internal_error".into(),
-                }),
-            )
-        }
-    })?;
+    // P5-HARD-IT3-H4: tenant-scope the task before resuming.
+    require_task_tenant(&state, &task_id, &auth_ctx).await?;
     let session_id = ws::lookup_latest_session_for_task(&state, &task_id)
         .await
         .ok_or((
@@ -2568,6 +2573,10 @@ async fn post_task_cancel_handler(
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     require_loopback(remote)?;
     authorize_in_handler(Action::TaskWrite, &auth_ctx)?;
+    // P5-HARD-IT3-H4: tenant-scope BEFORE the set_status write — cancel
+    // directly mutates the row, so a missing tenant check here is a
+    // cross-tenant write (the worst of the H4 class).
+    require_task_tenant(&state, &task_id, &auth_ctx).await?;
     // Drive the Task state machine first — Phase 2 widened
     // `legal_transitions` so Drafted/Briefed/Confirmed/Running/Paused
     // all → Cancelled. Terminal task → 409 wrong_state. NotFound → 404.

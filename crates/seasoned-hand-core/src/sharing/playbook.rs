@@ -164,13 +164,21 @@ impl PlaybookShareService {
         let perm = permission.as_db_str().to_string();
         self.db
             .with_conn(move |conn| {
-                let sop_exists = conn
-                    .query_row("SELECT 1 FROM playbooks WHERE id = ?", params![playbook_id], |row| {
-                        row.get::<_, i64>(0)
-                    })
+                // Hardening P5-HARD-IT3-M5 (same class as H3): tenant-scope
+                // the existence check. `playbooks.tenant_id` is NOT NULL
+                // (V016); without the predicate an admin (who bypasses the
+                // `actor_can_share` gate) could create a share row
+                // referencing another tenant's playbook. A foreign id now
+                // reads as PlaybookNotFound.
+                let pb_exists = conn
+                    .query_row(
+                        "SELECT 1 FROM playbooks WHERE id = ? AND tenant_id = ?",
+                        params![playbook_id, tenant],
+                        |row| row.get::<_, i64>(0),
+                    )
                     .optional()?
                     .is_some();
-                if !sop_exists {
+                if !pb_exists {
                     return Err(PlaybookShareError::PlaybookNotFound(playbook_id.clone()));
                 }
                 let subject_id: String = conn
@@ -816,5 +824,41 @@ mod tests {
             }
             other => panic!("expected StaleRevision, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn admin_cannot_share_a_foreign_tenant_playbook() {
+        // Hardening P5-HARD-IT3-M5: a tenant-A admin (who bypasses the
+        // actor_can_share gate) must NOT be able to create a share row
+        // referencing a playbook owned by another tenant. The
+        // tenant-scoped existence check surfaces it as PlaybookNotFound.
+        let pool = open_pool().await;
+        seed(&pool).await;
+        // Seed a playbook owned by a DIFFERENT tenant.
+        pool.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO playbooks (id, tenant_id, title, content_path, schema_version, source_task_id, created_at, updated_at)
+                 VALUES ('pb-foreign', 'tenant-b', 'Foreign', 'pb/f.md', 1, NULL, 1, 1)",
+                [],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("seed foreign playbook");
+        let service = PlaybookShareService::new(pool);
+        let err = service
+            .share(
+                &ctx(Role::Admin, "u-admin"),
+                "pb-foreign",
+                "owner@acme.dev",
+                PlaybookPermission::Viewer,
+                None,
+            )
+            .await
+            .expect_err("admin must not share a foreign-tenant playbook");
+        assert!(
+            matches!(err, PlaybookShareError::PlaybookNotFound(_)),
+            "expected PlaybookNotFound for cross-tenant playbook, got {err:?}"
+        );
     }
 }
