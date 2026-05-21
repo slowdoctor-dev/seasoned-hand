@@ -37,7 +37,7 @@ copy-paste helpers, one mechanical boilerplate collapse, and one oversized file.
 | 4 | `sandbox_get_raw`/`sandbox_post_raw` share a ~20-line response-mapping tail (`tools/builtin.rs`) | Duplication | Low | **fixed** → `map_sandbox_response` |
 | 5 | ~116 inline `(StatusCode::X, Json(ApiError{error:"code".into()}))` tuples in `server/lib.rs` | Duplication/Complexity | Low | **assigned to Codex iter-2** (`api_err` constructor) |
 | 6a | `curator/mod.rs` test module (~3036 lines) inline | God-file | Low | **fixed** — `mod tests` extracted to `curator/tests.rs` (mirrors sibling `tenant_boundaries_tests`); mod.rs 6313 → 3277 lines, 59 curator tests still green |
-| 6b | `curator/mod.rs` production code still ~3037 lines | God-file | Med | **Claude, next** — split production seams (`sqlite.rs` trait impls, `embedding.rs`, `helpers.rs` pure fns) |
+| 6b | `curator/mod.rs` production code ~3277 lines | God-file | Med | **assessed → deliberately DEFERRED** (see note) |
 
 **Non-issues (checked + cleared, do not "fix"):** `SimpleLru` does not duplicate
 a dependency (no `lru`/`hashlink` crate present — hand-roll is correct under
@@ -54,3 +54,38 @@ gates green.
 
 **Division of labour for the next round (no file overlap):** Codex takes item 5
 (`server/lib.rs` only); Claude takes item 6 (`curator/*` only).
+
+### iter-1b note — curator production split (6b) assessed, deferred
+
+After extracting the test module (6a, done), the remaining production code is
+~3277 lines. The audit proposed splitting it into `sqlite.rs` / `embedding.rs`
+/ `helpers.rs`. On inspection the seams are **not** cleanly separable:
+- the `Sqlite*` trait impls (the largest contiguous block, ~441–1547) call the
+  scope validators (`validate_decision_scope`/`validate_revision_scope`/
+  `project_tenant_id`, only used here) **and** ~8 scattered pure helpers defined
+  far later in the file (`lexical_overlap` ×7, `stable_u64_hex` ×6,
+  `cosine_similarity`, `structural_conflict_score`, `compose_confidence_with_bounds`,
+  `infer_knowledge_key`, `apply_merge`, `review_required`);
+- the pure helpers themselves are interleaved with async-DB fns and mutation
+  logic, so there is no clean contiguous "helpers" block to lift.
+
+A split would therefore require bumping ~8+ private fns to `pub(super)`, glob
+`use super::*` imports, and a `pub use` re-export to preserve the public API —
+churn across a critical learning subsystem for an incremental 3277→~2100-line
+gain. Per the project's conservative / no-over-engineering rule, this is **not
+worth the risk** now. **Disposition:** the categorical god-file problem (a 6313-
+line file that was half tests) is resolved by 6a; the cohesive 3277-line curator
+module is acceptable. Revisit only if the curator gains a genuinely independent
+concern that forms a clean module on its own.
+
+### iter-2 (Codex) — item 5: `api_err` constructor
+
+Codex added `fn api_err(status: StatusCode, code: String) -> ApiErrorResponse`
+(`server/lib.rs:832`) and replaced all 116 inline
+`(StatusCode::X, Json(ApiError { error: ... }))` tuples with `api_err(...)`
+calls (117 call sites; the single remaining `Json(ApiError {` is inside the
+helper). Behaviour-preserving — the helper builds the identical tuple, same
+status codes + error strings, full suite green. Net `server/lib.rs` −413 lines
+(commit `5ab0240`). Verified by Claude against `git diff` (lib.rs only) + the
+helper body + an independent gate run. Codex reported **0 new manageability
+findings** beyond item 5.
