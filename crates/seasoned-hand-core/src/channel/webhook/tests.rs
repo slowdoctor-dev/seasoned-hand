@@ -204,6 +204,51 @@ async fn webhook_delivery_allows_private_ip_with_allowlist() {
     }
 }
 
+/// `webhook_delivery_does_not_follow_redirects` — SEC-IT2-M1 regression.
+/// The SSRF guard validates only the initial URL, so the production
+/// client must NOT follow redirects: an allowed (loopback, allow-listed)
+/// target that 302-redirects to an internal path must surface the 302
+/// itself and never fetch the redirect target. Without
+/// `Policy::none()` this is a metadata-endpoint SSRF bypass.
+#[tokio::test]
+async fn webhook_delivery_does_not_follow_redirects() {
+    let mock = MockServer::start().await;
+    // The validated entry point: a 302 pointing at an internal path.
+    Mock::given(method("POST"))
+        .and(path("/redirect"))
+        .respond_with(ResponseTemplate::new(302).insert_header("Location", "/internal-metadata"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    // The redirect target must NEVER be hit (would be the bypassed,
+    // unvalidated address in a real attack).
+    Mock::given(path("/internal-metadata"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"leaked": true})))
+        .expect(0)
+        .mount(&mock)
+        .await;
+    let allowlist = parse_allowlist("127.0.0.0/8").unwrap();
+    let chan = WebhookChannel::with_default_client(Arc::new("t".into()), allowlist);
+    let target = DeliveryTarget {
+        channel: CHANNEL_NAME.into(),
+        target_ref: format!("url:{}/redirect", mock.uri()),
+        metadata: json!({}),
+    };
+    let err = chan
+        .deliver(&target, &sample_deliverable())
+        .await
+        .expect_err("a non-followed 302 is not a success");
+    match err {
+        ChannelError::RemoteRejected { status, .. } => {
+            assert_eq!(status, 302, "the 302 must surface unfollowed");
+        }
+        other => panic!("expected RemoteRejected/302, got {other:?}"),
+    }
+    // `.expect(0)` on `/internal-metadata` is verified on MockServer drop:
+    // if the redirect were followed, that assertion would panic here.
+    drop(mock);
+}
+
 /// `webhook_notify_posts_to_target` — NotifySink POSTs the spec
 /// `{task_id?, trigger_kind, payload}` body to the target URL.
 #[tokio::test]

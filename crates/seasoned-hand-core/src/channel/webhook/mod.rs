@@ -99,6 +99,13 @@ impl WebhookChannel {
     pub fn with_default_client(intake_token: Arc<String>, allowlist: Vec<IpNet>) -> Self {
         let http = Client::builder()
             .timeout(std::time::Duration::from_secs(15))
+            // SEC-IT2-M1: the SSRF guard (`assert_public_address`) only
+            // validates the initial URL. reqwest follows up to 10 redirects
+            // by default, so a public target that 30x-redirects to
+            // 169.254.169.254 / 127.0.0.1 would bypass the guard. Disabling
+            // redirects means a 3xx is returned to `post_json` unfollowed —
+            // the only address ever fetched is the one we validated.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("default reqwest client");
         Self::new(intake_token, http, allowlist)

@@ -257,6 +257,54 @@ sweeps to the existing `assert_handler_refuses_non_loopback` battery
 ### iter-1 verdict
 
 2 HIGH (H-1 mitigated + carried to Phase 6; H-2 fixed), 2 Low logged. All
-other categories clean. Awaiting Codex's independent iter-2 re-audit before
-declaring saturation — a single sweep is not a seal (cf. the Phase-5
-cross-tenant pass, where the bilateral confirm caught H10).
+other categories clean. iter-1 was server-Rust-handler-centric, so it does
+not seal the loop — a deeper re-sweep on the lightly-covered surfaces
+follows as iter-2.
+
+### iter-2 (Claude) — deep re-sweep of lightly-covered surfaces
+
+iter-1 concentrated on the Rust control-plane HTTP handlers. iter-2 audited
+the surfaces it only skimmed: the Next.js frontend, the channel **intake**
+adapters (untrusted *inbound* payloads), the CLI, and sandbox / tool
+dispatch. (Codex remained at-capacity throttle, so this is a second
+independent Claude pass per the rate-limit-handoff workflow, not the
+bilateral seal.)
+
+| Surface | Verdict |
+|---|---|
+| Frontend (Next.js 16 / React 19) | clean — no `dangerouslySetInnerHTML`/`eval`; no API routes or server actions; `NEXT_PUBLIC_*` hold only non-secret base URLs; `next.config.ts` empty; workspace/screenshot URLs are `encodeURIComponent`-escaped; the one `iframe` is the operator-trusted sandbox `novnc_url` with a `sandbox=` attribute |
+| Email intake parse (`channel/email/`) | clean — `parse_mail` errors map to `Decode` (no panic), header access is `.get_first_value()`/`unwrap_or_default()`, per-message failures isolated, default-deny allow-list + subject-prefix gate |
+| CLI (`seasoned-hand-cli`) | clean — all `Command::new` sites use arg-vec mode (editor spawn, server exec, `xdg-open`/`open`); no `sh -c`/`bash -c`, no `format!`-built command strings |
+| Sandbox / tool dispatch | clean — Docker via bollard typed API (no shell); `require_safe_session_id` confirmed on every host-path/container-name sink (`create`/`is_paused`/`pause`/`resume`/`register_existing`/`destroy`); `normalize_workspace_relative_path` rejects null bytes + `..` via `Path::components()` |
+| Webhook **delivery** client redirect handling | **M-1 (fixed)** — see below |
+
+### M-1 (MEDIUM, fixed) — SSRF redirect bypass on the webhook delivery client
+
+`WebhookChannel::post_json` (`crates/seasoned-hand-core/src/channel/webhook/mod.rs`)
+runs the SSRF guard `ssrf::assert_public_address` against the **initial**
+target URL only, then issues the request with the default reqwest client.
+reqwest 0.12 follows up to 10 redirects by default, so a delivery/notify
+target that passes the guard (a public host, or an allow-listed one) and then
+responds `30x Location: http://169.254.169.254/...` (cloud metadata) or
+`http://127.0.0.1/...` would have the client follow the hop to the
+**unvalidated** internal address — a metadata-endpoint / internal-service
+SSRF. The delivery `target_ref` is reachable from the inbound intake path
+(`POST /v1/intake/webhook`), and Phase 5 DEBT #1 already flags per-request
+URL trust; the redirect bypass is a distinct, currently-live hole on top of
+that.
+
+Fix: `with_default_client` now sets `.redirect(reqwest::redirect::Policy::none())`
+(comment tag `SEC-IT2-M1`). A 3xx is returned to `post_json` unfollowed and
+surfaces as `RemoteRejected { status: 3xx }`, so the only address ever
+fetched is the one the guard validated. Regression test
+`webhook::tests::webhook_delivery_does_not_follow_redirects` mounts a
+`.expect(1)` 302 entry point + an `.expect(0)` redirect target and asserts
+the target is never hit.
+
+### iter-2 verdict
+
+1 MEDIUM (M-1, fixed). All other surfaces clean. Two independent Claude
+passes (iter-1, iter-2) now stand. Saturation still requires Codex's
+independent re-audit (iter-3) to find zero new H/M — the bilateral confirm is
+the seal (cf. Phase-5 cross-tenant pass, where it caught H10). Dispatch to
+Codex pending its capacity recovery.
