@@ -62,3 +62,45 @@ rows); Codex's gates green; committed + pushed as `ef8202f` (only
 (Claude sweep + Codex confirm). Saturation = a bilateral round where neither
 party finds a new hot-path issue. Tracks sealed so far this cycle: Security,
 manageability; performance has 3 fixes (P1/P2/P3) and awaits its iter-3 seal.
+
+### iter-3 (Claude) — confirm sweep, no new issues
+
+Independent confirm pass. First re-verified the three landed fixes are
+actually in the tree and behaviour-preserving:
+
+- **P1** present: `agent/init/mod.rs:719` `static PLANNER_PROMPT: LazyLock<String>`,
+  consumed at `:90` via `.clone()`; falls back to `DEFAULT_PLANNER_PROMPT`.
+  Read once process-wide, no per-task disk I/O. ✓
+- **P2** present: `agent/mod.rs:233-237` builds `masked_tools` once *before*
+  the `for step in start_step..req.max_steps` loop (`:239`); the loop body
+  only `masked_tools.clone()`s into each request (`:277`). No per-iteration
+  schema rebuild. ✓
+- **P3** present: `events/sqlite.rs:211-223` is a 4-arm `match` over
+  `(after_id, type_filter)` using stack `rusqlite::params![]`; no
+  `Box<dyn ToSql>`, no intermediate param vecs. ✓
+
+Fresh sweep of hot paths not previously sealed — none actionable:
+
+- **`build_messages`** (`agent/prompt.rs:14`, per agent-loop iteration): one
+  `LIMIT 100` query on the indexed `(session_id, id)` path + a single linear
+  pass building `Vec<Message>`. Rebuilding context from the event log each
+  iteration is the ReAct design ("context = RAM"), not a defect. Bounded. FINE.
+- **`SqliteEventStore::append`** (`events/sqlite.rs:61`, per-event write): one
+  indexed `SELECT 1 FROM sessions` FK guard + one `INSERT … RETURNING` +
+  projection/search hooks, all in a single `with_conn` transaction. The guard
+  is a correctness check dwarfed by the INSERT; no per-row work. FINE.
+- **`masked_tools.clone()` per iteration** (`agent/mod.rs:277`): a ~38-element
+  `Vec<ToolSpec>` deep-clone each step. Considered wrapping in `Arc`, but the
+  same iteration issues a multi-second LLM round-trip — the clone is orders of
+  magnitude below the dominant cost. Per this log's own bar ("premature
+  optimization is itself a defect"), NOT actionable. FINE.
+
+Gates this pass: `clippy --all-targets -D warnings` ✓, `fmt --check` ✓,
+`spec-check` 10/10 ✓. `cargo test`: all non-sandbox tests pass (core 421
+pass); the only failures are Docker-socket-dependent suites that cannot run in
+a daemon-less environment (not code defects) — re-run on a Docker host to seal
+the test gate. Claude half
+of iter-3 is **clean — no new hot-path issue**. Per the saturation rule, the
+performance track seals once the **Codex** confirm half of iter-3 also comes
+back clean (a bilateral round with zero new findings). Until then: **3 fixes
+landed, Claude-confirmed, awaiting Codex confirm to seal.**
