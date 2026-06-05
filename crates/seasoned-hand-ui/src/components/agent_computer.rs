@@ -19,6 +19,7 @@ enum Tab {
     Files,
     Deliverables,
     Verifier,
+    Decisions,
     Events,
 }
 
@@ -58,6 +59,7 @@ pub fn AgentComputer() -> Element {
                 button { class: tab_cls(Tab::Files), onclick: move |_| tab.set(Tab::Files), "Files" }
                 button { class: tab_cls(Tab::Deliverables), onclick: move |_| tab.set(Tab::Deliverables), "Deliverables" }
                 button { class: tab_cls(Tab::Verifier), onclick: move |_| tab.set(Tab::Verifier), "Verifier" }
+                button { class: tab_cls(Tab::Decisions), onclick: move |_| tab.set(Tab::Decisions), "Decisions" }
                 button { class: tab_cls(Tab::Events), onclick: move |_| tab.set(Tab::Events), "Events" }
             }
             div { class: "min-h-0 flex-1 overflow-hidden",
@@ -76,6 +78,7 @@ pub fn AgentComputer() -> Element {
                     Tab::Files => rsx! { FilesTab {} },
                     Tab::Deliverables => rsx! { DeliverablesTab {} },
                     Tab::Verifier => rsx! { VerifierTab {} },
+                    Tab::Decisions => rsx! { DecisionsTab {} },
                     Tab::Events => rsx! { EventLog { events: events() } },
                 }
             }
@@ -208,6 +211,65 @@ fn VerifierTab() -> Element {
                 Some(Some(_)) => rsx! { div { class: "text-neutral-600", "No verifications yet" } },
                 Some(None) => rsx! { div { class: "text-neutral-600", "Select a session to see verifications" } },
                 None => rsx! { div { class: "text-neutral-500", "Loading…" } },
+            }
+        }
+    }
+}
+
+/// A decision event is a `Misc` event tagged `decision` (Initializer / Verifier
+/// / Checkpoint emit these). Derived from the live event stream, no endpoint.
+fn is_decision(ev: &ServerEvent) -> bool {
+    ev.payload.get("kind").and_then(|v| v.as_str()) == Some("Misc")
+        && ev.payload.get("kind_tag").and_then(|v| v.as_str()) == Some("decision")
+}
+
+#[component]
+fn DecisionsTab() -> Element {
+    let sel = selection();
+    let sock = socket();
+    let session = sel.session_id;
+    let events = sock.events;
+
+    rsx! {
+        div { class: "h-full overflow-y-auto p-2 text-xs",
+            {
+                let sid = session();
+                let evs = events();
+                if sid.is_none() {
+                    rsx! { div { class: "text-neutral-600", "Select a session to view decisions" } }
+                } else {
+                    let rows = evs
+                        .iter()
+                        .rev()
+                        .filter(|e| sid.as_ref() == Some(&e.session_id) && is_decision(e))
+                        .map(|e| {
+                            let source = e
+                                .payload
+                                .get("source")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+                            let reason = e
+                                .payload
+                                .get("reason")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let id = e.id.clone();
+                            rsx! {
+                                li { key: "{id}", class: "border-b border-neutral-900 py-1",
+                                    div { class: "text-blue-400", "{source}" }
+                                    div { class: "whitespace-pre-wrap break-words text-neutral-300", "{reason}" }
+                                }
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    if rows.is_empty() {
+                        rsx! { div { class: "text-neutral-600", "No decisions recorded yet" } }
+                    } else {
+                        rsx! { ul { class: "space-y-1", {rows.into_iter()} } }
+                    }
+                }
             }
         }
     }

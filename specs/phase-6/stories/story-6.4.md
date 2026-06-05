@@ -21,8 +21,11 @@ Bring the Dioxus UI to parity with the Next.js app beyond the foundation.
       file open into the editor.)*
 - [x] **AgentComputer — Verifier tab**: lists
       `/v1/sessions/:id/verifications` with pass/fail verdicts + reasons.
-- [ ] **AgentComputer — remaining tabs**: decisions, screenshot strip,
-      dom-text pane, evidence chips, lightbox (event-derived browser tracks).
+- [x] **AgentComputer — Decisions tab**: filters the live event stream for
+      `Misc{kind_tag:"decision"}` events (source + reason), no endpoint.
+- [ ] **AgentComputer — browser-track visualizers**: screenshot strip,
+      dom-text pane, evidence chips, lightbox. Event-derived but best built
+      against real observation events from a live task (Docker).
 - [ ] **Per-session event index** for evidence-chip O(1) lookup (parity with
       `HomeShell`'s `eventIndex`) — deferred until the verifier tab consumes it.
 - [ ] Reactive interop updates (re-push terminal output / swap editor models),
