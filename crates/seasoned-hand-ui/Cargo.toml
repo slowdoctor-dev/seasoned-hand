@@ -16,6 +16,10 @@ description = "Seasoned Hand unified-Rust (Dioxus) frontend — web/desktop/mobi
 [dependencies]
 dioxus = { version = "0.6", features = ["web"] }
 
+# Shared wire DTOs (story 6.3) — single definition shared with the backend,
+# replacing the previously hand-mirrored `src/dto.rs`.
+seasoned-hand-dto = { path = "../seasoned-hand-dto" }
+
 # REST + WebSocket against the unchanged Axum /v1 + /ws boundary.
 gloo-net = { version = "0.6", features = ["http", "websocket", "json"] }
 

@@ -19,39 +19,11 @@ pub use task_deliver::{
     TaskDeliverDeps,
 };
 
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Deliverable {
-    pub id: String,
-    pub task_id: String,
-    pub tenant_id: Option<String>,
-    /// One of: `docx | pdf | html | pptx | xlsx | csv | md | json | code | url`.
-    pub format: String,
-    /// Workspace path of the LLM-authored source (markdown / JSON);
-    /// `None` for raw artifacts where the rendered file is also the
-    /// source of truth (`url`, `code`).
-    pub source_content_path: Option<String>,
-    pub source_content_sha256: Option<String>,
-    /// Absolute host path of the rendered artifact, resolved at
-    /// deliverable-persist time by `task_deliver` against the sandbox
-    /// handle's `workspace_host_path` (closes Phase 2 DEBT #32).
-    /// Channel impls (e.g. `EmailChannel::deliver`) read this directly
-    /// via `tokio::fs::read(...)`. Note: the column was workspace-relative
-    /// before story 2.26 — see REVIEW §4 / proposed DEBT #41.
-    pub rendered_content_path: String,
-    pub rendered_content_sha256: String,
-    pub content_size: i64,
-    /// JSON array of `event_id`s cited inline in the deliverable content.
-    /// `None` until the renderer populates it.
-    pub citations: Option<Vec<i64>>,
-    /// Provenance manifest as defined in architecture §2.11. Stored as
-    /// opaque JSON here so the channel module doesn't redefine the
-    /// schema; story 2.15 owns the manifest builder.
-    pub provenance_manifest: Value,
-    pub created_at: i64,
-}
+// Canonical home for the `Deliverable` wire shape (V007 column projection) is
+// `seasoned-hand-dto` (ADR-016 / story 6.3), shared by the backend and the
+// wasm UI. The provenance manifest stays opaque JSON; story 2.15 owns its
+// builder. `channel::delivery` re-exports this re-export, unchanged.
+pub use seasoned_hand_dto::Deliverable;
 
 #[cfg(test)]
 mod tests;

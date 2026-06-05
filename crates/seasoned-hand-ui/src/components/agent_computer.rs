@@ -7,9 +7,9 @@
 
 use super::{selection, socket};
 use crate::api;
-use crate::dto::ServerEvent;
 use crate::interop::{MonacoEditor, NoVnc, XtermTerminal};
 use dioxus::prelude::*;
+use seasoned_hand_dto::ServerEvent;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {

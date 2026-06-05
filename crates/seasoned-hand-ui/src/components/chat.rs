@@ -6,8 +6,8 @@
 //! (see ws.rs note on ack handling).
 
 use super::{selection, socket};
-use crate::dto::{CommandPayload, ServerEvent};
 use dioxus::prelude::*;
+use seasoned_hand_dto::{CommandPayload, ServerEvent};
 
 #[component]
 pub fn Chat() -> Element {

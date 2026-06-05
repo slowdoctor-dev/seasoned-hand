@@ -13,7 +13,6 @@
 mod api;
 mod components;
 mod config;
-mod dto;
 mod interop;
 mod ws;
 

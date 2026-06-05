@@ -11,100 +11,23 @@
 //! refs: /specs/phase-2/stories/story-2.2.md
 
 use rusqlite::params;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::db::DbPool;
 use crate::time::now_micros;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TaskStatus {
-    Drafted,
-    Briefed,
-    Confirmed,
-    Running,
-    Paused,
-    Completed,
-    Failed,
-    Cancelled,
-}
+// Canonical home for the wire shape + the status state machine is
+// `seasoned-hand-dto` (ADR-016 / story 6.3): `TaskStatus` (with `as_db_str` /
+// `from_db_str` / `is_terminal`), `legal_transitions`, and `Task` are defined
+// once there and shared by the backend and the wasm UI. `from_db_str` returns a
+// dto-level error that `From` lifts into `TaskError` below.
+pub use seasoned_hand_dto::{Task, TaskStatus, legal_transitions};
 
-impl TaskStatus {
-    pub fn as_db_str(&self) -> &'static str {
-        match self {
-            TaskStatus::Drafted => "drafted",
-            TaskStatus::Briefed => "briefed",
-            TaskStatus::Confirmed => "confirmed",
-            TaskStatus::Running => "running",
-            TaskStatus::Paused => "paused",
-            TaskStatus::Completed => "completed",
-            TaskStatus::Failed => "failed",
-            TaskStatus::Cancelled => "cancelled",
-        }
+impl From<seasoned_hand_dto::EnumParseError> for TaskError {
+    fn from(e: seasoned_hand_dto::EnumParseError) -> Self {
+        TaskError::UnknownStatus(e.value)
     }
-
-    pub fn from_db_str(s: &str) -> Result<Self, TaskError> {
-        match s {
-            "drafted" => Ok(TaskStatus::Drafted),
-            "briefed" => Ok(TaskStatus::Briefed),
-            "confirmed" => Ok(TaskStatus::Confirmed),
-            "running" => Ok(TaskStatus::Running),
-            "paused" => Ok(TaskStatus::Paused),
-            "completed" => Ok(TaskStatus::Completed),
-            "failed" => Ok(TaskStatus::Failed),
-            "cancelled" => Ok(TaskStatus::Cancelled),
-            other => Err(TaskError::UnknownStatus(other.to_string())),
-        }
-    }
-
-    pub fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
-        )
-    }
-}
-
-/// Single inspectable table of legal `from → to` transitions. Returning a
-/// static slice keeps the validity matrix in one place and avoids the
-/// match-arm explosion of nested `(from, to)` pairs.
-///
-/// User-cancel paths (`*  → Cancelled`) are allowed from every
-/// pre-running state so the story-2.8 Briefing gate can honor a
-/// `cancel` action without first walking the task through to `running`.
-pub fn legal_transitions(from: TaskStatus) -> &'static [TaskStatus] {
-    use TaskStatus::*;
-    match from {
-        Drafted => &[Briefed, Cancelled],
-        Briefed => &[Confirmed, Cancelled],
-        Confirmed => &[Running, Cancelled],
-        Running => &[Paused, Completed, Failed, Cancelled],
-        Paused => &[Running, Completed, Failed, Cancelled],
-        Completed | Failed | Cancelled => &[],
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Task {
-    pub id: String,
-    pub project_id: String,
-    pub tenant_id: Option<String>,
-    pub title: String,
-    /// Phase 2 stores the structured `Brief` (see architecture §2.2) as
-    /// raw JSON text; this column is `NULL` until the Initializer writes
-    /// the brief.
-    pub brief: Option<serde_json::Value>,
-    pub status: TaskStatus,
-    pub expected_due_at: Option<i64>,
-    pub completed_at: Option<i64>,
-    pub failure_reason: Option<String>,
-    pub parent_task_id: Option<String>,
-    pub schedule: Option<String>,
-    pub skill_attached_event_id: Option<i64>,
-    pub created_at: i64,
-    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone)]

@@ -44,7 +44,8 @@ Phase 6 work.
 |---|---|---|
 | 6.1 | Dioxus foundation scaffold | done |
 | 6.2 | Interop spike — real Monaco/xterm/noVNC bundles (ADR-016 step-1 gate) | ready |
-| 6.3 | Extract wasm-safe `seasoned-hand-dto` shared crate | ready |
+| 6.3 | Extract wasm-safe `seasoned-hand-dto` shared crate (core + UI) | done |
+| 6.3b | Server-side adoption of `-dto` (session/WS types) | ready |
 | 6.4 | Full-fidelity port of remaining React surface + ack handling | ready |
 | 6.5 | Desktop + mobile targets | ready |
 | 6.6 | Cutover — remove Next.js, compiled Tailwind, docker/justfile/docs | ready |

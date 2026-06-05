@@ -2,8 +2,8 @@
 //! `frontend/lib/api.ts` using `gloo-net` (wasm `fetch`).
 
 use crate::config::api_base;
-use crate::dto::*;
 use gloo_net::http::Request;
+use seasoned_hand_dto::*;
 
 /// Error string surfaced to the UI (kept simple; callers render it inline).
 pub type ApiResult<T> = Result<T, String>;
@@ -45,21 +45,7 @@ pub async fn list_sessions(limit: u32) -> ApiResult<Vec<SessionSummary>> {
     get_json(&format!("/v1/sessions?limit={limit}")).await
 }
 
-/// Sandbox endpoints surfaced by `GET /v1/sessions/:id` (mirrors api.ts).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-pub struct Sandbox {
-    pub novnc_url: String,
-    pub ttyd_url: String,
-    pub api_url: String,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct SessionDetail {
-    #[serde(flatten)]
-    pub summary: SessionSummary,
-    pub sandbox: Option<Sandbox>,
-}
-
+// `Sandbox` + `SessionDetail` now live in `seasoned-hand-dto` (story 6.3).
 pub async fn get_session(id: &str) -> ApiResult<SessionDetail> {
     get_json(&format!("/v1/sessions/{}", urlencode(id))).await
 }

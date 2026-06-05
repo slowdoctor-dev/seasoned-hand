@@ -3,8 +3,8 @@
 
 use super::selection;
 use crate::api;
-use crate::dto::TaskStatus;
 use dioxus::prelude::*;
+use seasoned_hand_dto::TaskStatus;
 
 fn status_label(s: &TaskStatus) -> &'static str {
     match s {

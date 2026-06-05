@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`seasoned-hand-dto` crate** (Phase 6 story 6.3) — wasm-safe, pure-serde
+  shared wire DTOs. `seasoned-hand-core` now re-exports the domain entities
+  (Project, Task, Deliverable + status enums + `legal_transitions`) from it, and
+  `seasoned-hand-ui` consumes it directly (deleting its hand-mirrored `dto.rs`),
+  so the backend and the wasm frontend share one definition. The DB-string
+  mapping moved into `-dto` with `From<EnumParseError>` lifting into the core
+  errors. Server-side adoption of the session/WS types is story 6.3b.
+
 ### Changed
 - **Phase 6 started — Dioxus frontend migration begun** (2026-06-05). Phase 6
   (open-source release) is now active, opening with the Next.js → Dioxus migration

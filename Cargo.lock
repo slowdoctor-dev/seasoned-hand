@@ -2156,6 +2156,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rusqlite",
+ "seasoned-hand-dto",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2174,6 +2175,14 @@ dependencies = [
  "uuid",
  "webpki-roots 0.26.11",
  "wiremock",
+]
+
+[[package]]
+name = "seasoned-hand-dto"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

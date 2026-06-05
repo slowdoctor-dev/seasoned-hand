@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/seasoned-hand-dto",
     "crates/seasoned-hand-core",
     "crates/seasoned-hand-server",
     "crates/seasoned-hand-cli",
