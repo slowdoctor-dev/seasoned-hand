@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   errors. Server-side adoption of the session/WS types is story 6.3b.
 
 ### Changed
+- **`SandboxClient` connects to Docker lazily** — `SandboxClient::new` no longer
+  opens the Docker socket at construction; the daemon is connected on first
+  actual container operation (cached via `OnceCell`). This lets the control
+  plane **boot without Docker** (REST API / dev / UI work) instead of aborting at
+  startup with `Docker(SocketNotFoundError)`. Behaviour with Docker present is
+  unchanged; operations that need a container still surface a clear error when it
+  is absent. Verified: the server now runs migrations + serves with no Docker and
+  no Redis (both already degrade gracefully).
 - **Phase 6 started — Dioxus frontend migration begun** (2026-06-05). Phase 6
   (open-source release) is now active, opening with the Next.js → Dioxus migration
   (ADR-016). `crates/seasoned-hand-ui` scaffolded (unified-Rust UI; web target
