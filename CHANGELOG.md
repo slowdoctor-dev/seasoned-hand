@@ -12,10 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Dioxus UI functional progress** (Phase 6 story 6.4, partial): WS ack handling
   captures the `task_create` session_id into the shared selection; an interactive
-  **BriefingCard** (confirm/cancel via `briefing_confirm`); a **Deliverables** tab
-  in the AgentComputer. The server now shares its session/deliverable DTOs via
-  `-dto` (story 6.3b). Real Monaco/xterm/noVNC interop shims drafted in
-  `index.html` (story 6.2 — written but not yet verified against a live session).
+  **BriefingCard** (confirm / **edit** / cancel via `briefing_confirm`);
+  AgentComputer **Deliverables**, **Files** (workspace root), and **Verifier**
+  (pass/fail verdicts) tabs. Added `Verification` / `WorkspaceListing` DTOs to
+  `-dto`. The server now shares its session/deliverable DTOs via `-dto` (story
+  6.3b). Real Monaco/xterm/noVNC interop shims drafted in `index.html` (story
+  6.2 — written but not yet verified against a live session).
 - **Shared `ServerEnvelope`** (Phase 6 story 6.3c): the server now serializes
   `seasoned_hand_dto::ServerEnvelope` (its private copy removed), so the
   server→client WS envelope is shared end-to-end. `-dto`'s `Ack`/`Error`

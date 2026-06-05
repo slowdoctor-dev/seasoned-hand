@@ -2,9 +2,10 @@
 //! inline in the Chat panel with Confirm / Cancel actions that emit the
 //! `briefing_confirm` command (keyed by task_id) over the socket.
 //!
-//! Foundation scope: Confirm / Cancel. The JSON-textarea **edit** flow and the
-//! full resolution taxonomy (superseded / auto-confirmed) are follow-ups; this
-//! tracks a local "resolved" flag via the parent.
+//! Actions: Confirm / Edit / Cancel. **Edit** opens a JSON textarea of the brief
+//! and emits `briefing_confirm{action:"edit", edits}` (the server re-emits a new
+//! briefing). The full resolution taxonomy (superseded / auto-confirmed) is a
+//! follow-up; this tracks a local "resolved" flag via the parent.
 
 use super::socket;
 use dioxus::prelude::*;
@@ -19,6 +20,10 @@ pub fn BriefingCard(
     on_resolve: EventHandler<String>,
 ) -> Element {
     let sock = socket();
+    let mut editing = use_signal(|| false);
+    let mut draft = use_signal(String::new);
+    let mut parse_err = use_signal(|| Option::<String>::None);
+    let brief_pretty = serde_json::to_string_pretty(&brief).unwrap_or_default();
 
     let goal = brief
         .get("goal")
@@ -104,6 +109,51 @@ pub fn BriefingCard(
                 div { class: "text-xs text-neutral-500", "Resolved" }
             } else if !task_known {
                 div { class: "text-xs text-amber-500", "Waiting for task id…" }
+            } else if editing() {
+                div {
+                    textarea {
+                        class: "h-40 w-full rounded bg-neutral-950 p-2 font-mono text-xs",
+                        value: "{draft}",
+                        oninput: move |e| draft.set(e.value()),
+                    }
+                    if let Some(err) = parse_err() {
+                        div { class: "mt-1 text-xs text-red-400", "{err}" }
+                    }
+                    div { class: "mt-1 flex gap-2",
+                        button {
+                            class: "rounded bg-blue-600 px-3 py-1",
+                            onclick: {
+                                let sock = sock.clone();
+                                let call_id = call_id.clone();
+                                let task_id = task_id.clone();
+                                move |_| match serde_json::from_str::<serde_json::Value>(&draft.peek()) {
+                                    Ok(edits) => {
+                                        if let Some(tid) = task_id.clone() {
+                                            sock.send(CommandPayload::BriefingConfirm {
+                                                task_id: tid,
+                                                in_reply_to_call_id: call_id.clone(),
+                                                action: "edit".to_string(),
+                                                edits: Some(edits),
+                                            });
+                                            editing.set(false);
+                                            on_resolve.call(call_id.clone());
+                                        }
+                                    }
+                                    Err(e) => parse_err.set(Some(format!("Invalid JSON: {e}"))),
+                                }
+                            },
+                            "Save edits"
+                        }
+                        button {
+                            class: "rounded bg-neutral-700 px-3 py-1",
+                            onclick: move |_| {
+                                editing.set(false);
+                                parse_err.set(None);
+                            },
+                            "Cancel edit"
+                        }
+                    }
+                }
             } else {
                 div { class: "flex gap-2",
                     button {
@@ -125,6 +175,18 @@ pub fn BriefingCard(
                             }
                         },
                         "Confirm"
+                    }
+                    button {
+                        class: "rounded bg-neutral-700 px-3 py-1",
+                        onclick: {
+                            let brief_pretty = brief_pretty.clone();
+                            move |_| {
+                                draft.set(brief_pretty.clone());
+                                parse_err.set(None);
+                                editing.set(true);
+                            }
+                        },
+                        "Edit"
                     }
                     button {
                         class: "rounded bg-neutral-700 px-3 py-1",

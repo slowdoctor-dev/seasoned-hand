@@ -16,7 +16,9 @@ enum Tab {
     Browser,
     Terminal,
     Editor,
+    Files,
     Deliverables,
+    Verifier,
     Events,
 }
 
@@ -53,7 +55,9 @@ pub fn AgentComputer() -> Element {
                 button { class: tab_cls(Tab::Browser), onclick: move |_| tab.set(Tab::Browser), "Browser" }
                 button { class: tab_cls(Tab::Terminal), onclick: move |_| tab.set(Tab::Terminal), "Terminal" }
                 button { class: tab_cls(Tab::Editor), onclick: move |_| tab.set(Tab::Editor), "Editor" }
+                button { class: tab_cls(Tab::Files), onclick: move |_| tab.set(Tab::Files), "Files" }
                 button { class: tab_cls(Tab::Deliverables), onclick: move |_| tab.set(Tab::Deliverables), "Deliverables" }
+                button { class: tab_cls(Tab::Verifier), onclick: move |_| tab.set(Tab::Verifier), "Verifier" }
                 button { class: tab_cls(Tab::Events), onclick: move |_| tab.set(Tab::Events), "Events" }
             }
             div { class: "min-h-0 flex-1 overflow-hidden",
@@ -69,7 +73,9 @@ pub fn AgentComputer() -> Element {
                     Tab::Editor => rsx! {
                         MonacoEditor { value: "// select a file".to_string(), language: "rust".to_string() }
                     },
+                    Tab::Files => rsx! { FilesTab {} },
                     Tab::Deliverables => rsx! { DeliverablesTab {} },
+                    Tab::Verifier => rsx! { VerifierTab {} },
                     Tab::Events => rsx! { EventLog { events: events() } },
                 }
             }
@@ -120,6 +126,87 @@ fn DeliverablesTab() -> Element {
                 }
                 Some(Some(_)) => rsx! { div { class: "text-neutral-600", "No deliverables yet" } },
                 Some(None) => rsx! { div { class: "text-neutral-600", "Select a task to see deliverables" } },
+                None => rsx! { div { class: "text-neutral-500", "Loading…" } },
+            }
+        }
+    }
+}
+
+#[component]
+fn FilesTab() -> Element {
+    let session = selection().session_id;
+    let listing = use_resource(move || async move {
+        match session() {
+            Some(sid) => api::list_workspace_root(&sid).await.ok(),
+            None => None,
+        }
+    });
+
+    rsx! {
+        div { class: "h-full overflow-y-auto p-2 font-mono text-xs",
+            match &*listing.read_unchecked() {
+                Some(Some(seasoned_hand_dto::WorkspaceListing::Dir { entries })) if !entries.is_empty() => {
+                    let items = entries.iter().map(|e| {
+                        let is_dir = e.kind == "dir";
+                        let icon = if is_dir { "📁" } else { "📄" };
+                        let name = e.name.clone();
+                        let size = e.size.map(|s| format!("{s} B")).unwrap_or_default();
+                        rsx! {
+                            li { key: "{name}", class: "flex items-center gap-2 py-0.5",
+                                span { "{icon}" }
+                                span { class: if is_dir { "text-blue-300" } else { "" }, "{name}" }
+                                span { class: "ml-auto text-neutral-600", "{size}" }
+                            }
+                        }
+                    }).collect::<Vec<_>>();
+                    rsx! { ul { {items.into_iter()} } }
+                }
+                Some(Some(_)) => rsx! { div { class: "text-neutral-600", "Empty workspace" } },
+                Some(None) => rsx! { div { class: "text-neutral-600", "Select a session to browse files" } },
+                None => rsx! { div { class: "text-neutral-500", "Loading…" } },
+            }
+        }
+    }
+}
+
+#[component]
+fn VerifierTab() -> Element {
+    let session = selection().session_id;
+    let verifications = use_resource(move || async move {
+        match session() {
+            Some(sid) => api::list_verifications(&sid, 50).await.ok(),
+            None => None,
+        }
+    });
+
+    rsx! {
+        div { class: "h-full overflow-y-auto p-2 text-xs",
+            match &*verifications.read_unchecked() {
+                Some(Some(resp)) if !resp.rows.is_empty() => {
+                    let items = resp.rows.iter().map(|v| {
+                        let pass = v.verdict == seasoned_hand_dto::Verdict::Pass;
+                        let (badge, badge_cls) = if pass {
+                            ("PASS", "rounded bg-green-700 px-1")
+                        } else {
+                            ("FAIL", "rounded bg-red-700 px-1")
+                        };
+                        let kind = v.trigger_kind.clone();
+                        let reason = v.reason.clone();
+                        let id = v.id.clone();
+                        rsx! {
+                            li { key: "{id}", class: "border-b border-neutral-900 py-1",
+                                div { class: "flex items-center gap-2",
+                                    span { class: "{badge_cls}", "{badge}" }
+                                    span { class: "text-neutral-400", "{kind}" }
+                                }
+                                div { class: "mt-0.5 whitespace-pre-wrap break-words text-neutral-300", "{reason}" }
+                            }
+                        }
+                    }).collect::<Vec<_>>();
+                    rsx! { ul { class: "space-y-1", {items.into_iter()} } }
+                }
+                Some(Some(_)) => rsx! { div { class: "text-neutral-600", "No verifications yet" } },
+                Some(None) => rsx! { div { class: "text-neutral-600", "Select a session to see verifications" } },
                 None => rsx! { div { class: "text-neutral-500", "Loading…" } },
             }
         }

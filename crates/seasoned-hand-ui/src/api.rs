@@ -85,6 +85,22 @@ pub async fn get_task_deliverables(task_id: &str) -> ApiResult<TaskDeliverablesR
     get_json(&format!("/v1/tasks/{}/deliverables", urlencode(task_id))).await
 }
 
+pub async fn list_verifications(
+    session_id: &str,
+    limit: u32,
+) -> ApiResult<VerificationListResponse> {
+    get_json(&format!(
+        "/v1/sessions/{}/verifications?limit={limit}",
+        urlencode(session_id)
+    ))
+    .await
+}
+
+/// Root-level workspace listing for a session.
+pub async fn list_workspace_root(session_id: &str) -> ApiResult<WorkspaceListing> {
+    get_json(&format!("/v1/workspace/{}/", urlencode(session_id))).await
+}
+
 /// Minimal percent-encoding for path segments (ids are uuid-like but encode
 /// defensively, matching `encodeURIComponent` in the TS layer).
 fn urlencode(s: &str) -> String {

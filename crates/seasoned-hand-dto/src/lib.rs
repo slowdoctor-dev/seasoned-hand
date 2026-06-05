@@ -177,6 +177,61 @@ pub struct TaskDeliverablesResponse {
 }
 
 // ----------------------------------------------------------------------------
+// Verifier DTOs (GET /v1/sessions/:id/verifications)
+// ----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Verdict {
+    Pass,
+    Fail,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Verification {
+    pub id: String,
+    pub session_id: String,
+    pub triggered_at_event_id: i64,
+    pub trigger_kind: String,
+    #[serde(default)]
+    pub trigger_detail: serde_json::Value,
+    pub verdict: Verdict,
+    pub reason: String,
+    pub evidence_event_ids: Vec<i64>,
+    #[serde(default)]
+    pub suggested_plan_update: Option<serde_json::Value>,
+    pub model_id: String,
+    pub cost_cents: i64,
+    pub created_at: Timestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerificationListResponse {
+    pub rows: Vec<Verification>,
+    pub next_cursor: Option<i64>,
+}
+
+// ----------------------------------------------------------------------------
+// Workspace file listing (GET /v1/workspace/:session_id/)
+// ----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceEntry {
+    pub name: String,
+    /// "file" | "dir"
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub size: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum WorkspaceListing {
+    Dir { entries: Vec<WorkspaceEntry> },
+}
+
+// ----------------------------------------------------------------------------
 // Session DTOs (frontend-facing; server adoption is story 6.3b)
 // ----------------------------------------------------------------------------
 
