@@ -2198,6 +2198,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "seasoned-hand-core",
+ "seasoned-hand-dto",
  "serde",
  "serde_json",
  "subtle",

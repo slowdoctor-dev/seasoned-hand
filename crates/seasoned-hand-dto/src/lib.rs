@@ -180,7 +180,7 @@ pub struct TaskDeliverablesResponse {
 // Session DTOs (frontend-facing; server adoption is story 6.3b)
 // ----------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum SessionState {
     Idle,
@@ -188,6 +188,34 @@ pub enum SessionState {
     Finished,
     Error,
     Suspended,
+}
+
+impl SessionState {
+    /// Canonical DB / wire string (matches the `#[serde]` UPPERCASE rep and the
+    /// values the control plane writes to the `sessions.state` column).
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            SessionState::Idle => "IDLE",
+            SessionState::Running => "RUNNING",
+            SessionState::Finished => "FINISHED",
+            SessionState::Error => "ERROR",
+            SessionState::Suspended => "SUSPENDED",
+        }
+    }
+
+    pub fn from_db_str(s: &str) -> Result<Self, EnumParseError> {
+        match s {
+            "IDLE" => Ok(SessionState::Idle),
+            "RUNNING" => Ok(SessionState::Running),
+            "FINISHED" => Ok(SessionState::Finished),
+            "ERROR" => Ok(SessionState::Error),
+            "SUSPENDED" => Ok(SessionState::Suspended),
+            other => Err(EnumParseError {
+                kind: "session state",
+                value: other.to_string(),
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -24,12 +24,20 @@ pulls in rusqlite/bollard/tokio and cannot compile to wasm.
 
 ## Follow-up — story 6.3b (server-side adoption)
 
+> **Status**: done (session/deliverable types) — WS protocol types deferred to 6.3c
+
+The server now uses `-dto`'s `SessionSummary` / `Sandbox` / `SessionDetail` /
+`TaskDeliverablesResponse` directly (its private copies removed). `SessionSummary.state`
+is now the `-dto` `SessionState` enum; the DB `state` String is mapped via
+`SessionState::from_db_str` (DB values IDLE/RUNNING/FINISHED/ERROR/SUSPENDED
+confirmed to match the UPPERCASE variants). Gates green (workspace check, clippy
+`-D warnings`, fmt, wasm UI check).
+
+### Remaining — story 6.3c (WS protocol types)
+
 > **Status**: ready
 
-The **server** still defines its own `SessionSummary` / `SandboxInfo` /
-`SessionDetail` / `TaskDeliverablesResponse` and the WS envelope/command types in
-`ws.rs` (wire-compatible with `-dto`). 6.3b makes the server emit/consume the
-`-dto` types directly so those shapes are shared end-to-end too. Note: the
-server's `SessionSummary.state` is currently a `String`; adoption switches it to
-`-dto`'s `SessionState` enum (verify the emitted values match the UPPERCASE
-variants).
+The server's `ws.rs` still defines its own `CommandPayload` / `ServerEnvelope` /
+`ClientEnvelope` (with handler dispatch + `BriefingActionTag`), wire-compatible
+with `-dto`'s copies. Unifying these is more involved (the server enums carry
+dispatch logic) and is split out as 6.3c.
