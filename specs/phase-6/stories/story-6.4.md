@@ -16,9 +16,9 @@ Bring the Dioxus UI to parity with the Next.js app beyond the foundation.
       sends `action:"edit"` with parsed edits. *(Remaining: the
       superseded/auto-confirmed resolution taxonomy.)*
 - [x] **AgentComputer — Deliverables tab**: lists `/v1/tasks/:id/deliverables`.
-- [x] **AgentComputer — Files tab**: lists the workspace root
-      (`/v1/workspace/:session_id/`). *(Remaining: recursive dir expansion +
-      file open into the editor.)*
+- [x] **AgentComputer — Files tab**: **recursive** workspace tree — dirs expand
+      lazily (`/v1/workspace/:id/{path}`), clicking a file loads it into the
+      Editor tab (Monaco, re-mounts per path) via panel-shared state.
 - [x] **AgentComputer — Verifier tab**: lists
       `/v1/sessions/:id/verifications` with pass/fail verdicts + reasons.
 - [x] **AgentComputer — Decisions tab**: filters the live event stream for

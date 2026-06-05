@@ -98,7 +98,40 @@ pub async fn list_verifications(
 
 /// Root-level workspace listing for a session.
 pub async fn list_workspace_root(session_id: &str) -> ApiResult<WorkspaceListing> {
-    get_json(&format!("/v1/workspace/{}/", urlencode(session_id))).await
+    list_workspace_dir(session_id, "").await
+}
+
+/// Workspace listing for a sub-directory (`path` is workspace-relative, may be
+/// empty for the root).
+pub async fn list_workspace_dir(session_id: &str, path: &str) -> ApiResult<WorkspaceListing> {
+    let tail = encode_path(path.trim_start_matches('/'));
+    get_json(&format!("/v1/workspace/{}/{}", urlencode(session_id), tail)).await
+}
+
+/// Read a workspace file's contents as text.
+pub async fn read_workspace_file(session_id: &str, path: &str) -> ApiResult<String> {
+    let tail = encode_path(path.trim_start_matches('/'));
+    let url = format!(
+        "{}/v1/workspace/{}/{}",
+        api_base(),
+        urlencode(session_id),
+        tail
+    );
+    let resp = Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("GET {path} -> {e}"))?;
+    if !resp.ok() {
+        return Err(format!("GET {path} -> {}", resp.status()));
+    }
+    resp.text()
+        .await
+        .map_err(|e| format!("GET {path} text -> {e}"))
+}
+
+/// Percent-encode each path segment but keep `/` separators.
+fn encode_path(path: &str) -> String {
+    path.split('/').map(urlencode).collect::<Vec<_>>().join("/")
 }
 
 /// Minimal percent-encoding for path segments (ids are uuid-like but encode

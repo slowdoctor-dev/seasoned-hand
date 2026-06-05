@@ -34,13 +34,18 @@ futures = "0.3"
 futures-util = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Window", "Location"] }
 gloo-timers = { version = "0.3", features = ["futures"] }
 
 # Browser console logging.
 log = "0.4"
 console_log = "1"
 console_error_panic_hook = "0.1"
+
+# Web-only deps (platform seam, issue #4). `web-sys` host resolution is gated
+# behind cfg(target_arch = "wasm32") in config.rs; the gloo-* transport is still
+# referenced unconditionally and will move here once a native impl lands.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { version = "0.3", features = ["Window", "Location"] }
 
 [profile.release]
 opt-level = "s"

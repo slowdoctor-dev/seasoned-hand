@@ -1,15 +1,15 @@
 //! AgentComputer panel (replaces `agent-computer.tsx` + its tab set). Hosts the
-//! three JS-interop surfaces (browser/terminal/editor) plus a raw event log.
+//! JS-interop surfaces (browser/terminal/editor), a recursive workspace file
+//! tree, deliverables/verifier/decisions, and a raw event log.
 //!
-//! Foundation scope: tab shell + interop mounts wired to the active session's
-//! sandbox URLs. The richer tabs (deliverables, verifier, decisions, file-tree,
-//! screenshot strip) from the React app are Phase 6 follow-ups.
+//! Remaining (issue #3): browser-track visualizers (screenshot strip, dom-text,
+//! evidence chips, lightbox), which want real observation events from a live task.
 
 use super::{selection, socket};
 use crate::api;
 use crate::interop::{MonacoEditor, NoVnc, XtermTerminal};
 use dioxus::prelude::*;
-use seasoned_hand_dto::ServerEvent;
+use seasoned_hand_dto::{ServerEvent, WorkspaceListing};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -23,6 +23,42 @@ enum Tab {
     Events,
 }
 
+/// A file opened from the Files tab into the Editor tab.
+#[derive(Clone, PartialEq)]
+struct OpenFile {
+    path: String,
+    content: String,
+}
+
+/// Panel-local shared state so the Files tree can drive the active tab + the
+/// editor's open file. `Copy` (signal handles), shared via context.
+#[derive(Clone, Copy)]
+struct AgentComputerCtx {
+    tab: Signal<Tab>,
+    open_file: Signal<Option<OpenFile>>,
+}
+
+/// Map a path's extension to a Monaco language id (subset; mirrors
+/// `frontend/lib/workspace.ts::languageForPath`).
+fn language_for_path(path: &str) -> &'static str {
+    match path.rsplit('.').next() {
+        Some("rs") => "rust",
+        Some("ts") | Some("tsx") => "typescript",
+        Some("js") | Some("jsx") => "javascript",
+        Some("json") => "json",
+        Some("md") => "markdown",
+        Some("py") => "python",
+        Some("go") => "go",
+        Some("yaml") | Some("yml") => "yaml",
+        Some("toml") => "toml",
+        Some("sql") => "sql",
+        Some("sh") => "shell",
+        Some("html") => "html",
+        Some("css") => "css",
+        _ => "plaintext",
+    }
+}
+
 #[component]
 pub fn AgentComputer() -> Element {
     let sel = selection();
@@ -30,6 +66,9 @@ pub fn AgentComputer() -> Element {
     let session = sel.session_id;
     let events = sock.events;
     let mut tab = use_signal(|| Tab::Browser);
+    let open_file = use_signal(|| Option::<OpenFile>::None);
+    // Shared so the Files tree can open a file into the Editor tab.
+    use_context_provider(|| AgentComputerCtx { tab, open_file });
 
     let detail = use_resource(move || async move {
         match session() {
@@ -72,8 +111,17 @@ pub fn AgentComputer() -> Element {
                         Some(s) => rsx! { XtermTerminal { ws_url: s.ttyd_url.clone() } },
                         None => rsx! { Placeholder { label: "No terminal for this session" } },
                     },
-                    Tab::Editor => rsx! {
-                        MonacoEditor { value: "// select a file".to_string(), language: "rust".to_string() }
+                    Tab::Editor => match open_file() {
+                        Some(f) => rsx! {
+                            // key on path so switching files re-mounts the editor
+                            // (the interop wrapper initializes on mount).
+                            MonacoEditor {
+                                key: "{f.path}",
+                                value: f.content.clone(),
+                                language: language_for_path(&f.path).to_string(),
+                            }
+                        },
+                        None => rsx! { Placeholder { label: "Select a file in the Files tab" } },
                     },
                     Tab::Files => rsx! { FilesTab {} },
                     Tab::Deliverables => rsx! { DeliverablesTab {} },
@@ -147,26 +195,124 @@ fn FilesTab() -> Element {
 
     rsx! {
         div { class: "h-full overflow-y-auto p-2 font-mono text-xs",
-            match &*listing.read_unchecked() {
-                Some(Some(seasoned_hand_dto::WorkspaceListing::Dir { entries })) if !entries.is_empty() => {
-                    let items = entries.iter().map(|e| {
-                        let is_dir = e.kind == "dir";
-                        let icon = if is_dir { "📁" } else { "📄" };
-                        let name = e.name.clone();
-                        let size = e.size.map(|s| format!("{s} B")).unwrap_or_default();
+            match (session(), &*listing.read_unchecked()) {
+                (Some(sid), Some(Some(WorkspaceListing::Dir { entries }))) if !entries.is_empty() => {
+                    let nodes = entries.iter().map(|e| {
                         rsx! {
-                            li { key: "{name}", class: "flex items-center gap-2 py-0.5",
-                                span { "{icon}" }
-                                span { class: if is_dir { "text-blue-300" } else { "" }, "{name}" }
-                                span { class: "ml-auto text-neutral-600", "{size}" }
+                            FileNode {
+                                key: "{e.name}",
+                                session_id: sid.clone(),
+                                path: e.name.clone(),
+                                name: e.name.clone(),
+                                is_dir: e.kind == "dir",
+                                depth: 0,
                             }
                         }
                     }).collect::<Vec<_>>();
-                    rsx! { ul { {items.into_iter()} } }
+                    rsx! { div { {nodes.into_iter()} } }
                 }
-                Some(Some(_)) => rsx! { div { class: "text-neutral-600", "Empty workspace" } },
-                Some(None) => rsx! { div { class: "text-neutral-600", "Select a session to browse files" } },
-                None => rsx! { div { class: "text-neutral-500", "Loading…" } },
+                (Some(_), Some(Some(_))) => rsx! { div { class: "text-neutral-600", "Empty workspace" } },
+                (None, _) => rsx! { div { class: "text-neutral-600", "Select a session to browse files" } },
+                (_, None) => rsx! { div { class: "text-neutral-500", "Loading…" } },
+                _ => rsx! { div { class: "text-neutral-600", "Empty workspace" } },
+            }
+        }
+    }
+}
+
+/// One row in the workspace tree. Directories expand on click (lazily fetching
+/// their children); files open into the Editor tab via [`AgentComputerCtx`].
+#[component]
+fn FileNode(session_id: String, path: String, name: String, is_dir: bool, depth: usize) -> Element {
+    let ctx = use_context::<AgentComputerCtx>();
+    let mut expanded = use_signal(|| false);
+    let indent = format!("padding-left: {}px", depth * 12);
+
+    let children = {
+        let session_id = session_id.clone();
+        let path = path.clone();
+        use_resource(move || {
+            let session_id = session_id.clone();
+            let path = path.clone();
+            async move {
+                if is_dir && expanded() {
+                    api::list_workspace_dir(&session_id, &path).await.ok()
+                } else {
+                    None
+                }
+            }
+        })
+    };
+
+    let on_click = {
+        let session_id = session_id.clone();
+        let path = path.clone();
+        let mut tab = ctx.tab;
+        let mut open_file = ctx.open_file;
+        move |_| {
+            if is_dir {
+                let now = expanded();
+                expanded.set(!now);
+            } else {
+                let session_id = session_id.clone();
+                let path = path.clone();
+                spawn(async move {
+                    if let Ok(content) = api::read_workspace_file(&session_id, &path).await {
+                        open_file.set(Some(OpenFile {
+                            path: path.clone(),
+                            content,
+                        }));
+                        tab.set(Tab::Editor);
+                    }
+                });
+            }
+        }
+    };
+
+    let icon = if is_dir {
+        if expanded() {
+            "▾ 📁"
+        } else {
+            "▸ 📁"
+        }
+    } else {
+        "📄"
+    };
+
+    rsx! {
+        div {
+            button {
+                style: "{indent}",
+                class: "flex w-full items-center gap-1 rounded px-1 py-0.5 text-left hover:bg-neutral-900",
+                onclick: on_click,
+                span { "{icon}" }
+                span { class: if is_dir { "text-blue-300" } else { "" }, "{name}" }
+            }
+            if is_dir && expanded() {
+                match &*children.read_unchecked() {
+                    Some(Some(WorkspaceListing::Dir { entries })) => {
+                        let kids = entries.iter().map(|e| {
+                            let child_path = if path.is_empty() {
+                                e.name.clone()
+                            } else {
+                                format!("{path}/{}", e.name)
+                            };
+                            rsx! {
+                                FileNode {
+                                    key: "{child_path}",
+                                    session_id: session_id.clone(),
+                                    path: child_path,
+                                    name: e.name.clone(),
+                                    is_dir: e.kind == "dir",
+                                    depth: depth + 1,
+                                }
+                            }
+                        }).collect::<Vec<_>>();
+                        rsx! { div { {kids.into_iter()} } }
+                    }
+                    Some(None) => rsx! { div { style: "padding-left: {(depth + 1) * 12}px", class: "text-red-400", "load failed" } },
+                    _ => rsx! {},
+                }
             }
         }
     }
