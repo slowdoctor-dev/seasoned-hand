@@ -8,16 +8,24 @@
 ## Overview
 
 ```
-Phase 0 ─────────┐   Foundation skeleton (3w)
-Phase 1 ─────────┐   Manus 5-layer execution (4w)
-Phase 2 ─────────┐   Employee interface (3w)
-Phase 3 ─────────┐   Learning system (4w)  ← LEARNING STARTS
-Phase 4 ─────────┐   Curator + self-improvement (3w)
-Phase 5 ─────────┐   Multi-user + organization (3w)
-Phase 6 ─────────┘   Open source release (2w)
+Phase 0 ─────────┐   Foundation skeleton (3w)        ✅
+Phase 1 ─────────┐   Manus 5-layer execution (4w)     ✅
+Phase 2 ─────────┐   Employee interface (3w)          ✅
+Phase 3 ─────────┐   Learning system (4w)             ✅  ← LEARNING STARTED
+Phase 4 ─────────┐   Curator + self-improvement (3w)  ✅
+Phase 5 ─────────┐   Multi-user + organization (3w)   ✅
+Phase 6 ─────────┘   Open source release + Dioxus     ◀  CURRENT (in progress)
 
 Total: 22 weeks ≈ 5 months
 ```
+
+> **Phase 6 active (2026-06-05):** The earlier stabilization deferral (same date)
+> was **reversed** — Phase 6 is now in progress, starting with the Dioxus frontend
+> migration (ADR-016). The stabilization items are **not** dropped: they are
+> tracked as a **parallel release-readiness checklist** (see the "Release-readiness
+> checklist" section below) that must be green before the actual public release tag,
+> but they no longer block Phase 6 work from starting. `CURRENT` marker sits on
+> Phase 6.
 
 ---
 
@@ -92,7 +100,7 @@ sessions stable.
 
 ---
 
-## Phase 3 — Learning System (4 weeks) — LEARNING STARTS — CURRENT (kickoff pending; BMAD Architect persona on `/specs/phase-3/architecture.md`)
+## Phase 3 — Learning System (4 weeks) — LEARNING STARTED — ✅ Complete (2026-05-18, see CHANGELOG `[0.3.0]`)
 
 **Goal**: Same task type is faster the second time. Time-axis benefit
 visible.
@@ -114,7 +122,7 @@ fewer tool calls.
 
 ---
 
-## Phase 4 — Curator + Self-Improvement (3 weeks)
+## Phase 4 — Curator + Self-Improvement (3 weeks) — ✅ Complete (2026-05-19, 22 stories, see CHANGELOG `[0.4.0]`)
 
 **Goal**: System manages its own learning artifacts.
 
@@ -133,7 +141,7 @@ without manual curation.
 
 ---
 
-## Phase 5 — Multi-User + Organization (3 weeks)
+## Phase 5 — Multi-User + Organization (3 weeks) — ✅ Complete (2026-05-21, 33 stories, see CHANGELOG `[0.5.0]`)
 
 **Goal**: Multiple users share one Seasoned Hand instance.
 
@@ -151,7 +159,41 @@ other.
 
 ---
 
-## Phase 6 — Open Source Release (2 weeks)
+## Release-readiness checklist (parallel to Phase 6; gates the public-release tag, not Phase 6 start)
+
+**Goal**: Lock the Phase 0–5 product into a known-good, fully-reconciled state
+before the project is tagged for public release. These items run in parallel with
+Phase 6 work (Dioxus migration); they gate the **release tag**, not the start of
+Phase 6.
+
+**Checklist** (all must be ✅ before the public-release tag):
+
+- [ ] **Performance track sealed** — run the iter-3 **Codex confirm** half; a
+      bilateral round with zero new hot-path findings seals the track
+      (`specs/PERFORMANCE_REVIEW.md`). Claude half is already clean.
+- [ ] **Test gate green on a Docker host** — `cargo test --workspace` passes with
+      a Docker daemon available (the 133 sandbox/browser tests cannot run in a
+      daemon-less environment; verify they pass where they can).
+- [ ] **Doc reconciliation** — no spec drift: ROADMAP markers, README status,
+      BASELINE status, and ARCHITECTURE version all agree with git + CHANGELOG.
+      (README + ROADMAP markers reconciled 2026-06-05; keep clean.)
+- [ ] **Hardening tracks all sealed** — security + manageability already sealed;
+      confirm no new carry-ins (DEBT items) before release.
+- [ ] **Open decisions resolved or explicitly deferred** — BASELINE §8 items
+      that gate a clean release (default cloud sandbox provider, telemetry opt-in)
+      have a decision or a recorded deferral.
+
+**Note**: this checklist is gated on its boxes, not a calendar. All boxes must be
+✅ before cutting the public-release tag.
+
+---
+
+## Phase 6 — Open Source Release + Dioxus migration — ◀ CURRENT (in progress, started 2026-06-05)
+
+**Status**: Active. Started 2026-06-05 with the Dioxus frontend migration
+(ADR-016) — see that ADR's staged migration plan. `crates/seasoned-hand-ui`
+scaffolded; remaining full-fidelity port + cutover tracked in `specs/phase-6/`
+stories.
 
 **Goal**: External users can adopt without hand-holding.
 

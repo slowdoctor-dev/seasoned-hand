@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Phase 6 started — Dioxus frontend migration begun** (2026-06-05). Phase 6
+  (open-source release) is now active, opening with the Next.js → Dioxus migration
+  (ADR-016). `crates/seasoned-hand-ui` scaffolded (unified-Rust UI; web target
+  first). The earlier same-day "deferred until stabilization" decision was
+  reversed; the stabilization items are retained as a **release-readiness
+  checklist** in `/specs/06-roadmap/ROADMAP.md` that gates the public-release tag
+  (not Phase 6 start). ROADMAP phase markers (3/4/5) reconciled to ✅ Complete.
+- **Frontend: Next.js → Dioxus (unified Rust)** (ADR-016, amends the frontend
+  clause of ADR-002). Adopts a single Rust/Dioxus UI crate targeting Web (WASM) /
+  Desktop / Mobile from one codebase, sharing `seasoned-hand-core` DTOs (no
+  TS↔Rust type codegen). The `/v1` REST + WebSocket boundary and the entire
+  control plane are unchanged — frontend-layer swap only. Monaco / xterm / noVNC
+  retained on web+desktop via JS interop; mobile `AgentComputer` degrades to
+  read-only. BASELINE §4 + §7 #5 amended; ARCHITECTURE.md → v1.5. Decision
+  recorded; implementation staged across Phase 6 (gated on a step-1 interop spike).
 - **Relicensed MIT → Apache License 2.0** (ADR-015, supersedes the license clause
   of ADR-008). Adds an explicit patent grant + patent-retaliation clause for the
   public release. `LICENSE` now carries the canonical Apache 2.0 text; new top-level
