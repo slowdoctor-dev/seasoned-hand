@@ -5,6 +5,7 @@
 use dioxus::prelude::*;
 
 mod agent_computer;
+mod briefing_card;
 mod chat;
 mod project_list;
 mod task_list;
@@ -25,16 +26,17 @@ pub struct Selection {
 
 #[component]
 pub fn App() -> Element {
-    // Open the agent socket once and share it.
-    let socket = use_agent_socket();
-    use_context_provider(|| socket.clone());
-
+    // Selection must exist before the socket so the coroutine can write the
+    // session_id captured from a task_create ack.
     let selection = Selection {
         active_project: use_signal(|| None),
         active_task: use_signal(|| None),
         session_id: use_signal(|| None),
     };
     use_context_provider(|| selection);
+
+    let socket = use_agent_socket(selection.session_id);
+    use_context_provider(|| socket.clone());
 
     rsx! { ThreePanel {} }
 }

@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Dioxus UI functional progress** (Phase 6 story 6.4, partial): WS ack handling
+  captures the `task_create` session_id into the shared selection; an interactive
+  **BriefingCard** (confirm/cancel via `briefing_confirm`); a **Deliverables** tab
+  in the AgentComputer. The server now shares its session/deliverable DTOs via
+  `-dto` (story 6.3b). Real Monaco/xterm/noVNC interop shims drafted in
+  `index.html` (story 6.2 — written but not yet verified against a live session).
 - **`seasoned-hand-dto` crate** (Phase 6 story 6.3) — wasm-safe, pure-serde
   shared wire DTOs. `seasoned-hand-core` now re-exports the domain entities
   (Project, Task, Deliverable + status enums + `legal_transitions`) from it, and

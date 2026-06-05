@@ -16,6 +16,7 @@ enum Tab {
     Browser,
     Terminal,
     Editor,
+    Deliverables,
     Events,
 }
 
@@ -52,6 +53,7 @@ pub fn AgentComputer() -> Element {
                 button { class: tab_cls(Tab::Browser), onclick: move |_| tab.set(Tab::Browser), "Browser" }
                 button { class: tab_cls(Tab::Terminal), onclick: move |_| tab.set(Tab::Terminal), "Terminal" }
                 button { class: tab_cls(Tab::Editor), onclick: move |_| tab.set(Tab::Editor), "Editor" }
+                button { class: tab_cls(Tab::Deliverables), onclick: move |_| tab.set(Tab::Deliverables), "Deliverables" }
                 button { class: tab_cls(Tab::Events), onclick: move |_| tab.set(Tab::Events), "Events" }
             }
             div { class: "min-h-0 flex-1 overflow-hidden",
@@ -67,6 +69,7 @@ pub fn AgentComputer() -> Element {
                     Tab::Editor => rsx! {
                         MonacoEditor { value: "// select a file".to_string(), language: "rust".to_string() }
                     },
+                    Tab::Deliverables => rsx! { DeliverablesTab {} },
                     Tab::Events => rsx! { EventLog { events: events() } },
                 }
             }
@@ -78,6 +81,48 @@ pub fn AgentComputer() -> Element {
 fn Placeholder(label: String) -> Element {
     rsx! {
         div { class: "flex h-full items-center justify-center text-neutral-600", "{label}" }
+    }
+}
+
+#[component]
+fn DeliverablesTab() -> Element {
+    let task = selection().active_task;
+    let deliverables = use_resource(move || async move {
+        match task() {
+            Some(tid) => api::get_task_deliverables(&tid).await.ok(),
+            None => None,
+        }
+    });
+
+    rsx! {
+        div { class: "h-full overflow-y-auto p-2",
+            match &*deliverables.read_unchecked() {
+                Some(Some(resp)) if !resp.deliverables.is_empty() => {
+                    let items = resp.deliverables.iter().map(|d| {
+                        let name = d
+                            .rendered_content_path
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(&d.rendered_content_path)
+                            .to_string();
+                        let fmt = d.format.clone();
+                        let size = d.content_size;
+                        let id = d.id.clone();
+                        rsx! {
+                            li { key: "{id}", class: "flex items-center gap-2 border-b border-neutral-900 py-1",
+                                span { class: "rounded bg-neutral-800 px-1 text-xs uppercase", "{fmt}" }
+                                span { class: "truncate", "{name}" }
+                                span { class: "ml-auto text-xs text-neutral-600", "{size} B" }
+                            }
+                        }
+                    }).collect::<Vec<_>>();
+                    rsx! { ul { {items.into_iter()} } }
+                }
+                Some(Some(_)) => rsx! { div { class: "text-neutral-600", "No deliverables yet" } },
+                Some(None) => rsx! { div { class: "text-neutral-600", "Select a task to see deliverables" } },
+                None => rsx! { div { class: "text-neutral-500", "Loading…" } },
+            }
+        }
     }
 }
 

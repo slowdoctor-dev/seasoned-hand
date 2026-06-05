@@ -19,3 +19,10 @@ Light up the multi-platform reach that motivated ADR-016, from the same codebase
 
 `dioxus-mobile` is the least mature target — staged last, behind the desktop +
 web wins. If a target slips, it does not block the cutover (6.6) for web/desktop.
+
+**Transport abstraction is a prerequisite.** The UI currently uses `gloo-net`
+(wasm `fetch`/WebSocket) and `web-sys` (`window().location`) directly in
+`api.rs` / `ws.rs` / `config.rs` — these are **web-only**. Desktop/mobile need a
+native transport (e.g. `reqwest` + `tokio-tungstenite`) behind a cargo-feature
+seam before they can compile, plus the system webview libs (webkit2gtk) on the
+build host. So this is real refactoring work, not a feature-flag flip.

@@ -3,9 +3,11 @@
 //! to server pings, and reconnect with exponential backoff + subscription
 //! replay.
 //!
-//! Simplification vs the TS original (tracked as a Phase 6 follow-up): commands
-//! are fire-and-forget — the `ack`-await round-trip (resolving a per-command
-//! promise by `ref`) is not yet reimplemented; acks are currently ignored.
+//! Acks are correlated by `ref` to capture the `session_id` the server assigns
+//! to a `task_create`, which is written into the shared `session_id` signal so
+//! the rest of the UI subscribes to the new run. A general per-command
+//! ack-await Future API (resolving an arbitrary command by `ref`) remains a
+//! follow-up; only the task_create→session capture is wired here.
 
 use crate::config::ws_url;
 use dioxus::prelude::*;
@@ -15,7 +17,7 @@ use futures::{select, FutureExt, SinkExt, StreamExt};
 use gloo_net::websocket::{futures::WebSocket, Message};
 use gloo_timers::future::TimeoutFuture;
 use seasoned_hand_dto::{ClientCommand, CommandPayload, ServerEnvelope, ServerEvent};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const EVENTS_CAP: usize = 1000;
 const BACKOFF_BASE_MS: u32 = 1000;
@@ -47,21 +49,26 @@ impl AgentSocket {
 }
 
 /// Open (and keep open) the agent socket. Call once near the app root and share
-/// the returned handle via context.
-pub fn use_agent_socket() -> AgentSocket {
+/// the returned handle via context. `session_id` is the shared selection signal
+/// the coroutine writes when a `task_create` ack assigns a new session.
+pub fn use_agent_socket(session_id: Signal<Option<String>>) -> AgentSocket {
     let status = use_signal(|| WsStatus::Connecting);
     let events = use_signal(Vec::<ServerEvent>::new);
 
     let tx = use_coroutine(
         move |mut rx: UnboundedReceiver<CommandPayload>| async move {
             // Rebind status as mutable so the Copy signal handle accepts set();
-            // `events` is mutated inside handle_text (passed by value) so stays
-            // immutable here.
+            // `events` / `session_id` are mutated inside handle_text (passed by
+            // value) so stay immutable here.
             let mut status = status;
             let events = events;
+            let session_id = session_id;
 
             let url = ws_url();
             let mut subscribed: HashMap<String, i64> = HashMap::new();
+            // Command ids of in-flight task_create commands, so their ack can be
+            // recognised and its assigned session_id captured.
+            let mut pending_task_creates: HashSet<String> = HashSet::new();
             let mut next_id: u64 = 0;
             let mut backoff = BACKOFF_BASE_MS;
 
@@ -85,7 +92,7 @@ pub fn use_agent_socket() -> AgentSocket {
                     next_id += 1;
                     send_cmd(
                         &mut write,
-                        next_id,
+                        &format!("c{next_id}"),
                         CommandPayload::Subscribe {
                             session_id: sid,
                             from_event_id: Some(from),
@@ -99,11 +106,15 @@ pub fn use_agent_socket() -> AgentSocket {
                     select! {
                         outbound = rx.next().fuse() => match outbound {
                             Some(payload) => {
-                                if let CommandPayload::Subscribe { session_id, from_event_id } = &payload {
-                                    subscribed.insert(session_id.clone(), from_event_id.unwrap_or(0));
+                                if let CommandPayload::Subscribe { session_id: sid, from_event_id } = &payload {
+                                    subscribed.insert(sid.clone(), from_event_id.unwrap_or(0));
                                 }
                                 next_id += 1;
-                                if !send_cmd(&mut write, next_id, payload).await {
+                                let cmd_id = format!("c{next_id}");
+                                if matches!(payload, CommandPayload::TaskCreate { .. }) {
+                                    pending_task_creates.insert(cmd_id.clone());
+                                }
+                                if !send_cmd(&mut write, &cmd_id, payload).await {
                                     break;
                                 }
                             }
@@ -111,7 +122,15 @@ pub fn use_agent_socket() -> AgentSocket {
                         },
                         inbound = read.next().fuse() => match inbound {
                             Some(Ok(Message::Text(text))) => {
-                                handle_text(&text, &mut write, events, &mut subscribed).await;
+                                handle_text(
+                                    &text,
+                                    &mut write,
+                                    events,
+                                    session_id,
+                                    &mut subscribed,
+                                    &mut pending_task_creates,
+                                )
+                                .await;
                             }
                             Some(Ok(Message::Bytes(_))) => {}
                             _ => break, // close/error → reconnect
@@ -133,8 +152,8 @@ type Sink = SplitSink<WebSocket, Message>;
 
 /// Serialize a command into the envelope and write it. Returns false on write
 /// failure (caller should reconnect).
-async fn send_cmd(write: &mut Sink, id: u64, payload: CommandPayload) -> bool {
-    let cmd = ClientCommand::new(format!("c{id}"), 0, payload);
+async fn send_cmd(write: &mut Sink, id: &str, payload: CommandPayload) -> bool {
+    let cmd = ClientCommand::new(id.to_string(), 0, payload);
     match serde_json::to_string(&cmd) {
         Ok(text) => write.send(Message::Text(text)).await.is_ok(),
         Err(_) => true, // skip a malformed command, keep the socket
@@ -145,7 +164,9 @@ async fn handle_text(
     text: &str,
     write: &mut Sink,
     mut events: Signal<Vec<ServerEvent>>,
+    mut session_id: Signal<Option<String>>,
     subscribed: &mut HashMap<String, i64>,
+    pending_task_creates: &mut HashSet<String>,
 ) {
     let env = match serde_json::from_str::<ServerEnvelope>(text) {
         Ok(env) => env,
@@ -154,20 +175,20 @@ async fn handle_text(
     match env {
         ServerEnvelope::Event {
             id,
-            session_id,
+            session_id: ev_session,
             ts,
             payload,
         } => {
             if let Ok(n) = id.parse::<i64>() {
-                let cur = subscribed.get(&session_id).copied().unwrap_or(0);
+                let cur = subscribed.get(&ev_session).copied().unwrap_or(0);
                 if n > cur {
-                    subscribed.insert(session_id.clone(), n);
+                    subscribed.insert(ev_session.clone(), n);
                 }
             }
             let mut buf = events.write();
             buf.push(ServerEvent {
                 id,
-                session_id,
+                session_id: ev_session,
                 ts,
                 payload,
             });
@@ -176,12 +197,26 @@ async fn handle_text(
                 buf.drain(0..overflow);
             }
         }
+        ServerEnvelope::Ack {
+            reference,
+            ok,
+            session_id: ack_session,
+            ..
+        } => {
+            // A successful task_create ack carries the freshly-assigned
+            // session_id; capture it so the rest of the UI subscribes.
+            if ok && pending_task_creates.remove(&reference) {
+                if let Some(sid) = ack_session {
+                    session_id.set(Some(sid));
+                }
+            }
+        }
         ServerEnvelope::Ping { .. } => {
             let _ = write
                 .send(Message::Text(r#"{"type":"pong","ts":0}"#.to_string()))
                 .await;
         }
-        // ack / pong / error: no-op for now (see module note on ack handling).
+        // pong / error: no-op (server errors are not yet surfaced in the UI).
         _ => {}
     }
 }

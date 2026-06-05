@@ -1,13 +1,44 @@
 //! Chat / delegation panel (replaces `chat.tsx`). Renders the live event stream
 //! for the active session and sends task_create / user_response commands.
 //!
-//! Foundation scope: renders events + sends commands. The briefing-card flow
-//! (`briefing-card.tsx`) and ack-driven session capture are Phase 6 follow-ups
-//! (see ws.rs note on ack handling).
+//! Renders events + sends commands, swaps briefing events for an interactive
+//! [`BriefingCard`], and relies on the ws.rs ack handler to capture the
+//! task_create session_id. Remaining follow-ups: the briefing JSON-edit flow
+//! and surfacing server `error` envelopes.
 
+use super::briefing_card::BriefingCard;
 use super::{selection, socket};
 use dioxus::prelude::*;
 use seasoned_hand_dto::{CommandPayload, ServerEvent};
+use std::collections::HashSet;
+
+/// Peek at a ServerEvent and, if it is a `Misc{kind_tag:"briefing"}`, return the
+/// `(call_id, task_id, brief)` so the chat scroller renders a [`BriefingCard`].
+/// Wire shape: `{kind:"Misc", kind_tag:"briefing", data:{briefing_call_id,
+/// task_id, brief}}`.
+fn extract_briefing(ev: &ServerEvent) -> Option<(String, Option<String>, serde_json::Value)> {
+    let p = &ev.payload;
+    if p.get("kind").and_then(|v| v.as_str()) != Some("Misc") {
+        return None;
+    }
+    if p.get("kind_tag").and_then(|v| v.as_str()) != Some("briefing") {
+        return None;
+    }
+    let data = p.get("data")?;
+    let call_id = data
+        .get("briefing_call_id")
+        .and_then(|v| v.as_str())?
+        .to_string();
+    let task_id = data
+        .get("task_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let brief = data
+        .get("brief")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    Some((call_id, task_id, brief))
+}
 
 #[component]
 pub fn Chat() -> Element {
@@ -16,6 +47,8 @@ pub fn Chat() -> Element {
     let session = sel.session_id;
     let events = sock.events;
     let mut input = use_signal(String::new);
+    // Briefing call_ids the user has locally confirmed/cancelled this session.
+    let mut resolved = use_signal(HashSet::<String>::new);
 
     // Subscribe to the session's event stream whenever the active session
     // changes (replay from the beginning).
@@ -69,7 +102,20 @@ pub fn Chat() -> Element {
                     } else {
                         rsx! {
                             for e in filtered {
-                                ChatEvent { key: "{e.id}", ev: e.clone() }
+                                if let Some((call_id, task_id, brief)) = extract_briefing(&e) {
+                                    BriefingCard {
+                                        key: "{e.id}",
+                                        brief,
+                                        call_id: call_id.clone(),
+                                        task_id,
+                                        resolved: resolved().contains(&call_id),
+                                        on_resolve: move |cid: String| {
+                                            resolved.write().insert(cid);
+                                        },
+                                    }
+                                } else {
+                                    ChatEvent { key: "{e.id}", ev: e.clone() }
+                                }
                             }
                         }
                     }
