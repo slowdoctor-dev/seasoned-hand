@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Seasoned Hand</title>
+    <!-- Tailwind via CDN for the migration period; the cutover story swaps this
+         for the compiled Tailwind v4 pipeline (parity with the Next.js app). -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!--
+      JS-interop shims (ADR-016). The Rust interop wrappers call these
+      window.__mount* functions. They are no-op stubs here so the UI renders
+      before the vendor bundles are wired; the Phase 6 interop story replaces
+      them with real monaco-editor / xterm.js / noVNC initialization (loaded
+      from a vendored bundle or CDN), proving the riskiest migration assumption.
+    -->
+    <script>
+      window.__mountMonaco = window.__mountMonaco || function (id, value, language) {
+        var el = document.getElementById(id);
+        if (el) { el.textContent = value; }
+      };
+      window.__mountXterm = window.__mountXterm || function (id, wsUrl) {};
+      window.__mountNoVnc = window.__mountNoVnc || function (id, url) {};
+    </script>
+  </head>
+  <body class="bg-neutral-950">
+    <div id="main"></div>
+  </body>
+</html>

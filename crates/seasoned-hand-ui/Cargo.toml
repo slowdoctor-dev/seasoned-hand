@@ -1,0 +1,43 @@
+# Seasoned Hand — unified-Rust frontend (ADR-016).
+#
+# Replaces the Next.js + React + TS app. Targets Web (WASM) first; desktop and
+# mobile are added later via Dioxus's `desktop` / `mobile` features behind cargo
+# features (see ADR-016 migration plan steps 4). This crate is EXCLUDED from the
+# root workspace (it builds for wasm32 only) — see the root Cargo.toml note.
+[package]
+name = "seasoned-hand-ui"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["Seasoned Hand contributors"]
+repository = "https://github.com/slowdoctor-dev/seasoned-hand"
+description = "Seasoned Hand unified-Rust (Dioxus) frontend — web/desktop/mobile"
+
+[dependencies]
+dioxus = { version = "0.6", features = ["web"] }
+
+# REST + WebSocket against the unchanged Axum /v1 + /ws boundary.
+gloo-net = { version = "0.6", features = ["http", "websocket", "json"] }
+
+# Shared data shapes. Mirrors crates/seasoned-hand-core DTOs for now; a
+# wasm-safe `seasoned-hand-dto` workspace crate will replace this mirror
+# (Phase 6 follow-up) so types are shared, not duplicated (ADR-016).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async glue for wasm.
+futures = "0.3"
+futures-util = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Window", "Location"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+
+# Browser console logging.
+log = "0.4"
+console_log = "1"
+console_error_panic_hook = "0.1"
+
+[profile.release]
+opt-level = "s"
+lto = true

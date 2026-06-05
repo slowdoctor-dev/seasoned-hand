@@ -28,9 +28,22 @@ logs:
 dev-backend:
     cargo watch -x "run --bin seasoned-hand"
 
-# Run frontend (Next.js) in dev mode
+# Run frontend (Next.js) in dev mode (legacy — being replaced by the Dioxus UI)
 dev-frontend:
     cd frontend && pnpm dev
+
+# Run the Dioxus UI (ADR-016) in dev mode. Requires the Dioxus CLI:
+#   cargo install dioxus-cli   (provides `dx`)
+dev-ui:
+    cd crates/seasoned-hand-ui && dx serve --platform web
+
+# Build the Dioxus UI to a static web bundle (output under target/dx/).
+build-ui:
+    cd crates/seasoned-hand-ui && dx build --platform web --release
+
+# Compile-check the Dioxus UI for wasm (no dx CLI needed — used as a gate).
+check-ui:
+    cd crates/seasoned-hand-ui && cargo check --target wasm32-unknown-unknown
 
 # === Verification gates ===
 

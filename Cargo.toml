@@ -5,6 +5,16 @@ members = [
     "crates/seasoned-hand-server",
     "crates/seasoned-hand-cli",
 ]
+# The Dioxus frontend (ADR-016) targets wasm32 only and pulls wasm-bindgen /
+# web-sys, which do not compile for the native host target. Excluding it keeps
+# the backend gates (`cargo clippy --all-targets`, `cargo test --workspace`)
+# native-only and green. Build the UI with `cargo build -p seasoned-hand-ui
+# --target wasm32-unknown-unknown` (or `dx build`) from crates/seasoned-hand-ui.
+# Follow-up (Phase 6 story): extract a wasm-safe `seasoned-hand-dto` workspace
+# member so the UI shares DTOs with core instead of mirroring them.
+exclude = [
+    "crates/seasoned-hand-ui",
+]
 
 [workspace.package]
 edition = "2024"
