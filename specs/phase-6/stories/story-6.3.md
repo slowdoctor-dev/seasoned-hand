@@ -33,11 +33,19 @@ is now the `-dto` `SessionState` enum; the DB `state` String is mapped via
 confirmed to match the UPPERCASE variants). Gates green (workspace check, clippy
 `-D warnings`, fmt, wasm UI check).
 
-### Remaining — story 6.3c (WS protocol types)
+### Story 6.3c (WS protocol types)
 
-> **Status**: ready
+> **Status**: done (ServerEnvelope) — inbound CommandPayload intentionally not unified
 
-The server's `ws.rs` still defines its own `CommandPayload` / `ServerEnvelope` /
-`ClientEnvelope` (with handler dispatch + `BriefingActionTag`), wire-compatible
-with `-dto`'s copies. Unifying these is more involved (the server enums carry
-dispatch logic) and is split out as 6.3c.
+The server now serializes the shared `seasoned_hand_dto::ServerEnvelope` (its
+private copy removed); `-dto`'s `Ack`/`Error` optional fields gained
+`skip_serializing_if` so the emitted JSON is byte-identical. The server→client
+half of the protocol is now shared end-to-end.
+
+The **inbound** `ClientEnvelope` / `CommandPayload` (+ `BriefingActionTag`) stay
+server-local **by design**: they diverge from the UI's send-only mirror —
+`TaskPause` carries a `durable` flag, `BriefingConfirm` uses a typed
+`BriefingActionTag` + `PartialBrief edits` (a core type) for deserialize-time
+dispatch. The UI's simpler send shape remains wire-compatible (server fields are
+`#[serde(default)]`). Unifying the inbound side would pull core types into `-dto`
+for no functional gain, so it is deliberately left split.

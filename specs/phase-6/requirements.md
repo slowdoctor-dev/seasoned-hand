@@ -46,7 +46,7 @@ Phase 6 work.
 | 6.2 | Interop spike — real Monaco/xterm/noVNC bundles (ADR-016 step-1 gate) | in-progress (drafted; verify needs Docker) |
 | 6.3 | Extract wasm-safe `seasoned-hand-dto` shared crate (core + UI) | done |
 | 6.3b | Server-side adoption of `-dto` (session/deliverable types) | done |
-| 6.3c | Server-side adoption of `-dto` (WS protocol types) | ready |
+| 6.3c | Server-side adoption of `-dto` (ServerEnvelope; inbound stays local) | done |
 | 6.4 | Full-fidelity port + ack handling (acks/briefing/deliverables done) | in-progress |
 | 6.5 | Desktop + mobile targets | ready |
 | 6.6 | Cutover — remove Next.js, compiled Tailwind, docker/justfile/docs | ready |

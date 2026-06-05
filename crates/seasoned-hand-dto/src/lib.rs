@@ -277,9 +277,11 @@ pub enum ServerEnvelope {
         #[serde(rename = "ref")]
         reference: String,
         ok: bool,
-        #[serde(default)]
+        // `default` for deserialize tolerance; `skip_serializing_if` so the
+        // serialized form matches the server's (omit when None) — story 6.3c.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
     },
     Ping {
@@ -289,7 +291,7 @@ pub enum ServerEnvelope {
         ts: Timestamp,
     },
     Error {
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
         kind: String,
         message: String,
