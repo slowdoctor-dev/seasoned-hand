@@ -21,6 +21,17 @@ AI 코딩 에이전트 (1개 이상 — 본인 선호에 따라):
 - Ollama (`brew install ollama`) — 로컬 LLM
 - LM Studio — 로컬 LLM GUI
 
+> **Docker 없이 개발하기 (frontend / API 작업)**
+> Docker는 *작업(task) 실행*(샌드박스 컨테이너 생성)과 샌드박스 통합 테스트에만
+> 필수입니다. 컨트롤 플레인은 Docker/Redis 없이도 부팅됩니다(`SandboxClient`는
+> Docker에 지연 연결, Redis는 graceful degrade). frontend/UI 또는 `/v1` REST
+> 작업만 한다면:
+> ```bash
+> just dev-server-nodocker   # SQLite 기반 /v1 API on :3000 (Docker 불필요)
+> just dev-ui                # Dioxus UI (dx 필요: cargo install dioxus-cli)
+> ```
+> 단, 실제 작업 실행은 여전히 Docker가 필요합니다.
+
 API 키 1개 이상:
 - Anthropic ($) — 강력 추천
 - OpenAI ($)
