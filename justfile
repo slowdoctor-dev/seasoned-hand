@@ -28,6 +28,17 @@ logs:
 dev-backend:
     cargo watch -x "run --bin seasoned-hand"
 
+# Run the control plane WITHOUT Docker — SQLite-backed /v1 API on :3000 for dev
+# and UI work (pair with `just dev-ui`). The SandboxClient connects to Docker
+# lazily, and Redis degrades gracefully, so neither needs to be running. NOTE:
+# executing a task (sandbox spawn) still requires Docker; this is for API/UI dev.
+dev-server-nodocker:
+    mkdir -p data/workspaces
+    DATABASE_URL="sqlite:./data/seasoned-hand.db" \
+    SANDBOX_WORKSPACE_HOST="./data/workspaces" \
+    PORT="3000" \
+    cargo run -p seasoned-hand-server
+
 # Run frontend (Next.js) in dev mode (legacy — being replaced by the Dioxus UI)
 dev-frontend:
     cd frontend && pnpm dev
