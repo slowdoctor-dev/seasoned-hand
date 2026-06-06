@@ -33,7 +33,7 @@ What else did we look at?
 | ID | Title | Status | Date |
 |---|---|---|---|
 | [ADR-001](ADR-001-bifrost-llm-gateway.md) | Bifrost as LLM Gateway | Accepted | 2026 |
-| [ADR-002](ADR-002-rust-typescript-hybrid.md) | Rust backend + TypeScript frontend (hybrid) | Accepted | 2026 |
+| [ADR-002](ADR-002-rust-typescript-hybrid.md) | Rust backend + TypeScript frontend (hybrid) | Accepted (frontend clause amended by ADR-016) | 2026 |
 | [ADR-003](ADR-003-12-slot-model-routing.md) | 12-slot model routing pattern | Accepted | 2026 |
 | [ADR-004](ADR-004-aio-sandbox-per-session.md) | AIO Sandbox (Docker) per session | Accepted | 2026 |
 | [ADR-005](ADR-005-sqlite-redis-persistence.md) | SQLite WAL + Redis for persistence | Accepted | 2026 |
@@ -47,6 +47,7 @@ What else did we look at?
 | [ADR-013](ADR-013-phase4-v011-curator-schema-reconciliation.md) | Phase 4 V011 curator-schema reconciliation | Accepted | 2026 |
 | [ADR-014](ADR-014-phase5-v013-tenant-rbac.md) | Phase 5 V013 tenant + RBAC + audit reconciliation | Accepted | 2026 |
 | [ADR-015](ADR-015-relicense-apache-2.0.md) | Relicense MIT → Apache License 2.0 | Accepted | 2026-05-21 |
+| [ADR-016](ADR-016-dioxus-unified-rust-frontend.md) | Replace Next.js frontend with Dioxus (unified-Rust, multi-platform) | Accepted | 2026-06-05 |
 
 ## Adding a new ADR
 

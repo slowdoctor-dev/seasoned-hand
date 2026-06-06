@@ -2156,6 +2156,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rusqlite",
+ "seasoned-hand-dto",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2177,6 +2178,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "seasoned-hand-dto"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "seasoned-hand-server"
 version = "0.1.0"
 dependencies = [
@@ -2189,6 +2198,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "seasoned-hand-core",
+ "seasoned-hand-dto",
  "serde",
  "serde_json",
  "subtle",

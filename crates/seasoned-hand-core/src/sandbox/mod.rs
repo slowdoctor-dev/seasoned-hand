@@ -13,7 +13,7 @@ use bollard::container::{
 };
 use bollard::secret::{HostConfig, PortBinding};
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{OnceCell, RwLock};
 
 use crate::db::DbPool;
 
@@ -65,25 +65,37 @@ pub struct SandboxHandle {
 
 #[derive(Clone)]
 pub struct SandboxClient {
-    docker: Docker,
+    docker_cell: Arc<OnceCell<Docker>>,
     image: String,
     workspace_root: PathBuf,
     handles: Arc<RwLock<HashMap<String, SandboxHandle>>>,
 }
 
 impl SandboxClient {
-    /// Construct a client connected to the local Docker daemon.
+    /// Construct a sandbox client. **Lazy**: this does NOT touch the Docker
+    /// socket, so the control plane can boot without Docker (REST-only / dev /
+    /// UI work). The daemon is connected on first actual use via [`Self::docker`]
+    /// — operations that need a container surface a clear error if it is absent.
     pub fn new(
         image: impl Into<String>,
         workspace_root: impl Into<PathBuf>,
     ) -> Result<Self, SandboxError> {
-        let docker = Docker::connect_with_local_defaults()?;
         Ok(Self {
-            docker,
+            docker_cell: Arc::new(OnceCell::new()),
             image: image.into(),
             workspace_root: workspace_root.into(),
             handles: Arc::new(RwLock::new(HashMap::new())),
         })
+    }
+
+    /// Lazily connect to the local Docker daemon, caching the handle across
+    /// calls (and across clones, via the shared `Arc<OnceCell>`). The first
+    /// caller that needs Docker pays the connection.
+    async fn docker(&self) -> Result<&Docker, SandboxError> {
+        self.docker_cell
+            .get_or_try_init(|| async { Docker::connect_with_local_defaults() })
+            .await
+            .map_err(SandboxError::from)
     }
 
     pub fn image(&self) -> &str {
@@ -264,7 +276,8 @@ impl SandboxClient {
             ..Default::default()
         };
 
-        self.docker
+        self.docker()
+            .await?
             .create_container(
                 Some(CreateContainerOptions {
                     name: name.clone(),
@@ -273,11 +286,12 @@ impl SandboxClient {
                 config,
             )
             .await?;
-        self.docker
+        self.docker()
+            .await?
             .start_container::<String>(&name, None::<StartContainerOptions<String>>)
             .await?;
 
-        let inspect = self.docker.inspect_container(&name, None).await?;
+        let inspect = self.docker().await?.inspect_container(&name, None).await?;
         let container_id = inspect.id.clone().unwrap_or_default();
 
         let host_ports = extract_host_ports(&inspect)?;
@@ -305,32 +319,34 @@ impl SandboxClient {
         // to come up, then run the bootstrap sequence. On failure, tear the
         // container down so no half-bootstrapped sandbox leaks.
         if let Err(err) = wait_for_api_ready(&handle.api_url).await {
-            let _ = self
-                .docker
-                .remove_container(
-                    &name,
-                    Some(RemoveContainerOptions {
-                        force: true,
-                        v: false,
-                        link: false,
-                    }),
-                )
-                .await;
+            if let Ok(docker) = self.docker().await {
+                let _ = docker
+                    .remove_container(
+                        &name,
+                        Some(RemoveContainerOptions {
+                            force: true,
+                            v: false,
+                            link: false,
+                        }),
+                    )
+                    .await;
+            }
             return Err(err);
         }
         let bootstrap_client = reqwest::Client::new();
         if let Err(err) = bootstrap::run_bootstrap(&bootstrap_client, &handle.api_url).await {
-            let _ = self
-                .docker
-                .remove_container(
-                    &name,
-                    Some(RemoveContainerOptions {
-                        force: true,
-                        v: false,
-                        link: false,
-                    }),
-                )
-                .await;
+            if let Ok(docker) = self.docker().await {
+                let _ = docker
+                    .remove_container(
+                        &name,
+                        Some(RemoveContainerOptions {
+                            force: true,
+                            v: false,
+                            link: false,
+                        }),
+                    )
+                    .await;
+            }
             return Err(err);
         }
         // Story 2.6: install the renderer toolchain (Pandoc + python-pptx
@@ -342,17 +358,18 @@ impl SandboxClient {
         if let Err(err) =
             bootstrap::install_renderer_toolchain(&bootstrap_client, &handle.api_url).await
         {
-            let _ = self
-                .docker
-                .remove_container(
-                    &name,
-                    Some(RemoveContainerOptions {
-                        force: true,
-                        v: false,
-                        link: false,
-                    }),
-                )
-                .await;
+            if let Ok(docker) = self.docker().await {
+                let _ = docker
+                    .remove_container(
+                        &name,
+                        Some(RemoveContainerOptions {
+                            force: true,
+                            v: false,
+                            link: false,
+                        }),
+                    )
+                    .await;
+            }
             return Err(err);
         }
 
@@ -391,7 +408,10 @@ impl SandboxClient {
     pub async fn is_paused(&self, session_id: &str) -> Result<bool, SandboxError> {
         require_safe_session_id(session_id)?;
         let name = container_name(session_id);
-        match self.docker.inspect_container(&name, None).await {
+        let Ok(docker) = self.docker().await else {
+            return Ok(false); // no daemon ⇒ no container ⇒ not paused
+        };
+        match docker.inspect_container(&name, None).await {
             Ok(inspect) => Ok(inspect
                 .state
                 .as_ref()
@@ -404,26 +424,28 @@ impl SandboxClient {
     pub async fn pause(&self, session_id: &str) -> Result<(), SandboxError> {
         require_safe_session_id(session_id)?;
         let name = container_name(session_id);
-        let inspect = self.docker.inspect_container(&name, None).await?;
+        let docker = self.docker().await?;
+        let inspect = docker.inspect_container(&name, None).await?;
         if let Some(state) = &inspect.state
             && state.paused == Some(true)
         {
             return Err(SandboxError::AlreadyPaused(session_id.into()));
         }
-        self.docker.pause_container(&name).await?;
+        docker.pause_container(&name).await?;
         Ok(())
     }
 
     pub async fn resume(&self, session_id: &str) -> Result<(), SandboxError> {
         require_safe_session_id(session_id)?;
         let name = container_name(session_id);
-        let inspect = self.docker.inspect_container(&name, None).await?;
+        let docker = self.docker().await?;
+        let inspect = docker.inspect_container(&name, None).await?;
         if let Some(state) = &inspect.state
             && state.paused != Some(true)
         {
             return Err(SandboxError::NotPaused(session_id.into()));
         }
-        self.docker.unpause_container(&name).await?;
+        docker.unpause_container(&name).await?;
         Ok(())
     }
 
@@ -445,7 +467,8 @@ impl SandboxClient {
         let mut filters: HashMap<&str, Vec<&str>> = HashMap::new();
         filters.insert("name", vec![cache::SANDBOX_CONTAINER_PREFIX]);
         let containers = self
-            .docker
+            .docker()
+            .await?
             .list_containers(Some(ListContainersOptions {
                 all: true,
                 filters,
@@ -521,7 +544,7 @@ impl SandboxClient {
     async fn register_existing(&self, session_id: &str) -> Result<(), SandboxError> {
         require_safe_session_id(session_id)?;
         let name = container_name(session_id);
-        let inspect = self.docker.inspect_container(&name, None).await?;
+        let inspect = self.docker().await?.inspect_container(&name, None).await?;
         let container_id = inspect.id.clone().unwrap_or_default();
         let host_ports = extract_host_ports(&inspect)?;
         let api_host = host_ports
@@ -557,7 +580,8 @@ impl SandboxClient {
         require_safe_session_id(session_id)?;
         let name = container_name(session_id);
         let res = self
-            .docker
+            .docker()
+            .await?
             .remove_container(
                 &name,
                 Some(RemoveContainerOptions {

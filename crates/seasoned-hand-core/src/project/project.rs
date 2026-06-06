@@ -4,46 +4,22 @@
 //! refs: /specs/phase-2/stories/story-2.2.md
 
 use rusqlite::params;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::db::DbPool;
 use crate::time::now_micros;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ProjectStatus {
-    Active,
-    Archived,
-}
+// Canonical home for the wire shape is `seasoned-hand-dto` (ADR-016 / story 6.3)
+// so the backend and the wasm UI share one definition. The DB-string mapping
+// (`as_db_str` / `from_db_str`) lives there too; `from_db_str` returns a
+// dto-level error that `From` lifts into `ProjectError` below.
+pub use seasoned_hand_dto::{Project, ProjectStatus};
 
-impl ProjectStatus {
-    pub fn as_db_str(&self) -> &'static str {
-        match self {
-            ProjectStatus::Active => "active",
-            ProjectStatus::Archived => "archived",
-        }
+impl From<seasoned_hand_dto::EnumParseError> for ProjectError {
+    fn from(e: seasoned_hand_dto::EnumParseError) -> Self {
+        ProjectError::UnknownStatus(e.value)
     }
-
-    pub fn from_db_str(s: &str) -> Result<Self, ProjectError> {
-        match s {
-            "active" => Ok(ProjectStatus::Active),
-            "archived" => Ok(ProjectStatus::Archived),
-            other => Err(ProjectError::UnknownStatus(other.to_string())),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Project {
-    pub id: String,
-    pub tenant_id: Option<String>,
-    pub title: String,
-    pub description: Option<String>,
-    pub status: ProjectStatus,
-    pub created_at: i64,
-    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone)]

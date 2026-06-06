@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 seasoned-hand-core = { path = "../seasoned-hand-core" }
+seasoned-hand-dto = { path = "../seasoned-hand-dto" }
 axum = { workspace = true, features = ["ws"] }
 tokio = { workspace = true }
 tokio-util = "0.7"

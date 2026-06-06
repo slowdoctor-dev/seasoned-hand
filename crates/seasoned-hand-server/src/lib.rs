@@ -1111,30 +1111,9 @@ async fn list_raw_events_admin(
     }
 }
 
-#[derive(Debug, Serialize)]
-struct SessionSummary {
-    id: String,
-    created_at: i64,
-    updated_at: i64,
-    state: String,
-    title: Option<String>,
-    cost_cents: i64,
-    tool_calls: i64,
-}
-
-#[derive(Debug, Serialize)]
-struct SandboxInfo {
-    api_url: String,
-    novnc_url: String,
-    ttyd_url: String,
-}
-
-#[derive(Debug, Serialize)]
-struct SessionDetail {
-    #[serde(flatten)]
-    summary: SessionSummary,
-    sandbox: Option<SandboxInfo>,
-}
+// Session response shapes are shared with the wasm UI via seasoned-hand-dto
+// (story 6.3b). `SandboxInfo` is the dto `Sandbox`.
+use seasoned_hand_dto::{Sandbox as SandboxInfo, SessionDetail, SessionState, SessionSummary};
 
 #[derive(Debug, Deserialize, Default)]
 pub struct SessionsListParams {
@@ -1163,11 +1142,18 @@ async fn list_sessions(
                  ORDER BY updated_at DESC LIMIT ?",
             )?;
             let rows = stmt.query_map(rusqlite::params![tenant_id, limit], |row| {
+                let state_str: String = row.get(3)?;
                 Ok(SessionSummary {
                     id: row.get(0)?,
                     created_at: row.get(1)?,
                     updated_at: row.get(2)?,
-                    state: row.get(3)?,
+                    state: SessionState::from_db_str(&state_str).map_err(|_| {
+                        rusqlite::Error::InvalidColumnType(
+                            3,
+                            "state".into(),
+                            rusqlite::types::Type::Text,
+                        )
+                    })?,
                     title: row.get(4)?,
                     cost_cents: row.get(5)?,
                     tool_calls: row.get(6)?,
@@ -1201,11 +1187,18 @@ async fn get_session(
                  FROM sessions WHERE id = ?",
             )?;
             let mut rows = stmt.query_map([id_for_query], |row| {
+                let state_str: String = row.get(3)?;
                 Ok(SessionSummary {
                     id: row.get(0)?,
                     created_at: row.get(1)?,
                     updated_at: row.get(2)?,
-                    state: row.get(3)?,
+                    state: SessionState::from_db_str(&state_str).map_err(|_| {
+                        rusqlite::Error::InvalidColumnType(
+                            3,
+                            "state".into(),
+                            rusqlite::types::Type::Text,
+                        )
+                    })?,
                     title: row.get(4)?,
                     cost_cents: row.get(5)?,
                     tool_calls: row.get(6)?,
@@ -2418,11 +2411,9 @@ async fn get_task_handler(
 /// the latest session_id alongside. The frontend AgentComputer
 /// `DeliverablesTab` joins these to build a download URL via the
 /// existing `GET /v1/workspace/:session_id/*sub_path` proxy.
-#[derive(Debug, serde::Serialize)]
-struct TaskDeliverablesResponse {
-    deliverables: Vec<seasoned_hand_core::deliverable::Deliverable>,
-    latest_session_id: Option<String>,
-}
+// Shared with the wasm UI via seasoned-hand-dto (story 6.3b); wraps the
+// re-exported Deliverable (itself a dto type) + the latest session id.
+use seasoned_hand_dto::TaskDeliverablesResponse;
 
 async fn list_task_deliverables_handler(
     State(state): State<AppState>,

@@ -21,10 +21,16 @@ It's a hand that gets seasoned by the work you give it.
 
 ## Status
 
-**Phase 2 complete → Phase 3 starting.** Foundation (Phase 0), Manus 5-layer
-deep execution (Phase 1), and the employee interface (Phase 2 — briefing
-gate, deliverables, provenance, channel framework, durable pause/resume)
-have shipped. The learning system lands in Phase 3.
+**Phase 5 complete → Phase 6 in progress.** Foundation (Phase 0), Manus 5-layer
+deep execution (Phase 1), the employee interface (Phase 2 — briefing gate,
+deliverables, provenance, channel framework, durable pause/resume), the 4-layer
+learning system (Phase 3), the curator + self-improvement loop (Phase 4), and
+multi-user + organization (Phase 5 — RBAC, tenant isolation, audit log, per-user
+cost ledger, SOP/playbook sharing) have shipped. **Phase 6 (open-source release)
+is underway, starting with the Dioxus frontend migration** (unified-Rust UI for
+web/desktop/mobile, per ADR-016). A release-readiness checklist (perf seal,
+Docker-host tests, doc reconciliation) runs in parallel and gates the public
+release tag — see [`/specs/06-roadmap/ROADMAP.md`](specs/06-roadmap/ROADMAP.md).
 
 See [`CHANGELOG.md`](CHANGELOG.md) for what each phase shipped,
 [`BASELINE.md`](BASELINE.md) §6 for the 6-phase roadmap, and
@@ -78,7 +84,8 @@ Full setup walkthrough: [`docs/getting-started.md`](docs/getting-started.md).
     stories/
 /docs/                 ← human docs (methodology, brand, manifesto, kickoff)
 /prompts/              ← BMAD/GSD session prompts
-/src/                  ← Rust backend (Phase 0+)
+/crates/               ← Rust backend workspace (core, server, cli)
+/migrations/           ← SQLite schema migrations
 /frontend/             ← Next.js frontend (Phase 0+)
 /bifrost/              ← Bifrost gateway config
 /scripts/              ← dev scripts

@@ -19,7 +19,8 @@ use seasoned_hand_core::channel::{
 };
 use seasoned_hand_core::events::{Event, EventQuery, EventStore, EventType, NewEvent};
 use seasoned_hand_core::intake::router::{HandleOutcome, RejectionReason};
-use serde::{Deserialize, Serialize};
+use seasoned_hand_dto::ServerEnvelope;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -115,37 +116,11 @@ pub enum BriefingActionTag {
     Cancel,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ServerEnvelope {
-    Event {
-        id: String,
-        session_id: String,
-        ts: i64,
-        payload: Value,
-    },
-    Ack {
-        id: String,
-        r#ref: String,
-        ok: bool,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        session_id: Option<String>,
-    },
-    Ping {
-        ts: i64,
-    },
-    Pong {
-        ts: i64,
-    },
-    Error {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        id: Option<String>,
-        kind: String,
-        message: String,
-    },
-}
+// The server→client envelope is shared with the wasm UI via seasoned-hand-dto
+// (story 6.3c) — imported above. The inbound `ClientEnvelope` / `CommandPayload`
+// stay server-local: they carry deserialize/dispatch specifics (`durable`
+// pauses, the typed `BriefingActionTag` + `PartialBrief edits`) that the UI's
+// send-only mirror does not need.
 
 /// `/ws` upgrade entry.
 ///
@@ -291,7 +266,7 @@ async fn reject_if_foreign_session(
         });
         let _ = tx.send(ServerEnvelope::Ack {
             id: Uuid::new_v4().to_string(),
-            r#ref: cmd_id.to_string(),
+            reference: cmd_id.to_string(),
             ok: false,
             error: Some("forbidden_session_scope".into()),
             session_id: Some(session_id.to_string()),
@@ -325,7 +300,7 @@ async fn handle_command(
             attach_subscription(state, tx, subscriptions, &session_id).await;
             let _ = tx.send(ServerEnvelope::Ack {
                 id: Uuid::new_v4().to_string(),
-                r#ref: cmd_id,
+                reference: cmd_id,
                 ok: true,
                 error: None,
                 session_id: Some(session_id),
@@ -385,7 +360,7 @@ async fn handle_command(
                     let session_id = spawn_session_id.unwrap_or(session_id);
                     let _ = tx.send(ServerEnvelope::Ack {
                         id: Uuid::new_v4().to_string(),
-                        r#ref: cmd_id,
+                        reference: cmd_id,
                         ok: true,
                         error: None,
                         session_id: Some(session_id),
@@ -401,7 +376,7 @@ async fn handle_command(
                 Ok(HandleOutcome::DuplicateSkipped) => {
                     let _ = tx.send(ServerEnvelope::Ack {
                         id: Uuid::new_v4().to_string(),
-                        r#ref: cmd_id,
+                        reference: cmd_id,
                         ok: false,
                         error: Some("duplicate_intake_id".into()),
                         session_id: None,
@@ -414,7 +389,7 @@ async fn handle_command(
                     };
                     let _ = tx.send(ServerEnvelope::Ack {
                         id: Uuid::new_v4().to_string(),
-                        r#ref: cmd_id,
+                        reference: cmd_id,
                         ok: false,
                         error: Some(format!("intake_rejected:{reason_code}")),
                         session_id: None,
@@ -425,7 +400,7 @@ async fn handle_command(
                         "ws task_create: IntakeRouter error");
                     let _ = tx.send(ServerEnvelope::Ack {
                         id: Uuid::new_v4().to_string(),
-                        r#ref: cmd_id,
+                        reference: cmd_id,
                         ok: false,
                         error: Some(error.to_string()),
                         session_id: None,
@@ -447,7 +422,7 @@ async fn handle_command(
                 });
                 let _ = tx.send(ServerEnvelope::Ack {
                     id: Uuid::new_v4().to_string(),
-                    r#ref: cmd_id,
+                    reference: cmd_id,
                     ok: false,
                     error: Some("forbidden_task_scope".into()),
                     session_id: None,
@@ -478,7 +453,7 @@ async fn handle_command(
             };
             let _ = tx.send(ServerEnvelope::Ack {
                 id: Uuid::new_v4().to_string(),
-                r#ref: cmd_id,
+                reference: cmd_id,
                 ok,
                 error,
                 session_id: None,
@@ -494,7 +469,7 @@ async fn handle_command(
             let result = handle_task_pause(state, &session_id, durable.unwrap_or(true)).await;
             let _ = tx.send(ServerEnvelope::Ack {
                 id: Uuid::new_v4().to_string(),
-                r#ref: cmd_id,
+                reference: cmd_id,
                 ok: result.is_ok(),
                 error: result.err(),
                 session_id: Some(session_id),
@@ -507,7 +482,7 @@ async fn handle_command(
             let result = handle_task_resume(state, &session_id).await;
             let _ = tx.send(ServerEnvelope::Ack {
                 id: Uuid::new_v4().to_string(),
-                r#ref: cmd_id,
+                reference: cmd_id,
                 ok: result.is_ok(),
                 error: result.err(),
                 session_id: Some(session_id),
@@ -520,7 +495,7 @@ async fn handle_command(
             let result = handle_task_cancel(state, &session_id).await;
             let _ = tx.send(ServerEnvelope::Ack {
                 id: Uuid::new_v4().to_string(),
-                r#ref: cmd_id,
+                reference: cmd_id,
                 ok: result.is_ok(),
                 error: result.err(),
                 session_id: Some(session_id),
@@ -553,7 +528,7 @@ async fn handle_command(
             if let Err(error) = append {
                 let _ = tx.send(ServerEnvelope::Ack {
                     id: Uuid::new_v4().to_string(),
-                    r#ref: cmd_id,
+                    reference: cmd_id,
                     ok: false,
                     error: Some(error.to_string()),
                     session_id: Some(session_id),
@@ -563,7 +538,7 @@ async fn handle_command(
             if let Err(error) = set_session_state(state, &session_id, "RUNNING").await {
                 let _ = tx.send(ServerEnvelope::Ack {
                     id: Uuid::new_v4().to_string(),
-                    r#ref: cmd_id,
+                    reference: cmd_id,
                     ok: false,
                     error: Some(error.to_string()),
                     session_id: Some(session_id),
@@ -591,7 +566,7 @@ async fn handle_command(
             });
             let _ = tx.send(ServerEnvelope::Ack {
                 id: Uuid::new_v4().to_string(),
-                r#ref: cmd_id,
+                reference: cmd_id,
                 ok: true,
                 error: None,
                 session_id: Some(session_id),

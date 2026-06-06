@@ -1,7 +1,7 @@
 # Seasoned Hand — Architecture Specification
 
-> **Status**: v1.4 (Phase 5 Architect reconciliation per ADR-014)
-> **Last updated**: 2026-05-20
+> **Status**: v1.5 (Dioxus unified-Rust frontend per ADR-016)
+> **Last updated**: 2026-06-05
 > **Owners**: Project lead
 >
 > **v1.2 amendments (ADR-012, 2026-05-18)**: §2.5 reconciled with Phase 3 V010:
@@ -25,6 +25,16 @@
 > and tenant-safe event projection (`tenant_event_view`). Phase 2-4 mutable tables tighten
 > `tenant_id` from nullable to NOT NULL with deterministic backfill and validation. §2.1
 > notes Phase 5 multi-user/audit event kinds.
+>
+> **v1.5 amendments (ADR-016, 2026-06-05)**: §1.1 Frontend layer changed from
+> Next.js + React + TypeScript to a **unified-Rust Dioxus** frontend
+> (`crates/seasoned-hand-ui`) targeting Web (WASM) / Desktop / Mobile from one
+> codebase. The `/v1` REST + WebSocket boundary, the control plane, Bifrost, and the
+> sandbox are **unchanged** — this is a frontend-layer swap. Monaco / xterm / noVNC are
+> retained on web/desktop via JS interop; the mobile `AgentComputer` degrades to
+> read-only. Amends the frontend clause of ADR-002; BASELINE §4 + §7 #5 updated in the
+> same change. Implementation is staged across Phase 6 stories (see ADR-016 migration plan,
+> gated on a step-1 interop spike).
 
 This is the **immutable architectural specification**. Changes require:
 1. PR with rationale
@@ -67,13 +77,15 @@ tracks "where we are in the task" and prevents goal drift. See ADR-010.
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  Frontend (Next.js)                                   │
+│  Frontend (Dioxus — unified Rust, per ADR-016)        │
+│  - Targets: Web (WASM) | Desktop | Mobile             │
 │  - 3-panel UI: TaskList | Chat | AgentComputer        │
 │  - WebSocket subscribe to event stream                │
-│  - noVNC iframe for browser takeover                  │
-│  - Monaco for code, xterm for terminal                │
+│  - noVNC / Monaco / xterm via JS interop (web+desktop)│
+│  - Mobile AgentComputer degrades to read-only         │
+│  - Shares seasoned-hand-core DTOs (no type codegen)   │
 └──────────────────────┬───────────────────────────────┘
-                       │ WebSocket + HTTP
+                       │ WebSocket + HTTP (/v1 — unchanged)
                        ↓
 ┌──────────────────────────────────────────────────────┐
 │  Control Plane (Rust)                                 │

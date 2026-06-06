@@ -1,0 +1,14 @@
+[application]
+name = "seasoned-hand-ui"
+default_platform = "web"
+
+[web.app]
+title = "Seasoned Hand"
+
+[web.watcher]
+reload_html = true
+watch_path = ["src", "index.html"]
+
+[web.resource]
+style = []
+script = []

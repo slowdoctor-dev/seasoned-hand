@@ -1,7 +1,15 @@
 # ADR-002: Rust backend + TypeScript frontend (hybrid)
 
-Status: Accepted
+Status: Accepted — **frontend clause amended by [ADR-016](ADR-016-dioxus-unified-rust-frontend.md)**
 Date: 2026
+
+> **Amendment note (2026-06-05):** The **Rust backend** half of this ADR stands
+> unchanged. The **TypeScript / Next.js frontend** half is superseded by
+> [ADR-016](ADR-016-dioxus-unified-rust-frontend.md), which adopts a unified-Rust
+> Dioxus frontend for multi-platform (web/desktop/mobile). ADR-016 revisits this
+> ADR's "Alternative C: All-Rust (Tauri-style)" — three of the four grounds on
+> which it was rejected here no longer hold now that the UI surface is settled and
+> Dioxus provides a React-like authoring model.
 
 ## Context
 

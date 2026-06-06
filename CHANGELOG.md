@@ -9,7 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Dioxus UI functional progress** (Phase 6 story 6.4, partial): WS ack handling
+  captures the `task_create` session_id into the shared selection; an interactive
+  **BriefingCard** (confirm / **edit** / cancel via `briefing_confirm`);
+  AgentComputer **Deliverables**, **Files** (workspace root), and **Verifier**
+  (pass/fail verdicts) tabs. Added `Verification` / `WorkspaceListing` DTOs to
+  `-dto`. The server now shares its session/deliverable DTOs via `-dto` (story
+  6.3b). Real Monaco/xterm/noVNC interop shims drafted in `index.html` (story
+  6.2 — written but not yet verified against a live session).
+- **Shared `ServerEnvelope`** (Phase 6 story 6.3c): the server now serializes
+  `seasoned_hand_dto::ServerEnvelope` (its private copy removed), so the
+  server→client WS envelope is shared end-to-end. `-dto`'s `Ack`/`Error`
+  optional fields gained `skip_serializing_if` for byte-identical output. The
+  inbound `CommandPayload`/`ClientEnvelope` stay server-local by design (they
+  carry deserialize-time dispatch the UI's send-only mirror doesn't need).
+- **`seasoned-hand-dto` crate** (Phase 6 story 6.3) — wasm-safe, pure-serde
+  shared wire DTOs. `seasoned-hand-core` now re-exports the domain entities
+  (Project, Task, Deliverable + status enums + `legal_transitions`) from it, and
+  `seasoned-hand-ui` consumes it directly (deleting its hand-mirrored `dto.rs`),
+  so the backend and the wasm frontend share one definition. The DB-string
+  mapping moved into `-dto` with `From<EnumParseError>` lifting into the core
+  errors. Server-side adoption of the session/WS types is story 6.3b.
+
 ### Changed
+- **`SandboxClient` connects to Docker lazily** — `SandboxClient::new` no longer
+  opens the Docker socket at construction; the daemon is connected on first
+  actual container operation (cached via `OnceCell`). This lets the control
+  plane **boot without Docker** (REST API / dev / UI work) instead of aborting at
+  startup with `Docker(SocketNotFoundError)`. Behaviour with Docker present is
+  unchanged; operations that need a container still surface a clear error when it
+  is absent. Verified: the server now runs migrations + serves with no Docker and
+  no Redis (both already degrade gracefully).
+- **Phase 6 started — Dioxus frontend migration begun** (2026-06-05). Phase 6
+  (open-source release) is now active, opening with the Next.js → Dioxus migration
+  (ADR-016). `crates/seasoned-hand-ui` scaffolded (unified-Rust UI; web target
+  first). The earlier same-day "deferred until stabilization" decision was
+  reversed; the stabilization items are retained as a **release-readiness
+  checklist** in `/specs/06-roadmap/ROADMAP.md` that gates the public-release tag
+  (not Phase 6 start). ROADMAP phase markers (3/4/5) reconciled to ✅ Complete.
+- **Frontend: Next.js → Dioxus (unified Rust)** (ADR-016, amends the frontend
+  clause of ADR-002). Adopts a single Rust/Dioxus UI crate targeting Web (WASM) /
+  Desktop / Mobile from one codebase, sharing `seasoned-hand-core` DTOs (no
+  TS↔Rust type codegen). The `/v1` REST + WebSocket boundary and the entire
+  control plane are unchanged — frontend-layer swap only. Monaco / xterm / noVNC
+  retained on web+desktop via JS interop; mobile `AgentComputer` degrades to
+  read-only. BASELINE §4 + §7 #5 amended; ARCHITECTURE.md → v1.5. Decision
+  recorded; implementation staged across Phase 6 (gated on a step-1 interop spike).
 - **Relicensed MIT → Apache License 2.0** (ADR-015, supersedes the license clause
   of ADR-008). Adds an explicit patent grant + patent-retaliation clause for the
   public release. `LICENSE` now carries the canonical Apache 2.0 text; new top-level
