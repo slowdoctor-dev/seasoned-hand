@@ -56,7 +56,11 @@ pub mod middleware {
             return Ok(next.run(req).await);
         };
 
-        let context = resolve_identity(&deps, req.headers())
+        let remote = req
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|ci| ci.0);
+        let context = resolve_identity(&deps, req.headers(), remote)
             .await
             .map_err(|code| {
                 (
@@ -100,11 +104,13 @@ pub mod middleware {
     ///    proxy-forwarded header can't override a real credential, and a
     ///    presented-but-invalid token is rejected rather than demoted to headers.
     /// 2. Legacy `x-seasoned-hand-*` headers — **only** when `allow_insecure_headers`
-    ///    is set (loopback dev / tests / CLI). Off by default → client-asserted
-    ///    identity is not trusted.
+    ///    is set AND the caller is loopback (dev / tests / CLI). Off by default →
+    ///    client-asserted identity is not trusted, and even when enabled it cannot
+    ///    be forged from a non-loopback caller.
     async fn resolve_identity(
         deps: &AuthDeps,
         headers: &HeaderMap,
+        remote: Option<std::net::SocketAddr>,
     ) -> Result<AuthContext, StatusCode> {
         if let Some(token) = bearer_token(headers).or_else(|| subprotocol_token(headers)) {
             return deps
@@ -113,7 +119,14 @@ pub mod middleware {
                 .await
                 .ok_or(StatusCode::UNAUTHORIZED);
         }
-        if deps.allow_insecure_headers && headers.contains_key("x-seasoned-hand-tenant-id") {
+        // The insecure header path requires BOTH the flag and a loopback caller, so
+        // a flagged server is not forgeable from a non-loopback address even on a
+        // `with_auth` route that lacks its own handler-level loopback guard.
+        let from_loopback = remote.map(|r| r.ip().is_loopback()).unwrap_or(false);
+        if deps.allow_insecure_headers
+            && from_loopback
+            && headers.contains_key("x-seasoned-hand-tenant-id")
+        {
             return parse_header_context(headers);
         }
         Err(StatusCode::UNAUTHORIZED)

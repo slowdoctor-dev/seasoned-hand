@@ -76,12 +76,18 @@ impl AuthSessionStore {
                         .optional()?;
                     let user_id = user_id.ok_or(AuthLoginError::InvalidInvitation)?;
 
+                    // Resolve the primary membership of an ACTIVE user in an
+                    // ACTIVE org — a deactivated user or suspended/archived org
+                    // cannot exchange an invitation.
                     let membership: Option<(String, String, String)> = tx
                         .query_row(
-                            "SELECT tenant_id, organization_id, role \
-                             FROM organization_memberships \
-                             WHERE user_id = ?1 \
-                             ORDER BY is_primary DESC, created_at ASC LIMIT 1",
+                            "SELECT m.tenant_id, m.organization_id, m.role \
+                             FROM organization_memberships m \
+                             JOIN users u ON u.id = m.user_id AND u.status = 'active' \
+                             JOIN organizations o \
+                               ON o.id = m.organization_id AND o.status = 'active' \
+                             WHERE m.user_id = ?1 \
+                             ORDER BY m.is_primary DESC, m.created_at ASC LIMIT 1",
                             [&user_id],
                             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                         )
@@ -89,10 +95,18 @@ impl AuthSessionStore {
                     let (tenant_id, organization_id, role_db) =
                         membership.ok_or(AuthLoginError::NoMembership)?;
 
-                    tx.execute(
-                        "UPDATE user_invitation_tokens SET consumed_at = ?1 WHERE token_hash = ?2",
+                    // Conditional consume: re-assert unconsumed in the write
+                    // predicate and require exactly one affected row, so a
+                    // concurrent exchange (future multi-connection pool / second
+                    // process) cannot double-spend one invitation.
+                    let consumed = tx.execute(
+                        "UPDATE user_invitation_tokens SET consumed_at = ?1 \
+                         WHERE token_hash = ?2 AND consumed_at IS NULL",
                         rusqlite::params![now, invite_hash],
                     )?;
+                    if consumed != 1 {
+                        return Err(AuthLoginError::InvalidInvitation);
+                    }
                     tx.execute(
                         "INSERT INTO auth_sessions \
                          (token_hash, user_id, tenant_id, organization_id, org_role, \
@@ -134,9 +148,21 @@ impl AuthSessionStore {
         let hash = sha256_hex(token.as_bytes());
         self.db
             .with_conn(move |conn| {
+                // Re-resolve live identity on every verify: a session authenticates
+                // only while the user is active, the org is active, and the
+                // membership still exists — and authorizes with the CURRENT
+                // membership role, not the role snapshotted at login. So user
+                // deactivation, org suspension, membership removal, and role
+                // changes take effect immediately, not at token expiry.
                 conn.query_row(
-                    "SELECT tenant_id, organization_id, user_id, org_role FROM auth_sessions \
-                     WHERE token_hash = ?1 AND revoked_at IS NULL AND expires_at > ?2",
+                    "SELECT m.tenant_id, m.organization_id, s.user_id, m.role \
+                     FROM auth_sessions s \
+                     JOIN users u ON u.id = s.user_id AND u.status = 'active' \
+                     JOIN organizations o \
+                       ON o.id = s.organization_id AND o.status = 'active' \
+                     JOIN organization_memberships m \
+                       ON m.user_id = s.user_id AND m.organization_id = s.organization_id \
+                     WHERE s.token_hash = ?1 AND s.revoked_at IS NULL AND s.expires_at > ?2",
                     rusqlite::params![hash, now],
                     |r| {
                         Ok((
@@ -163,40 +189,60 @@ impl AuthSessionStore {
             )
     }
 
-    /// Issue a session for an already-known identity, bypassing the invitation
-    /// flow. Used only by the loopback-gated dev-login affordance; never reachable
-    /// without `SH_INSECURE_AUTH_HEADERS` + loopback at the caller.
-    pub async fn issue_for(&self, context: AuthContext) -> Result<LoginResult, rusqlite::Error> {
+    /// Idempotently seed a default dev identity (active org + user + admin
+    /// membership) and issue a session for it. Dev-only — gated by loopback +
+    /// `SH_INSECURE_AUTH_HEADERS` at the caller. Seeding real rows keeps the
+    /// session valid under `verify`'s live-identity re-resolution and prevents FK
+    /// breakage when dev requests write audit / membership rows.
+    pub async fn issue_dev_session(&self) -> Result<LoginResult, rusqlite::Error> {
+        const DEV_TENANT: &str = "default";
+        const DEV_ORG: &str = "default";
+        const DEV_USER: &str = "dev-user";
         let now = now_micros();
         let expires_at = now + SESSION_TTL_MICROS;
         let token = generate_token();
         let hash = sha256_hex(token.as_bytes());
-        let user_id = context.actor_user_id.clone();
-        let tenant_id = context.tenant_id.clone();
-        let organization_id = context.organization_id.clone();
-        let role_db = role_to_db(context.org_role).to_string();
         self.db
-            .with_conn(move |conn| {
-                conn.execute(
+            .with_conn(move |conn| -> rusqlite::Result<()> {
+                let tx = conn.transaction()?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO organizations \
+                     (id, tenant_id, slug, display_name, status, created_at, updated_at) \
+                     VALUES (?1, ?1, 'dev', 'Dev Org', 'active', ?2, ?2)",
+                    rusqlite::params![DEV_ORG, now],
+                )?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO users \
+                     (id, tenant_id, email, display_name, status, created_at, updated_at) \
+                     VALUES (?1, ?2, 'dev@localhost', 'Dev User', 'active', ?3, ?3)",
+                    rusqlite::params![DEV_USER, DEV_TENANT, now],
+                )?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO organization_memberships \
+                     (id, tenant_id, organization_id, user_id, role, is_primary, \
+                      created_at, updated_at) \
+                     VALUES ('m-dev-user', ?1, ?2, ?3, 'admin', 1, ?4, ?4)",
+                    rusqlite::params![DEV_TENANT, DEV_ORG, DEV_USER, now],
+                )?;
+                tx.execute(
                     "INSERT INTO auth_sessions \
                      (token_hash, user_id, tenant_id, organization_id, org_role, \
                       created_at, expires_at, revoked_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
-                    rusqlite::params![
-                        hash,
-                        user_id,
-                        tenant_id,
-                        organization_id,
-                        role_db,
-                        now,
-                        expires_at
-                    ],
-                )
+                     VALUES (?1, ?2, ?3, ?4, 'admin', ?5, ?6, NULL)",
+                    rusqlite::params![hash, DEV_USER, DEV_TENANT, DEV_ORG, now, expires_at],
+                )?;
+                tx.commit()
             })
             .await?;
         Ok(LoginResult {
             token,
-            context,
+            context: AuthContext {
+                tenant_id: DEV_TENANT.to_string(),
+                organization_id: DEV_ORG.to_string(),
+                actor_user_id: DEV_USER.to_string(),
+                org_role: Role::Admin,
+                project_override_role: None,
+            },
             expires_at,
         })
     }
@@ -234,14 +280,6 @@ fn role_from_db(s: &str) -> Role {
         "admin" => Role::Admin,
         "viewer" => Role::Viewer,
         _ => Role::User,
-    }
-}
-
-fn role_to_db(role: Role) -> &'static str {
-    match role {
-        Role::Admin => "admin",
-        Role::User => "user",
-        Role::Viewer => "viewer",
     }
 }
 
@@ -340,19 +378,83 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn issue_for_creates_a_verifiable_session() {
+    async fn issue_dev_session_creates_a_verifiable_session() {
         let pool = open(":memory:").await.unwrap();
         let store = AuthSessionStore::new(pool);
-        let ctx = AuthContext {
-            tenant_id: "default".into(),
-            organization_id: "default".into(),
-            actor_user_id: "dev-user".into(),
-            org_role: Role::Admin,
-            project_override_role: None,
-        };
-        let result = store.issue_for(ctx).await.unwrap();
+        // No pre-seeding: issue_dev_session seeds its own active dev identity.
+        let result = store.issue_dev_session().await.unwrap();
         let verified = store.verify(&result.token).await.expect("verify ok");
         assert_eq!(verified.actor_user_id, "dev-user");
         assert_eq!(verified.org_role, Role::Admin);
+    }
+
+    async fn set_user_status(pool: &DbPool, user_id: &str, status: &str) {
+        let (uid, st) = (user_id.to_string(), status.to_string());
+        pool.with_conn(move |conn| {
+            conn.execute(
+                "UPDATE users SET status = ?1 WHERE id = ?2",
+                rusqlite::params![st, uid],
+            )
+            .unwrap();
+        })
+        .await;
+    }
+
+    async fn set_membership_role(pool: &DbPool, user_id: &str, role: &str) {
+        let (uid, r) = (user_id.to_string(), role.to_string());
+        pool.with_conn(move |conn| {
+            conn.execute(
+                "UPDATE organization_memberships SET role = ?1 WHERE user_id = ?2",
+                rusqlite::params![r, uid],
+            )
+            .unwrap();
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn deactivated_user_cannot_login() {
+        let pool = open(":memory:").await.unwrap();
+        seed_user_with_invite(&pool, "u1", "invite-ddd", "admin").await;
+        set_user_status(&pool, "u1", "deactivated").await;
+        let store = AuthSessionStore::new(pool);
+        assert!(matches!(
+            store.login("invite-ddd").await,
+            Err(AuthLoginError::NoMembership)
+        ));
+    }
+
+    #[tokio::test]
+    async fn session_stops_verifying_after_user_deactivation() {
+        let pool = open(":memory:").await.unwrap();
+        seed_user_with_invite(&pool, "u1", "invite-eee", "admin").await;
+        let store = AuthSessionStore::new(pool.clone());
+
+        let result = store.login("invite-eee").await.unwrap();
+        assert!(store.verify(&result.token).await.is_some());
+
+        // Deactivating the user invalidates the already-issued session.
+        set_user_status(&pool, "u1", "deactivated").await;
+        assert!(store.verify(&result.token).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn role_downgrade_takes_effect_on_next_verify() {
+        let pool = open(":memory:").await.unwrap();
+        seed_user_with_invite(&pool, "u1", "invite-fff", "admin").await;
+        let store = AuthSessionStore::new(pool.clone());
+
+        let result = store.login("invite-fff").await.unwrap();
+        assert_eq!(
+            store.verify(&result.token).await.unwrap().org_role,
+            Role::Admin
+        );
+
+        // Downgrade to viewer — verify authorizes with the CURRENT role.
+        set_membership_role(&pool, "u1", "viewer").await;
+        assert_eq!(
+            store.verify(&result.token).await.unwrap().org_role,
+            Role::Viewer
+        );
     }
 }

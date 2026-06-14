@@ -16,9 +16,9 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
     user_id          TEXT NOT NULL,
     tenant_id        TEXT NOT NULL,
     organization_id  TEXT NOT NULL,
-    org_role         TEXT NOT NULL,
+    org_role         TEXT NOT NULL CHECK(org_role IN ('admin','user','viewer')),
     created_at       INTEGER NOT NULL,
-    expires_at       INTEGER NOT NULL,
+    expires_at       INTEGER NOT NULL CHECK(expires_at > created_at),
     revoked_at       INTEGER
 );
 

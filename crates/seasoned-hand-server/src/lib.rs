@@ -1799,16 +1799,9 @@ async fn post_auth_dev_login_handler(
     if !state.allow_insecure_headers {
         return Err(api_err(StatusCode::FORBIDDEN, "dev_login_disabled".into()));
     }
-    let ctx = seasoned_hand_core::auth::AuthContext {
-        tenant_id: "default".into(),
-        organization_id: "default".into(),
-        actor_user_id: "dev-user".into(),
-        org_role: seasoned_hand_core::auth::Role::Admin,
-        project_override_role: None,
-    };
     state
         .auth_sessions
-        .issue_for(ctx)
+        .issue_dev_session()
         .await
         .map(login_response)
         .map_err(|_| api_err(StatusCode::INTERNAL_SERVER_ERROR, "dev_login_failed".into()))
