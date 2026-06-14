@@ -9,7 +9,8 @@
 //! ack-await Future API (resolving an arbitrary command by `ref`) remains a
 //! follow-up; only the task_create→session capture is wired here.
 
-use crate::config::{WS_AUTH_SUBPROTOCOL, auth_token, ws_url};
+use crate::auth;
+use crate::config::{ws_url, WS_AUTH_SUBPROTOCOL};
 use dioxus::prelude::*;
 use futures::channel::mpsc::UnboundedReceiver;
 use futures::stream::SplitSink;
@@ -65,9 +66,6 @@ pub fn use_agent_socket(session_id: Signal<Option<String>>) -> AgentSocket {
             let session_id = session_id;
 
             let url = ws_url();
-            // ADR-017: browser WS cannot set headers, so carry the bearer token as
-            // the second offered subprotocol alongside the sentinel the server echoes.
-            let token = auth_token();
             let mut subscribed: HashMap<String, i64> = HashMap::new();
             // Command ids of in-flight task_create commands, so their ack can be
             // recognised and its assigned session_id captured.
@@ -77,7 +75,23 @@ pub fn use_agent_socket(session_id: Signal<Option<String>>) -> AgentSocket {
 
             loop {
                 status.set(WsStatus::Connecting);
-                let ws = match WebSocket::open_with_protocols(&url, &[WS_AUTH_SUBPROTOCOL, token.as_str()]) {
+                // Issue #26 / ADR-018: re-read the verified session token each
+                // (re)connect so a fresh login is picked up. Without a token (not
+                // yet logged in) wait and retry rather than opening an unauthable
+                // socket that the server would reject at upgrade.
+                let token = match auth::current_token() {
+                    Some(token) => token,
+                    None => {
+                        status.set(WsStatus::Reconnecting);
+                        TimeoutFuture::new(backoff).await;
+                        backoff = (backoff.saturating_mul(2)).min(BACKOFF_MAX_MS);
+                        continue;
+                    }
+                };
+                let ws = match WebSocket::open_with_protocols(
+                    &url,
+                    &[WS_AUTH_SUBPROTOCOL, token.as_str()],
+                ) {
                     Ok(ws) => ws,
                     Err(_) => {
                         status.set(WsStatus::Reconnecting);

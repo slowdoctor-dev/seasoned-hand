@@ -11,6 +11,7 @@
 #![allow(dead_code)]
 
 mod api;
+mod auth;
 mod components;
 mod config;
 mod interop;

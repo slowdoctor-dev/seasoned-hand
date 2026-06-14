@@ -45,7 +45,7 @@ console_error_panic_hook = "0.1"
 # behind cfg(target_arch = "wasm32") in config.rs; the gloo-* transport is still
 # referenced unconditionally and will move here once a native impl lands.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { version = "0.3", features = ["Window", "Location"] }
+web-sys = { version = "0.3", features = ["Window", "Location", "Storage"] }
 
 [profile.release]
 opt-level = "s"
