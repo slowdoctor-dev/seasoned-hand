@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { WS_AUTH_SUBPROTOCOL, authToken } from "./auth";
 import type {
   ClientCommand,
   CommandPayload,
@@ -130,7 +131,9 @@ export function useAgentSocket(url: string): UseAgentSocket {
     const connect = () => {
       if (cancelled) return;
       setStatus("connecting");
-      const sock = new WebSocket(url);
+      // ADR-017: browser WS can't set headers, so carry the bearer token as the
+      // second offered subprotocol alongside the sentinel the server echoes back.
+      const sock = new WebSocket(url, [WS_AUTH_SUBPROTOCOL, authToken()]);
       socketRef.current = sock;
 
       sock.onopen = () => {

@@ -1,4 +1,5 @@
 import { API_BASE } from "./api";
+import { authHeaders } from "./auth";
 
 export type WorkspaceEntry = {
   name: string;
@@ -14,7 +15,7 @@ export async function listDir(
 ): Promise<DirListing> {
   const tail = path === "" ? "" : encodeURI(path).replace(/^\/+/, "");
   const url = `${API_BASE}/v1/workspace/${encodeURIComponent(sessionId)}/${tail}`;
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) throw new Error(`listDir ${res.status}`);
   return (await res.json()) as DirListing;
 }
@@ -25,7 +26,7 @@ export async function readFile(
 ): Promise<string> {
   const tail = encodeURI(path).replace(/^\/+/, "");
   const url = `${API_BASE}/v1/workspace/${encodeURIComponent(sessionId)}/${tail}`;
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) throw new Error(`readFile ${res.status}`);
   return await res.text();
 }

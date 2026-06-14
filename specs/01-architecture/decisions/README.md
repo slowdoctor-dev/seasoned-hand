@@ -48,6 +48,7 @@ What else did we look at?
 | [ADR-014](ADR-014-phase5-v013-tenant-rbac.md) | Phase 5 V013 tenant + RBAC + audit reconciliation | Accepted | 2026 |
 | [ADR-015](ADR-015-relicense-apache-2.0.md) | Relicense MIT → Apache License 2.0 | Accepted | 2026-05-21 |
 | [ADR-016](ADR-016-dioxus-unified-rust-frontend.md) | Replace Next.js frontend with Dioxus (unified-Rust, multi-platform) | Accepted | 2026-06-05 |
+| [ADR-017](ADR-017-browser-auth-transport-subprotocol-token.md) | Browser auth transport — query/subprotocol token (not request headers) | Accepted | 2026-06-14 |
 
 ## Adding a new ADR
 

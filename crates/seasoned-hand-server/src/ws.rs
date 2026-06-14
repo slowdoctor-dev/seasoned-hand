@@ -141,7 +141,12 @@ pub async fn ws_upgrade(
         )
             .into_response();
     }
-    ws.on_upgrade(move |socket| ws_session(socket, state, auth_ctx))
+    // ADR-017: when the browser offers the auth sentinel subprotocol (carrying the
+    // bearer token alongside it), echo the sentinel back so the handshake completes.
+    // Header-based callers (tests, service-to-service) offer no subprotocol and are
+    // unaffected — axum simply selects none.
+    ws.protocols([crate::auth::middleware::WS_AUTH_SUBPROTOCOL])
+        .on_upgrade(move |socket| ws_session(socket, state, auth_ctx))
         .into_response()
 }
 
