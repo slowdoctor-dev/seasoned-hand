@@ -86,9 +86,52 @@ pub fn authorize(
     }
 }
 
+/// Coarse, resource-independent RBAC gate for the HTTP middleware (issue #8).
+///
+/// It answers only "may this role ever ATTEMPT this action?" — it never inspects
+/// resource facts (`is_same_org` / `actor_can_share`), because those are not
+/// identity and must be computed server-side from the DB, not asserted by the
+/// client. The resource-aware [`authorize`] remains the authority and is called
+/// by the service layer (handoff is tenant-scoped; share recomputes
+/// `actor_can_share` from DB share rows) once the concrete resource is known.
+///
+/// So `User` is allowed to *attempt* handoff/share here; whether a specific
+/// handoff/share is permitted is decided downstream against real resource state.
+pub fn authorize_coarse(action: Action, context: &AuthContext) -> Result<(), AuthError> {
+    if context.tenant_id.trim().is_empty() {
+        return Err(AuthError::MissingTenantContext);
+    }
+    let role = context.effective_role();
+    match (role, action) {
+        (Role::Admin, _) => Ok(()),
+        (
+            Role::User,
+            Action::TaskRead
+            | Action::TaskWrite
+            | Action::TaskHandoff
+            | Action::SopShare
+            | Action::PlaybookShare
+            | Action::AuditRead,
+        ) => Ok(()),
+        (Role::User, Action::MembershipManage | Action::EventRawRead) => {
+            Err(AuthError::Unauthorized {
+                role,
+                action,
+                reason: "action is admin-only",
+            })
+        }
+        (Role::Viewer, Action::TaskRead) => Ok(()),
+        (Role::Viewer, _) => Err(AuthError::Unauthorized {
+            role,
+            action,
+            reason: "viewer has read-only scope",
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AuthError, AuthResource, authorize};
+    use super::{AuthError, AuthResource, authorize, authorize_coarse};
     use crate::auth::context::{Action, AuthContext, Role, effective_role};
 
     fn context(role: Role) -> AuthContext {
@@ -105,6 +148,56 @@ mod tests {
     fn effective_role_prefers_override_over_org_role() {
         assert_eq!(effective_role(Role::Viewer, Some(Role::Admin)), Role::Admin);
         assert_eq!(effective_role(Role::User, None), Role::User);
+    }
+
+    #[test]
+    fn coarse_gate_lets_user_attempt_handoff_and_share_without_resource_flags() {
+        // Issue #8: the coarse middleware gate ignores resource facts — a User may
+        // ATTEMPT handoff/share; the service layer makes the real per-resource call.
+        for action in [
+            Action::TaskRead,
+            Action::TaskWrite,
+            Action::TaskHandoff,
+            Action::SopShare,
+            Action::PlaybookShare,
+            Action::AuditRead,
+        ] {
+            assert!(
+                authorize_coarse(action, &context(Role::User)).is_ok(),
+                "user should be allowed to attempt {action:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn coarse_gate_keeps_admin_only_and_viewer_scopes() {
+        // Admin: everything.
+        assert!(authorize_coarse(Action::MembershipManage, &context(Role::Admin)).is_ok());
+        // User: admin-only actions denied.
+        for action in [Action::MembershipManage, Action::EventRawRead] {
+            assert!(matches!(
+                authorize_coarse(action, &context(Role::User)),
+                Err(AuthError::Unauthorized { .. })
+            ));
+        }
+        // Viewer: read-only.
+        assert!(authorize_coarse(Action::TaskRead, &context(Role::Viewer)).is_ok());
+        for action in [Action::TaskWrite, Action::TaskHandoff, Action::SopShare] {
+            assert!(matches!(
+                authorize_coarse(action, &context(Role::Viewer)),
+                Err(AuthError::Unauthorized { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn coarse_gate_fails_closed_on_blank_tenant() {
+        let mut ctx = context(Role::Admin);
+        ctx.tenant_id = "  ".to_string();
+        assert!(matches!(
+            authorize_coarse(Action::TaskRead, &ctx),
+            Err(AuthError::MissingTenantContext)
+        ));
     }
 
     #[test]
