@@ -39,7 +39,7 @@ for the immutable system design.
 
 ## Architecture (one paragraph)
 
-Think of it as an operating system. The **kernel** is a Manus-style agent runtime (Rust + Rig + Tokio). **Syscalls** are 32+ tools (file, shell, browser, search, deploy). **User programs** are playbooks — procedures the agent extracts from verified work and reuses next time. A **curator** runs in the background, consolidating and cleaning learning artifacts. **Memory** persists across sessions in SQLite (FTS5 searchable). Tasks run in isolated Docker sandboxes.
+Think of it as an operating system. The **kernel** is a Manus-style agent runtime (Rust + Rig + Tokio). **Syscalls** are 38 tools (file, shell, browser, search, deploy). **User programs** are playbooks — procedures the agent extracts from verified work and reuses next time. A **curator** runs in the background, consolidating and cleaning learning artifacts. **Memory** persists across sessions in SQLite (FTS5 searchable). Tasks run in isolated Docker sandboxes.
 
 ## Quick start
 
@@ -75,7 +75,7 @@ Full setup walkthrough: [`docs/getting-started.md`](docs/getting-started.md).
   /00-philosophy/      ← VISION, PRINCIPLES, NON_GOALS
   /01-architecture/
     ARCHITECTURE.md    ← overall (immutable)
-    /decisions/        ← ADR-001 to ADR-010
+    /decisions/        ← ADR-001 to ADR-017
   /06-roadmap/
     ROADMAP.md
   /07-research/        ← external interviews (e.g., Manus direct Q&A)
@@ -84,9 +84,9 @@ Full setup walkthrough: [`docs/getting-started.md`](docs/getting-started.md).
     stories/
 /docs/                 ← human docs (methodology, brand, manifesto, kickoff)
 /prompts/              ← BMAD/GSD session prompts
-/crates/               ← Rust backend workspace (core, server, cli)
+/crates/               ← Rust workspace (core, server, cli, dto, ui [Dioxus])
 /migrations/           ← SQLite schema migrations
-/frontend/             ← Next.js frontend (Phase 0+)
+/frontend/             ← legacy Next.js frontend (retained until Phase 6 cutover, ADR-016)
 /bifrost/              ← Bifrost gateway config
 /scripts/              ← dev scripts
 /justfile              ← task runner
@@ -111,7 +111,7 @@ Full setup walkthrough: [`docs/getting-started.md`](docs/getting-started.md).
 | 3 | 4 | Learning system: playbook extraction, FTS5 search |
 | 4 | 3 | Curator: auto-maintenance of learning artifacts |
 | 5 | 3 | Multi-user: organization, shared SOPs |
-| 6 | 2 | Open source release |
+| 6 | 2 | Open source release + Dioxus frontend migration (ADR-016) |
 
 ## AI tool compatibility
 

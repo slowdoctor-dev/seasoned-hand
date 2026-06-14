@@ -26,7 +26,7 @@ Combines:
 - **Manus-grade execution** — deep task completion (50+ tool calls per task)
 - **Hermes-grade learning** — skills/memory persisting across sessions
 
-OS metaphor: kernel = agent runtime (Rust + Rig), syscalls = 32+ tools,
+OS metaphor: kernel = agent runtime (Rust + Rig), syscalls = 38 tools,
 filesystem = event stream, user programs = playbooks (learned from verified work).
 
 ## 2. Stack (immutable)
@@ -35,7 +35,7 @@ filesystem = event stream, user programs = playbooks (learned from verified work
 |---|---|
 | LLM Gateway | Bifrost (Go) — 50x faster than LiteLLM |
 | Control plane | Rust + Axum + Tokio + Rig |
-| Frontend | Next.js 15 + Tailwind v4 + React 19 |
+| Frontend | Dioxus (unified Rust → Web/Desktop/Mobile) — ADR-016 amends ADR-002; replaces the Next.js 15 + React 19 stack (retained until Phase 6 cutover) |
 | Sandbox | AIO Sandbox (Docker) per session |
 | Persistence | SQLite WAL + Redis |
 | Model routing | 12-slot (3 main + 9 auxiliary, Hermes-inspired) |
@@ -71,8 +71,8 @@ Full architecture: `/specs/01-architecture/ARCHITECTURE.md`
   /phase-N/
     requirements.md
     /stories/story-N.X.md
-/src/                  ← Rust backend (Phase 0+)
-/frontend/             ← Next.js frontend (Phase 0+)
+/crates/               ← Rust workspace: core, server, cli, dto, ui (Dioxus)
+/frontend/             ← legacy Next.js frontend (retained until Phase 6 cutover, ADR-016)
 /docs/                 ← human docs
 /prompts/              ← BMAD/GSD session prompts
 /scripts/, /justfile
@@ -182,10 +182,10 @@ This mirrors how Seasoned Hand itself works (recursive principle).
 
 ## 13. Current state
 
-- **Phase**: 5 complete → Phase 6 starting
+- **Phase**: 6 in progress (Dioxus frontend migration, ADR-016; started 2026-06-05)
 - **Branch**: main
-- **Next milestone**: Phase 6 architecture pass (BMAD Architect on
-  `/specs/phase-6/architecture.md`) → open-source release surface:
+- **Next milestone**: complete the Phase 6 Dioxus cutover (`/specs/phase-6/`
+  architecture + stories already landed) → open-source release surface:
   documentation polish, contributor onboarding flow, marketplace-style
   artifact exchange decisions, and the carry-forward dogfood-driven
   retunes for FTS5 weights (DEBT #76 successor) and curator adaptive
@@ -198,8 +198,8 @@ Check status: `just status` (or `git log --oneline` + `CHANGELOG.md`)
 - `/BASELINE.md` — single entry point (read first)
 - `/CLAUDE.md` — Claude-specific additions
 - `/specs/00-philosophy/` — VISION, PRINCIPLES, NON_GOALS
-- `/specs/01-architecture/ARCHITECTURE.md` — immutable system architecture (v1.1)
-- `/specs/01-architecture/decisions/` — ADR-001 to ADR-011
+- `/specs/01-architecture/ARCHITECTURE.md` — immutable system architecture (v1.5)
+- `/specs/01-architecture/decisions/` — ADR-001 to ADR-017
 - `/specs/06-roadmap/ROADMAP.md` — 6-phase plan
 - `/specs/REVIEW.md` — pre-Phase-3 cross-phase hardening review
 - `/docs/methodology.md` — full methodology
