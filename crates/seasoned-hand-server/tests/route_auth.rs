@@ -67,3 +67,44 @@ async fn self_gated_cost_rejects_non_loopback() {
     // #21: /v1/cost is self-gated on loopback; a non-loopback caller is forbidden.
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
+
+/// Issue #21 regression guard: every route registered in `app()` must be wrapped
+/// by exactly one classifier — `with_auth` (protected), `public`, or
+/// `self_gated`. Since those wrappers are the only way auth is attached (or
+/// explicitly waived), a bare `.route(path, handler)` would silently skip auth —
+/// the original #21 fail-open. This audits the source of `app()` and fails CI if
+/// any route registration lacks a classifier, so the markers can't drift into
+/// being decorative.
+#[test]
+fn every_route_in_app_is_explicitly_classified() {
+    let src = include_str!("../src/lib.rs");
+    let app_start = src.find("pub fn app(").expect("app() fn present");
+    let body = &src[app_start..];
+    let app_end = body
+        .find(".with_state(state)")
+        .expect("app() ends with .with_state(state)");
+    let app_body = &body[..app_end];
+
+    let mut idx = 0;
+    let mut routes = 0;
+    while let Some(rel) = app_body[idx..].find(".route(") {
+        let span_start = idx + rel + ".route(".len();
+        // Each route registration spans until the next `.route(` (or app() end).
+        let span_end = app_body[span_start..]
+            .find(".route(")
+            .map(|n| span_start + n)
+            .unwrap_or(app_body.len());
+        let span = &app_body[span_start..span_end];
+        assert!(
+            span.contains("with_auth(") || span.contains("public(") || span.contains("self_gated("),
+            "unclassified route (add with_auth/public/self_gated): {:?}",
+            span.lines().next().unwrap_or(span).trim()
+        );
+        routes += 1;
+        idx = span_end;
+    }
+    assert!(
+        routes >= 20,
+        "expected to scan the full route table; only found {routes} routes"
+    );
+}
