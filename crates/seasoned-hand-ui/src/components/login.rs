@@ -13,11 +13,12 @@ pub fn Login(error: Option<String>) -> Element {
     let mut submitting = use_signal(|| false);
 
     rsx! {
-        div { class: "auth-screen",
-            div { class: "login-card",
-                h1 { "Sign in" }
-                p { "Enter your invitation token to continue." }
+        div { class: "flex h-screen w-screen items-center justify-center bg-neutral-950 text-neutral-100 text-sm",
+            div { class: "flex w-80 flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-6",
+                h1 { class: "text-lg font-semibold", "Sign in" }
+                p { class: "text-neutral-400", "Enter your invitation token to continue." }
                 input {
+                    class: "rounded bg-neutral-950 px-2 py-1.5 outline-none border border-neutral-800 focus:border-blue-600",
                     r#type: "password",
                     placeholder: "invitation token",
                     value: "{invitation}",
@@ -25,6 +26,7 @@ pub fn Login(error: Option<String>) -> Element {
                     oninput: move |e| invitation.set(e.value()),
                 }
                 button {
+                    class: "rounded bg-blue-600 px-3 py-1.5 font-medium hover:bg-blue-500 disabled:opacity-50",
                     disabled: submitting(),
                     onclick: move |_| {
                         if submitting() {
@@ -55,7 +57,7 @@ pub fn Login(error: Option<String>) -> Element {
                     if submitting() { "Signing in…" } else { "Sign in" }
                 }
                 if let Some(msg) = err() {
-                    p { class: "login-error", "{msg}" }
+                    p { class: "text-red-400", "{msg}" }
                 }
             }
         }

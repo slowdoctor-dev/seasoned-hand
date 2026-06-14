@@ -29,21 +29,9 @@ pub struct Selection {
 
 #[component]
 pub fn App() -> Element {
-    // Selection must exist before the socket so the coroutine can write the
-    // session_id captured from a task_create ack.
-    let selection = Selection {
-        active_project: use_signal(|| None),
-        active_task: use_signal(|| None),
-        session_id: use_signal(|| None),
-    };
-    use_context_provider(|| selection);
-
-    let socket = use_agent_socket(selection.session_id);
-    use_context_provider(|| socket.clone());
-
     // Issue #26: bootstrap a verified session once on mount — reuse a stored
     // session, else try zero-friction dev-login, else fall back to the
-    // invitation-token form. The socket coroutine waits for the token.
+    // invitation-token form.
     use_future(|| async move {
         if auth::load_session().is_some() {
             *auth::AUTH.write() = AuthState::Authed;
@@ -60,11 +48,38 @@ pub fn App() -> Element {
 
     match auth::AUTH() {
         AuthState::Loading => rsx! {
-            div { class: "auth-screen", "Authenticating…" }
+            div { class: "flex h-screen w-screen items-center justify-center bg-neutral-950 text-neutral-400 text-sm",
+                "Authenticating…"
+            }
         },
         AuthState::NeedLogin(error) => rsx! { Login { error } },
-        AuthState::Authed => rsx! { ThreePanel {} },
+        // The socket lives INSIDE the authed subtree (keyed to the session): it is
+        // created only once a token exists — so no pre-auth backoff wait — and is
+        // torn down when auth is cleared (401 / sign-out), closing the old
+        // WebSocket and dropping its subscription state so a re-login gets a fresh
+        // socket under the new identity rather than reusing the old upgrade context.
+        AuthState::Authed => rsx! { AuthedApp {} },
     }
+}
+
+/// The signed-in app: owns the per-session selection + agent socket and renders
+/// the three-panel console. Unmounting it (on sign-out / 401) drops the socket
+/// coroutine, which closes the underlying WebSocket.
+#[component]
+fn AuthedApp() -> Element {
+    // Selection must exist before the socket so the coroutine can write the
+    // session_id captured from a task_create ack.
+    let selection = Selection {
+        active_project: use_signal(|| None),
+        active_task: use_signal(|| None),
+        session_id: use_signal(|| None),
+    };
+    use_context_provider(|| selection);
+
+    let socket = use_agent_socket(selection.session_id);
+    use_context_provider(|| socket.clone());
+
+    rsx! { ThreePanel {} }
 }
 
 /// Convenience accessors used by the panels.
