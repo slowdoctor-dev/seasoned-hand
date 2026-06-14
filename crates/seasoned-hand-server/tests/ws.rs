@@ -89,7 +89,8 @@ slots:
         bifrost.uri()
     ))
     .unwrap();
-    let state = AppState::new(pool, redis, sandbox, search, router, Default::default());
+    let state = AppState::new(pool, redis, sandbox, search, router, Default::default())
+        .allow_insecure_auth_headers();
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

@@ -38,7 +38,10 @@ async fn boot() -> Harness {
     let search = SearchClient::new(SearchProvider::Brave { api_key: None });
     let router = SlotRouter::default_for_bifrost();
     let state = AppState::new(pool, redis, sandbox, search, router, Default::default())
-        .register_cli_channel();
+        .register_cli_channel()
+        // Issue #7 / ADR-018: the CLI authenticates via x-seasoned-hand-* headers
+        // (SH_* env), which are accepted only under the insecure-headers flag.
+        .allow_insecure_auth_headers();
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");

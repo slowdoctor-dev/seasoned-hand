@@ -763,22 +763,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = bind_addr()?;
     tracing::info!(%addr, %database_url, %redis_url, "seasoned-hand-server starting");
 
-    // SEC-IT1-H1: the request auth model derives identity (tenant /
-    // org / role) from plaintext `x-seasoned-hand-*` headers, trusting an
-    // upstream gateway to set them. Every sensitive handler enforces
-    // `require_loopback`, so on the default 127.0.0.1 bind the header
-    // trust is only reachable from the host itself. Binding a
-    // non-loopback address removes that backstop: the headers become the
-    // ONLY identity gate, and a verifiable-credential authn layer
-    // (API key / OAuth — the open Phase 6 auth decision) is NOT yet in
-    // place. Refuse to silently expose that surface — loudly warn.
+    // SEC-IT1-H1 / issue #7 / ADR-018: identity is verified against
+    // `auth_sessions` (opaque bearer/subprotocol token) by default. The legacy
+    // plaintext `x-seasoned-hand-*` header path is accepted ONLY when
+    // `SH_INSECURE_AUTH_HEADERS` is set, for loopback dev / tests / CLI. Warn on
+    // both risky postures: a non-loopback bind, and the insecure-headers flag.
     if !addr.ip().is_loopback() {
         tracing::warn!(
             %addr,
-            "SECURITY: binding a non-loopback address. The auth model trusts \
-             x-seasoned-hand-* identity headers — you MUST front this with a \
-             gateway that authenticates callers and sets those headers, and \
-             must NOT expose this port directly. See SECURITY.md."
+            "SECURITY: binding a non-loopback address. Expose this port only \
+             behind a trusted gateway; clients authenticate via /v1/auth/login \
+             session tokens (ADR-018). See SECURITY.md."
+        );
+    }
+    if std::env::var("SH_INSECURE_AUTH_HEADERS")
+        .map(|v| matches!(v.trim(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+    {
+        tracing::warn!(
+            "SECURITY: SH_INSECURE_AUTH_HEADERS is enabled — unverified \
+             x-seasoned-hand-* identity headers are accepted. Intended for \
+             loopback dev / tests / CLI only; do NOT enable in production."
         );
     }
 

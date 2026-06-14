@@ -4,13 +4,17 @@
 //! refs: /specs/phase-5/stories/story-5.5.md
 
 pub mod middleware {
+    use axum::Extension;
     use axum::Json;
     use axum::extract::Request;
     use axum::http::{HeaderMap, StatusCode};
     use axum::middleware::Next;
     use axum::response::Response;
-    use seasoned_hand_core::auth::{Action, AuthContext, AuthError, AuthResource, Role, authorize};
-    use serde::{Deserialize, Serialize};
+    use seasoned_hand_core::auth::{
+        Action, AuthContext, AuthError, AuthResource, AuthSessionStore, Role, authorize,
+    };
+    use serde::Serialize;
+    use std::sync::Arc;
 
     /// Fixed WebSocket subprotocol the browser offers alongside the bearer token
     /// (ADR-017). The client opens `new WebSocket(url, [WS_AUTH_SUBPROTOCOL, token])`;
@@ -23,19 +27,18 @@ pub mod middleware {
     #[derive(Debug, Clone, Copy)]
     pub struct RouteAction(pub Action);
 
-    /// Identity asserted by a browser bearer/subprotocol token (ADR-017). The
-    /// token is the lowercase-hex encoding of this struct's JSON. NOTE: this is an
-    /// *unsigned* assertion — transport only, no more trusted than the legacy
-    /// `x-seasoned-hand-*` headers. Verifying it (signing/expiry against
-    /// `user_invitation_tokens`) is issue #7 and replaces only `decode_identity_token`.
-    #[derive(Deserialize)]
-    struct IdentityToken {
-        tenant_id: String,
-        organization_id: String,
-        actor_user_id: String,
-        org_role: String,
-        #[serde(default)]
-        project_override_role: Option<String>,
+    /// DB-backed dependencies the auth middleware needs to verify session tokens
+    /// (issue #7 / ADR-018) and to decide whether the insecure header path is
+    /// permitted. Injected as a request extension by `app()` so the per-route
+    /// `from_fn` middleware can reach them without threading state through every
+    /// `with_auth` call site.
+    #[derive(Clone)]
+    pub struct AuthDeps {
+        pub sessions: Arc<AuthSessionStore>,
+        /// True only when `SH_INSECURE_AUTH_HEADERS` is set (loopback dev / tests
+        /// / CLI). When false, `x-seasoned-hand-*` headers are rejected and only a
+        /// verified session token authenticates.
+        pub allow_insecure_headers: bool,
     }
 
     #[derive(Debug, Serialize)]
@@ -44,6 +47,7 @@ pub mod middleware {
     }
 
     pub async fn require_auth_context(
+        Extension(deps): Extension<AuthDeps>,
         req: Request,
         next: Next,
     ) -> Result<Response, (StatusCode, Json<ApiError>)> {
@@ -52,14 +56,20 @@ pub mod middleware {
             return Ok(next.run(req).await);
         };
 
-        let context = parse_auth_context(req.headers()).map_err(|code| {
-            (
-                code,
-                Json(ApiError {
-                    error: "unauthorized_context".to_string(),
-                }),
-            )
-        })?;
+        let remote = req
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|ci| ci.0);
+        let context = resolve_identity(&deps, req.headers(), remote)
+            .await
+            .map_err(|code| {
+                (
+                    code,
+                    Json(ApiError {
+                        error: "unauthorized_context".to_string(),
+                    }),
+                )
+            })?;
 
         let resource = AuthResource {
             is_same_org: parse_bool_header(req.headers(), "x-seasoned-hand-resource-same-org")
@@ -87,20 +97,37 @@ pub mod middleware {
         Ok(next.run(req).await)
     }
 
-    /// Resolve the caller's identity. Priority (ADR-017):
-    /// 1. `x-seasoned-hand-*` headers — service-to-service callers and tests
-    ///    (active iff the tenant header is present).
-    /// 2. `Authorization: Bearer <token>` — browser REST (`fetch`/`gloo-net`).
-    /// 3. The non-sentinel `Sec-WebSocket-Protocol` entry — browser `/ws` upgrade.
-    ///
-    /// The header path is unchanged, so existing callers/tests keep working; the
-    /// token paths are purely additive.
-    fn parse_auth_context(headers: &HeaderMap) -> Result<AuthContext, StatusCode> {
-        if headers.contains_key("x-seasoned-hand-tenant-id") {
-            return parse_header_context(headers);
-        }
+    /// Resolve the caller's identity (issue #7 / ADR-018). Priority:
+    /// 1. A **verified** session token (ADR-018) — `Authorization: Bearer` (REST)
+    ///    or the non-sentinel `Sec-WebSocket-Protocol` entry (browser `/ws`),
+    ///    looked up against `auth_sessions`. Checked first so a stray
+    ///    proxy-forwarded header can't override a real credential, and a
+    ///    presented-but-invalid token is rejected rather than demoted to headers.
+    /// 2. Legacy `x-seasoned-hand-*` headers — **only** when `allow_insecure_headers`
+    ///    is set AND the caller is loopback (dev / tests / CLI). Off by default →
+    ///    client-asserted identity is not trusted, and even when enabled it cannot
+    ///    be forged from a non-loopback caller.
+    async fn resolve_identity(
+        deps: &AuthDeps,
+        headers: &HeaderMap,
+        remote: Option<std::net::SocketAddr>,
+    ) -> Result<AuthContext, StatusCode> {
         if let Some(token) = bearer_token(headers).or_else(|| subprotocol_token(headers)) {
-            return decode_identity_token(&token);
+            return deps
+                .sessions
+                .verify(&token)
+                .await
+                .ok_or(StatusCode::UNAUTHORIZED);
+        }
+        // The insecure header path requires BOTH the flag and a loopback caller, so
+        // a flagged server is not forgeable from a non-loopback address even on a
+        // `with_auth` route that lacks its own handler-level loopback guard.
+        let from_loopback = remote.map(|r| r.ip().is_loopback()).unwrap_or(false);
+        if deps.allow_insecure_headers
+            && from_loopback
+            && headers.contains_key("x-seasoned-hand-tenant-id")
+        {
+            return parse_header_context(headers);
         }
         Err(StatusCode::UNAUTHORIZED)
     }
@@ -143,52 +170,6 @@ pub mod middleware {
             .map(str::to_string)
     }
 
-    /// Decode a lowercase-hex `IdentityToken` JSON into an `AuthContext`.
-    /// (Transport only — see `IdentityToken`; verification is issue #7.)
-    fn decode_identity_token(token: &str) -> Result<AuthContext, StatusCode> {
-        let bytes = hex_decode(token).ok_or(StatusCode::UNAUTHORIZED)?;
-        let parsed: IdentityToken =
-            serde_json::from_slice(&bytes).map_err(|_| StatusCode::UNAUTHORIZED)?;
-        // Parity with the header path (`header_str` rejects blank tenant/org/user):
-        // a token must carry all three or it is unauthorized. Without this the token
-        // path is fail-open relative to the header contract — a blank org/user could
-        // yield an admin context with unauditable / FK-breaking attribution.
-        if parsed.tenant_id.trim().is_empty()
-            || parsed.organization_id.trim().is_empty()
-            || parsed.actor_user_id.trim().is_empty()
-        {
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-        Ok(AuthContext {
-            tenant_id: parsed.tenant_id,
-            organization_id: parsed.organization_id,
-            actor_user_id: parsed.actor_user_id,
-            org_role: parse_role(&parsed.org_role)?,
-            project_override_role: match parsed.project_override_role {
-                Some(role) => Some(parse_role(&role)?),
-                None => None,
-            },
-        })
-    }
-
-    /// Decode a lowercase-hex string to bytes. Dependency-free (avoids adding a
-    /// `hex`/`base64` crate, which would require an ARCHITECTURE.md update).
-    fn hex_decode(s: &str) -> Option<Vec<u8>> {
-        if s.is_empty() || !s.len().is_multiple_of(2) {
-            return None;
-        }
-        let bytes = s.as_bytes();
-        let mut out = Vec::with_capacity(s.len() / 2);
-        let mut i = 0;
-        while i < bytes.len() {
-            let hi = (bytes[i] as char).to_digit(16)?;
-            let lo = (bytes[i + 1] as char).to_digit(16)?;
-            out.push((hi * 16 + lo) as u8);
-            i += 2;
-        }
-        Some(out)
-    }
-
     fn parse_role(value: &str) -> Result<Role, StatusCode> {
         match value {
             "admin" => Ok(Role::Admin),
@@ -223,97 +204,65 @@ pub mod middleware {
     mod tests {
         use super::*;
 
-        fn hex_encode(bytes: &[u8]) -> String {
-            bytes.iter().map(|b| format!("{b:02x}")).collect()
-        }
+        #[test]
+        fn bearer_token_extracts_value() {
+            let mut h = HeaderMap::new();
+            h.insert("authorization", "Bearer abc123".parse().unwrap());
+            assert_eq!(bearer_token(&h).as_deref(), Some("abc123"));
 
-        fn dev_token(role: &str) -> String {
-            let json = format!(
-                r#"{{"tenant_id":"acme","organization_id":"org-1","actor_user_id":"u-1","org_role":"{role}"}}"#
-            );
-            hex_encode(json.as_bytes())
+            // Case-insensitive scheme, trimmed.
+            let mut h2 = HeaderMap::new();
+            h2.insert("authorization", "bearer  xyz ".parse().unwrap());
+            assert_eq!(bearer_token(&h2).as_deref(), Some("xyz"));
+
+            // Empty token and missing header yield None.
+            let mut h3 = HeaderMap::new();
+            h3.insert("authorization", "Bearer ".parse().unwrap());
+            assert_eq!(bearer_token(&h3), None);
+            assert_eq!(bearer_token(&HeaderMap::new()), None);
         }
 
         #[test]
-        fn header_path_still_works() {
+        fn subprotocol_token_picks_non_sentinel() {
+            let mut h = HeaderMap::new();
+            h.insert(
+                "sec-websocket-protocol",
+                format!("{WS_AUTH_SUBPROTOCOL}, tok-42").parse().unwrap(),
+            );
+            assert_eq!(subprotocol_token(&h).as_deref(), Some("tok-42"));
+
+            // Sentinel alone carries no token.
+            let mut only = HeaderMap::new();
+            only.insert(
+                "sec-websocket-protocol",
+                WS_AUTH_SUBPROTOCOL.parse().unwrap(),
+            );
+            assert_eq!(subprotocol_token(&only), None);
+            assert_eq!(subprotocol_token(&HeaderMap::new()), None);
+        }
+
+        #[test]
+        fn header_context_reads_all_fields() {
             let mut h = HeaderMap::new();
             h.insert("x-seasoned-hand-tenant-id", "acme".parse().unwrap());
             h.insert("x-seasoned-hand-organization-id", "org-1".parse().unwrap());
             h.insert("x-seasoned-hand-actor-user-id", "u-1".parse().unwrap());
             h.insert("x-seasoned-hand-org-role", "admin".parse().unwrap());
-            let ctx = parse_auth_context(&h).expect("header context");
+            let ctx = parse_header_context(&h).expect("header context");
             assert_eq!(ctx.tenant_id, "acme");
+            assert_eq!(ctx.actor_user_id, "u-1");
             assert_eq!(ctx.org_role, Role::Admin);
         }
 
         #[test]
-        fn bearer_token_authenticates() {
+        fn header_context_rejects_blank_fields() {
             let mut h = HeaderMap::new();
-            h.insert(
-                "authorization",
-                format!("Bearer {}", dev_token("user")).parse().unwrap(),
-            );
-            let ctx = parse_auth_context(&h).expect("bearer context");
-            assert_eq!(ctx.tenant_id, "acme");
-            assert_eq!(ctx.actor_user_id, "u-1");
-            assert_eq!(ctx.org_role, Role::User);
-        }
-
-        #[test]
-        fn subprotocol_token_authenticates() {
-            let mut h = HeaderMap::new();
-            // Browser offers the sentinel + the token; order should not matter.
-            h.insert(
-                "sec-websocket-protocol",
-                format!("{WS_AUTH_SUBPROTOCOL}, {}", dev_token("viewer"))
-                    .parse()
-                    .unwrap(),
-            );
-            let ctx = parse_auth_context(&h).expect("subprotocol context");
-            assert_eq!(ctx.tenant_id, "acme");
-            assert_eq!(ctx.org_role, Role::Viewer);
-        }
-
-        #[test]
-        fn no_credential_is_unauthorized() {
+            h.insert("x-seasoned-hand-tenant-id", "acme".parse().unwrap());
+            h.insert("x-seasoned-hand-organization-id", "".parse().unwrap());
+            h.insert("x-seasoned-hand-actor-user-id", "u-1".parse().unwrap());
+            h.insert("x-seasoned-hand-org-role", "admin".parse().unwrap());
             assert_eq!(
-                parse_auth_context(&HeaderMap::new()).unwrap_err(),
-                StatusCode::UNAUTHORIZED
-            );
-        }
-
-        #[test]
-        fn malformed_token_is_unauthorized() {
-            let mut h = HeaderMap::new();
-            h.insert("authorization", "Bearer zzzz".parse().unwrap());
-            assert_eq!(
-                parse_auth_context(&h).unwrap_err(),
-                StatusCode::UNAUTHORIZED
-            );
-        }
-
-        #[test]
-        fn token_with_blank_org_or_user_is_unauthorized() {
-            // Parity with the header path: org + user must be non-blank, not just tenant.
-            let json = r#"{"tenant_id":"acme","organization_id":"","actor_user_id":"","org_role":"admin"}"#;
-            let token = hex_encode(json.as_bytes());
-            let mut h = HeaderMap::new();
-            h.insert("authorization", format!("Bearer {token}").parse().unwrap());
-            assert_eq!(
-                parse_auth_context(&h).unwrap_err(),
-                StatusCode::UNAUTHORIZED
-            );
-        }
-
-        #[test]
-        fn sentinel_only_subprotocol_is_unauthorized() {
-            let mut h = HeaderMap::new();
-            h.insert(
-                "sec-websocket-protocol",
-                WS_AUTH_SUBPROTOCOL.parse().unwrap(),
-            );
-            assert_eq!(
-                parse_auth_context(&h).unwrap_err(),
+                parse_header_context(&h).unwrap_err(),
                 StatusCode::UNAUTHORIZED
             );
         }

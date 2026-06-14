@@ -74,7 +74,8 @@ async fn boot_with_workspace(file: &str, contents: &[u8]) -> String {
 
     let search = SearchClient::new(SearchProvider::Brave { api_key: None });
     let router = SlotRouter::default_for_bifrost();
-    let state = AppState::new(pool, redis, sandbox, search, router, Default::default());
+    let state = AppState::new(pool, redis, sandbox, search, router, Default::default())
+        .allow_insecure_auth_headers();
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");

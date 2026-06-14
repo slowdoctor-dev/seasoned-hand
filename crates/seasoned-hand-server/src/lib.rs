@@ -110,6 +110,14 @@ pub struct AppState {
     /// `503 admin_token_not_configured` instead of allowing
     /// unauthenticated access (PRINCIPLE #10: fail visibly).
     pub admin_token: Arc<String>,
+    /// Issue #7 / ADR-018: opaque session-token store. Powers `/v1/auth/login`
+    /// and the DB-backed verification in the auth middleware.
+    pub auth_sessions: Arc<seasoned_hand_core::auth::AuthSessionStore>,
+    /// Issue #7 / ADR-018: when `true` (`SH_INSECURE_AUTH_HEADERS` set), the
+    /// legacy client-asserted `x-seasoned-hand-*` header path is accepted for
+    /// loopback dev / tests / CLI. Default `false` → only verified session tokens
+    /// authenticate.
+    pub allow_insecure_headers: bool,
     /// Story 1.13b: opt-in flag that lets the VerifierGate trigger a
     /// checkpoint rollback when a verdict carries
     /// `rollback_required: true`. Default `false` per phase-1/DEBT.md #3
@@ -491,6 +499,13 @@ impl AppState {
             db.clone(),
             seasoned_hand_core::task::TtlConfig::from_env(),
         ));
+        // Issue #7 / ADR-018: verified-session store + the insecure-headers
+        // escape hatch (default off → client-asserted headers are not trusted).
+        let auth_sessions = Arc::new(seasoned_hand_core::auth::AuthSessionStore::new(db.clone()));
+        let allow_insecure_headers = std::env::var("SH_INSECURE_AUTH_HEADERS")
+            .map(|v| matches!(v.trim(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+
         let state = Self {
             db,
             redis,
@@ -509,6 +524,8 @@ impl AppState {
             checkpoint_labels,
             checkpoints,
             admin_token,
+            auth_sessions,
+            allow_insecure_headers,
             checkpoint_rollback_on_verifier_fail,
             cancel_tokens,
             breakers,
@@ -748,6 +765,14 @@ impl AppState {
     /// explicitly to avoid racing on process env vars.
     pub fn with_admin_token(mut self, token: impl Into<String>) -> Self {
         self.admin_token = Arc::new(token.into());
+        self
+    }
+
+    /// Issue #7 / ADR-018: enable the legacy `x-seasoned-hand-*` header auth path
+    /// (equivalent to setting `SH_INSECURE_AUTH_HEADERS`). Primarily for tests and
+    /// loopback dev that assert header-based identity without a session login.
+    pub fn allow_insecure_auth_headers(mut self) -> Self {
+        self.allow_insecure_headers = true;
         self
     }
 
@@ -1459,6 +1484,16 @@ async fn get_progress(
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        // Issue #7 / ADR-018: auth endpoints are intentionally public — login
+        // mints the first credential; dev-login self-gates on loopback + flag.
+        .route(
+            "/v1/auth/login",
+            axum::routing::post(post_auth_login_handler),
+        )
+        .route(
+            "/v1/auth/dev-login",
+            axum::routing::post(post_auth_dev_login_handler),
+        )
         .route("/ws", with_auth(get(ws::ws_upgrade), Action::TaskRead))
         .route("/v1/cost", get(cost_snapshot))
         .route(
@@ -1682,7 +1717,94 @@ pub fn app(state: AppState) -> Router {
                 Action::TaskWrite,
             ),
         )
+        // Issue #7 / ADR-018: make the verified-session store + insecure-headers
+        // flag reachable by the per-route auth middleware (which runs as a
+        // stateless `from_fn`) without threading state through every `with_auth`.
+        .layer(Extension(auth::middleware::AuthDeps {
+            sessions: state.auth_sessions.clone(),
+            allow_insecure_headers: state.allow_insecure_headers,
+        }))
         .with_state(state)
+}
+
+// ---------------------------------------------------------------------------
+// Issue #7 / ADR-018: verified-session auth endpoints.
+
+#[derive(Deserialize)]
+struct LoginRequest {
+    invitation_token: String,
+}
+
+#[derive(Serialize)]
+struct LoginResponse {
+    access_token: String,
+    expires_at: i64,
+    tenant_id: String,
+    organization_id: String,
+    actor_user_id: String,
+    org_role: String,
+}
+
+fn role_str(role: seasoned_hand_core::auth::Role) -> &'static str {
+    use seasoned_hand_core::auth::Role;
+    match role {
+        Role::Admin => "admin",
+        Role::User => "user",
+        Role::Viewer => "viewer",
+    }
+}
+
+fn login_response(result: seasoned_hand_core::auth::LoginResult) -> Json<LoginResponse> {
+    Json(LoginResponse {
+        access_token: result.token,
+        expires_at: result.expires_at,
+        tenant_id: result.context.tenant_id,
+        organization_id: result.context.organization_id,
+        actor_user_id: result.context.actor_user_id,
+        org_role: role_str(result.context.org_role).to_string(),
+    })
+}
+
+/// Exchange a single-use invitation token for a session token. Public
+/// (unauthenticated) by necessity — it mints the first credential.
+async fn post_auth_login_handler(
+    State(state): State<AppState>,
+    Json(body): Json<LoginRequest>,
+) -> Result<Json<LoginResponse>, (StatusCode, Json<ApiError>)> {
+    use seasoned_hand_core::auth::AuthLoginError;
+    match state.auth_sessions.login(&body.invitation_token).await {
+        Ok(result) => Ok(login_response(result)),
+        Err(AuthLoginError::InvalidInvitation) => Err(api_err(
+            StatusCode::UNAUTHORIZED,
+            "invalid_invitation".into(),
+        )),
+        Err(AuthLoginError::NoMembership) => {
+            Err(api_err(StatusCode::FORBIDDEN, "no_membership".into()))
+        }
+        Err(AuthLoginError::Db(_)) => Err(api_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "login_failed".into(),
+        )),
+    }
+}
+
+/// Loopback-gated dev affordance: issue a session for a default dev identity so
+/// the browser UI works in local dev before the real client login flow (#26).
+/// Refuses unless `SH_INSECURE_AUTH_HEADERS` is set AND the caller is loopback.
+async fn post_auth_dev_login_handler(
+    State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+) -> Result<Json<LoginResponse>, (StatusCode, Json<ApiError>)> {
+    require_loopback(remote)?;
+    if !state.allow_insecure_headers {
+        return Err(api_err(StatusCode::FORBIDDEN, "dev_login_disabled".into()));
+    }
+    state
+        .auth_sessions
+        .issue_dev_session()
+        .await
+        .map(login_response)
+        .map_err(|_| api_err(StatusCode::INTERNAL_SERVER_ERROR, "dev_login_failed".into()))
 }
 
 // ---------------------------------------------------------------------------
