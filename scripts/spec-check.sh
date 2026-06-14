@@ -134,6 +134,20 @@ check "Phase 5 close-out spec hook" \
    && [ -f specs/phase-5/architecture.md ] \
    && [ -f specs/phase-5/requirements.md ]"
 
+# Check 11: Issue #9 / V021 task hierarchy regression guard.
+# V014 rebuilt `tasks` and accidentally dropped the V006 self-FK on
+# `parent_task_id` plus the parent/schedule indexes. Pin the restoring
+# migration and also reject any later tasks table rebuild that omits the
+# same contract.
+check "Task parent FK + schedule index regression guard" \
+  "[ -f migrations/V021__restore_task_parent_fk_and_indexes.sql ] \
+   && grep -q 'parent_task_id[[:space:]]*TEXT REFERENCES tasks(id)' migrations/V021__restore_task_parent_fk_and_indexes.sql \
+   && grep -q 'CREATE INDEX idx_tasks_parent[[:space:]]*ON tasks(parent_task_id)' migrations/V021__restore_task_parent_fk_and_indexes.sql \
+   && grep -q 'CREATE INDEX idx_tasks_schedule[[:space:]]*ON tasks(schedule) WHERE schedule IS NOT NULL' migrations/V021__restore_task_parent_fk_and_indexes.sql \
+   && ! find migrations -name 'V0[2-9][2-9]__*.sql' -print0 | xargs -0 grep -L 'parent_task_id[[:space:]]*TEXT REFERENCES tasks(id)' | xargs grep -l 'CREATE TABLE tasks_' \
+   && ! find migrations -name 'V0[2-9][2-9]__*.sql' -print0 | xargs -0 grep -L 'CREATE INDEX idx_tasks_parent[[:space:]]*ON tasks(parent_task_id)' | xargs grep -l 'CREATE TABLE tasks_' \
+   && ! find migrations -name 'V0[2-9][2-9]__*.sql' -print0 | xargs -0 grep -L 'CREATE INDEX idx_tasks_schedule[[:space:]]*ON tasks(schedule) WHERE schedule IS NOT NULL' | xargs grep -l 'CREATE TABLE tasks_'"
+
 echo ""
 echo "=== Results ==="
 echo "Pass: $PASS"

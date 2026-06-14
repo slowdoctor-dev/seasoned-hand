@@ -1,16 +1,23 @@
 //! REST client for the control-plane `/v1` routes. Direct Rust port of
 //! `frontend/lib/api.ts` using `gloo-net` (wasm `fetch`).
 
-use crate::config::api_base;
+use crate::config::{api_base, auth_token};
 use gloo_net::http::Request;
 use seasoned_hand_dto::*;
 
 /// Error string surfaced to the UI (kept simple; callers render it inline).
 pub type ApiResult<T> = Result<T, String>;
 
+/// `Authorization: Bearer <token>` value (ADR-017). The browser can set this
+/// header on `fetch`; only the WebSocket upgrade needs the subprotocol fallback.
+fn bearer() -> String {
+    format!("Bearer {}", auth_token())
+}
+
 async fn get_json<T: serde::de::DeserializeOwned>(path: &str) -> ApiResult<T> {
     let url = format!("{}{}", api_base(), path);
     let resp = Request::get(&url)
+        .header("Authorization", &bearer())
         .send()
         .await
         .map_err(|e| format!("GET {path} -> {e}"))?;
@@ -28,6 +35,7 @@ async fn post_json<B: serde::Serialize, T: serde::de::DeserializeOwned>(
 ) -> ApiResult<T> {
     let url = format!("{}{}", api_base(), path);
     let resp = Request::post(&url)
+        .header("Authorization", &bearer())
         .json(body)
         .map_err(|e| format!("POST {path} encode -> {e}"))?
         .send()
@@ -118,6 +126,7 @@ pub async fn read_workspace_file(session_id: &str, path: &str) -> ApiResult<Stri
         tail
     );
     let resp = Request::get(&url)
+        .header("Authorization", &bearer())
         .send()
         .await
         .map_err(|e| format!("GET {path} -> {e}"))?;

@@ -1,6 +1,8 @@
 // Minimal fetch wrapper for the Rust control plane's /v1 routes.
 // Used by frontend components that need REST (TaskList, EditorTab, etc.).
 
+import { authHeaders } from "./auth";
+
 // Single source of truth for the control-plane REST base URL. SSR-safe
 // (empty during prerender) and overridable via NEXT_PUBLIC_API_URL.
 export const API_BASE =
@@ -26,7 +28,7 @@ export type SessionSummary = {
 };
 
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`);
+  const res = await fetch(`${API_BASE}${path}`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`GET ${path} -> ${res.status}`);
   return (await res.json()) as T;
 }
@@ -34,7 +36,7 @@ async function get<T>(path: string): Promise<T> {
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`POST ${path} -> ${res.status}`);
