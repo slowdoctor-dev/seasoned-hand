@@ -66,9 +66,10 @@ order — (1) `x-seasoned-hand-*` headers (unchanged; service-to-service + tests
 entry. The token decodes to the same `AuthContext` fields. `ws_upgrade` selects the
 sentinel subprotocol so the handshake succeeds.
 
-**Token shape (this slice):** a base64url-encoded JSON object
+**Token shape (this slice):** the lowercase-hex encoding of a JSON object
 `{tenant_id, organization_id, actor_user_id, org_role}` — an **unsigned identity
-assertion**. It fixes the *transport* and makes the browser UI functional; it is
+assertion** (hex keeps the token within the RFC 6455 subprotocol token charset
+without an added `base64`/`hex` crate dependency). It fixes the *transport* and makes the browser UI functional; it is
 **no more trusted than the current headers** (still client-asserted — see #7). The
 real credential — signed/expiring token minted by a login endpoint that validates
 `user_invitation_tokens` — is issue #7 and replaces only the *decode/verify* step,

@@ -149,7 +149,14 @@ pub mod middleware {
         let bytes = hex_decode(token).ok_or(StatusCode::UNAUTHORIZED)?;
         let parsed: IdentityToken =
             serde_json::from_slice(&bytes).map_err(|_| StatusCode::UNAUTHORIZED)?;
-        if parsed.tenant_id.trim().is_empty() {
+        // Parity with the header path (`header_str` rejects blank tenant/org/user):
+        // a token must carry all three or it is unauthorized. Without this the token
+        // path is fail-open relative to the header contract — a blank org/user could
+        // yield an admin context with unauditable / FK-breaking attribution.
+        if parsed.tenant_id.trim().is_empty()
+            || parsed.organization_id.trim().is_empty()
+            || parsed.actor_user_id.trim().is_empty()
+        {
             return Err(StatusCode::UNAUTHORIZED);
         }
         Ok(AuthContext {
@@ -279,6 +286,19 @@ pub mod middleware {
         fn malformed_token_is_unauthorized() {
             let mut h = HeaderMap::new();
             h.insert("authorization", "Bearer zzzz".parse().unwrap());
+            assert_eq!(
+                parse_auth_context(&h).unwrap_err(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+
+        #[test]
+        fn token_with_blank_org_or_user_is_unauthorized() {
+            // Parity with the header path: org + user must be non-blank, not just tenant.
+            let json = r#"{"tenant_id":"acme","organization_id":"","actor_user_id":"","org_role":"admin"}"#;
+            let token = hex_encode(json.as_bytes());
+            let mut h = HeaderMap::new();
+            h.insert("authorization", format!("Bearer {token}").parse().unwrap());
             assert_eq!(
                 parse_auth_context(&h).unwrap_err(),
                 StatusCode::UNAUTHORIZED
