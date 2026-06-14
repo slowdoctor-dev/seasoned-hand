@@ -1,29 +1,44 @@
 //! REST client for the control-plane `/v1` routes. Direct Rust port of
 //! `frontend/lib/api.ts` using `gloo-net` (wasm `fetch`).
 
-use crate::config::{api_base, auth_token};
-use gloo_net::http::Request;
+use crate::auth;
+use crate::config::api_base;
+use gloo_net::http::{Request, RequestBuilder, Response};
 use seasoned_hand_dto::*;
 
 /// Error string surfaced to the UI (kept simple; callers render it inline).
 pub type ApiResult<T> = Result<T, String>;
 
-/// `Authorization: Bearer <token>` value (ADR-017). The browser can set this
-/// header on `fetch`; only the WebSocket upgrade needs the subprotocol fallback.
-fn bearer() -> String {
-    format!("Bearer {}", auth_token())
+/// Attach `Authorization: Bearer <token>` when a verified session is available
+/// (issue #26 / ADR-018). Requests fired before login carry no token and the
+/// server replies 401, which routes through [`check_status`] to the login flow.
+fn with_auth(builder: RequestBuilder) -> RequestBuilder {
+    match auth::current_token() {
+        Some(token) => builder.header("Authorization", &format!("Bearer {token}")),
+        None => builder,
+    }
+}
+
+/// Treat a 401 as "session no longer valid": clear it and return to the login
+/// screen. Any other non-2xx becomes a plain error string.
+fn check_status(resp: &Response, ctx: &str) -> ApiResult<()> {
+    if resp.status() == 401 {
+        auth::on_unauthorized();
+    }
+    if resp.ok() {
+        Ok(())
+    } else {
+        Err(format!("{ctx} -> {}", resp.status()))
+    }
 }
 
 async fn get_json<T: serde::de::DeserializeOwned>(path: &str) -> ApiResult<T> {
     let url = format!("{}{}", api_base(), path);
-    let resp = Request::get(&url)
-        .header("Authorization", &bearer())
+    let resp = with_auth(Request::get(&url))
         .send()
         .await
         .map_err(|e| format!("GET {path} -> {e}"))?;
-    if !resp.ok() {
-        return Err(format!("GET {path} -> {}", resp.status()));
-    }
+    check_status(&resp, &format!("GET {path}"))?;
     resp.json::<T>()
         .await
         .map_err(|e| format!("GET {path} decode -> {e}"))
@@ -34,16 +49,13 @@ async fn post_json<B: serde::Serialize, T: serde::de::DeserializeOwned>(
     body: &B,
 ) -> ApiResult<T> {
     let url = format!("{}{}", api_base(), path);
-    let resp = Request::post(&url)
-        .header("Authorization", &bearer())
+    let resp = with_auth(Request::post(&url))
         .json(body)
         .map_err(|e| format!("POST {path} encode -> {e}"))?
         .send()
         .await
         .map_err(|e| format!("POST {path} -> {e}"))?;
-    if !resp.ok() {
-        return Err(format!("POST {path} -> {}", resp.status()));
-    }
+    check_status(&resp, &format!("POST {path}"))?;
     resp.json::<T>()
         .await
         .map_err(|e| format!("POST {path} decode -> {e}"))
@@ -125,14 +137,11 @@ pub async fn read_workspace_file(session_id: &str, path: &str) -> ApiResult<Stri
         urlencode(session_id),
         tail
     );
-    let resp = Request::get(&url)
-        .header("Authorization", &bearer())
+    let resp = with_auth(Request::get(&url))
         .send()
         .await
         .map_err(|e| format!("GET {path} -> {e}"))?;
-    if !resp.ok() {
-        return Err(format!("GET {path} -> {}", resp.status()));
-    }
+    check_status(&resp, &format!("GET {path}"))?;
     resp.text()
         .await
         .map_err(|e| format!("GET {path} text -> {e}"))

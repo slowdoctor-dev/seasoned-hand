@@ -7,11 +7,14 @@ use dioxus::prelude::*;
 mod agent_computer;
 mod briefing_card;
 mod chat;
+mod login;
 mod project_list;
 mod task_list;
 mod three_panel;
 
+use crate::auth::{self, AuthState};
 use crate::ws::{use_agent_socket, AgentSocket};
+use login::Login;
 use three_panel::ThreePanel;
 
 /// The active selection shared across the three panels. All fields are `Copy`
@@ -38,7 +41,30 @@ pub fn App() -> Element {
     let socket = use_agent_socket(selection.session_id);
     use_context_provider(|| socket.clone());
 
-    rsx! { ThreePanel {} }
+    // Issue #26: bootstrap a verified session once on mount — reuse a stored
+    // session, else try zero-friction dev-login, else fall back to the
+    // invitation-token form. The socket coroutine waits for the token.
+    use_future(|| async move {
+        if auth::load_session().is_some() {
+            *auth::AUTH.write() = AuthState::Authed;
+            return;
+        }
+        match auth::dev_login().await {
+            Ok(session) => {
+                auth::store_session(&session);
+                *auth::AUTH.write() = AuthState::Authed;
+            }
+            Err(_) => *auth::AUTH.write() = AuthState::NeedLogin(None),
+        }
+    });
+
+    match auth::AUTH() {
+        AuthState::Loading => rsx! {
+            div { class: "auth-screen", "Authenticating…" }
+        },
+        AuthState::NeedLogin(error) => rsx! { Login { error } },
+        AuthState::Authed => rsx! { ThreePanel {} },
+    }
 }
 
 /// Convenience accessors used by the panels.
