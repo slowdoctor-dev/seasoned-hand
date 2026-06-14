@@ -89,9 +89,15 @@ slots:
     let addr = listener.local_addr().expect("read local test address");
 
     tokio::spawn(async move {
-        axum::serve(listener, app(state))
-            .await
-            .expect("serve cost test app");
+        // /v1/cost is now self-gated on loopback (issue #21), so the handler needs
+        // ConnectInfo — serve with connect-info like the other guarded routes. The
+        // request below originates from 127.0.0.1, satisfying require_loopback.
+        axum::serve(
+            listener,
+            app(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .expect("serve cost test app");
     });
 
     let resp = reqwest::get(format!("http://{addr}/v1/cost"))

@@ -31,6 +31,14 @@ async fn boot() -> String {
             [],
         )
         .unwrap();
+        // A plain member (role User) who does NOT own sop-1 — for the issue #8
+        // "forged resource header cannot escalate" case.
+        conn.execute(
+            "INSERT INTO users (id, tenant_id, email, display_name, status, created_at, updated_at)
+             VALUES ('u-member', 'tenant-a', 'member@acme.dev', 'Member', 'active', 1, 1)",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO sops (id, title, content, version, enforced, created_at, updated_at)
              VALUES ('sop-1', 'Deploy', 'Checklist', 1, 1, 1, 1)",
@@ -132,4 +140,48 @@ async fn admin_can_override_grant() {
         .find(|v| v["subject_email"] == "viewer@acme.dev")
         .expect("viewer share row");
     assert_eq!(row["permission"], "editor");
+}
+
+#[tokio::test]
+async fn forged_resource_header_does_not_let_non_owner_user_share() {
+    // Issue #8: a non-owner User forging x-seasoned-hand-resource-can-share=true is
+    // still denied — the middleware no longer reads that header, and the share
+    // service authorizes against DB share rows (u-member owns nothing).
+    let base = boot().await;
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("x-seasoned-hand-tenant-id", "tenant-a".parse().unwrap());
+    headers.insert("x-seasoned-hand-organization-id", "org-a".parse().unwrap());
+    headers.insert("x-seasoned-hand-actor-user-id", "u-member".parse().unwrap());
+    headers.insert("x-seasoned-hand-org-role", "user".parse().unwrap());
+    // Forged resource fact — must have no effect.
+    headers.insert(
+        "x-seasoned-hand-resource-can-share",
+        "true".parse().unwrap(),
+    );
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .unwrap();
+    let resp = client
+        .post(format!("{base}/v1/sops/sop-1/shares"))
+        .json(&json!({ "user_email": "viewer@acme.dev", "permission": "editor" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn owner_user_can_share_when_db_facts_allow() {
+    // Issue #8: a User who actually owns the SOP (DB share row) CAN share — the
+    // coarse middleware lets them attempt and the service authorizes from the DB.
+    let base = boot().await;
+    let client = auth_client("u-owner", "user");
+    let resp = client
+        .post(format!("{base}/v1/sops/sop-1/shares"))
+        .json(&json!({ "user_email": "viewer@acme.dev", "permission": "editor" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
 }

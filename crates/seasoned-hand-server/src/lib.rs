@@ -22,7 +22,7 @@ use seasoned_hand_core::agent::init::progress;
 use seasoned_hand_core::agent::narrate::NarratorHook;
 use seasoned_hand_core::agent::{AgentRunner, AgentRunnerDeps};
 use seasoned_hand_core::audit::{AuditLogger, AuditQuery};
-use seasoned_hand_core::auth::{Action, AuthContext, AuthResource, authorize};
+use seasoned_hand_core::auth::{Action, AuthContext, authorize_coarse};
 use seasoned_hand_core::billing::{ReconciliationJob, ReconciliationReport};
 use seasoned_hand_core::browser::tracks::PostBrowserActionHook;
 use seasoned_hand_core::capability::ModelCapabilities;
@@ -858,14 +858,33 @@ fn api_err(status: StatusCode, code: String) -> ApiErrorResponse {
     (status, Json(ApiError { error: code }))
 }
 
+/// Issue #21 — explicit route auth classification. Every route in `app()` is
+/// wrapped by exactly one of `with_auth` (protected), `public`, or `self_gated`,
+/// so there are no bare/unclassified routes that silently skip auth. `with_auth`
+/// attaches the verified-session + coarse-RBAC middleware; `public`/`self_gated`
+/// are explicit markers that document why a route carries no session gate.
 fn with_auth(route: MethodRouter<AppState>, action: Action) -> MethodRouter<AppState> {
     route
         .route_layer(middleware::from_fn(auth::middleware::require_auth_context))
         .layer(Extension(auth::middleware::RouteAction(action)))
 }
 
+/// A genuinely public route (no authentication): health + the login endpoints
+/// that mint the first credential. Identity wrapper — the classification is the
+/// documentation.
+fn public(route: MethodRouter<AppState>) -> MethodRouter<AppState> {
+    route
+}
+
+/// A route that performs its OWN authentication in the handler (loopback and/or
+/// admin/webhook token) rather than via a verified session — operational /
+/// machine endpoints. Identity wrapper; the handler MUST self-guard.
+fn self_gated(route: MethodRouter<AppState>) -> MethodRouter<AppState> {
+    route
+}
+
 fn authorize_in_handler(action: Action, ctx: &AuthContext) -> ApiResult<()> {
-    authorize(action, &AuthResource::default(), ctx).map_err(|err| match err {
+    authorize_coarse(action, ctx).map_err(|err| match err {
         seasoned_hand_core::auth::AuthError::MissingTenantContext => {
             api_err(StatusCode::UNAUTHORIZED, "unauthorized_context".into())
         }
@@ -1405,7 +1424,11 @@ async fn workspace_proxy_inner(
 
 async fn cost_snapshot(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
 ) -> Result<Json<CostSnapshot>, (StatusCode, Json<ApiError>)> {
+    // Issue #21: the cost snapshot is GLOBAL (not tenant-scoped); restrict it to
+    // loopback (host/ops) callers rather than leaving it unauthenticated.
+    require_loopback(remote)?;
     match state.cost.snapshot().await {
         Ok(snapshot) => Ok(Json(snapshot)),
         Err(error) => {
@@ -1483,19 +1506,19 @@ async fn get_progress(
 
 pub fn app(state: AppState) -> Router {
     Router::new()
-        .route("/healthz", get(healthz))
-        // Issue #7 / ADR-018: auth endpoints are intentionally public — login
-        // mints the first credential; dev-login self-gates on loopback + flag.
+        .route("/healthz", public(get(healthz)))
+        // Issue #7 / ADR-018: auth endpoints — login is public (mints the first
+        // credential); dev-login self-gates on loopback + flag.
         .route(
             "/v1/auth/login",
-            axum::routing::post(post_auth_login_handler),
+            public(axum::routing::post(post_auth_login_handler)),
         )
         .route(
             "/v1/auth/dev-login",
-            axum::routing::post(post_auth_dev_login_handler),
+            self_gated(axum::routing::post(post_auth_dev_login_handler)),
         )
         .route("/ws", with_auth(get(ws::ws_upgrade), Action::TaskRead))
-        .route("/v1/cost", get(cost_snapshot))
+        .route("/v1/cost", self_gated(get(cost_snapshot)))
         .route(
             "/v1/sessions",
             with_auth(get(list_sessions), Action::TaskRead),
@@ -1571,21 +1594,24 @@ pub fn app(state: AppState) -> Router {
         // route above (configured-token / loopback / header match).
         .route(
             "/v1/admin/sandbox/cleanup",
-            axum::routing::post(post_admin_sandbox_cleanup_handler),
+            self_gated(axum::routing::post(post_admin_sandbox_cleanup_handler)),
         )
         // Story 2.5: channel introspection.
-        .route("/v1/channels", get(list_channels_handler))
-        .route("/v1/channels/:name/health", get(get_channel_health_handler))
+        .route("/v1/channels", self_gated(get(list_channels_handler)))
+        .route(
+            "/v1/channels/:name/health",
+            self_gated(get(get_channel_health_handler)),
+        )
         .route(
             "/v1/channels/:name/test",
-            axum::routing::post(post_channel_test_handler),
+            self_gated(axum::routing::post(post_channel_test_handler)),
         )
         // Story 2.10: WebhookChannel intake source — HTTP POST is the
         // long-lived listener (the channel's `IntakeProvider::run` is
         // a no-op and parks on shutdown, see channel/webhook/mod.rs).
         .route(
             "/v1/intake/webhook",
-            axum::routing::post(post_intake_webhook_handler),
+            self_gated(axum::routing::post(post_intake_webhook_handler)),
         )
         // Story 2.15: per-task provenance manifest. Returns the latest
         // deliverable's manifest by default, or a specific deliverable's
@@ -1704,7 +1730,7 @@ pub fn app(state: AppState) -> Router {
         // (loopback-only, same posture as the 2.21a routes above).
         .route(
             "/v1/intake/cli",
-            axum::routing::post(post_intake_cli_handler),
+            self_gated(axum::routing::post(post_intake_cli_handler)),
         )
         .route(
             "/v1/inbox",
@@ -2787,6 +2813,10 @@ async fn get_task_handoff_can_handler(
 ) -> ApiResult<Json<TaskHandoffCanResponse>> {
     require_loopback(remote)?;
     authorize_in_handler(Action::TaskHandoff, &auth_ctx)?;
+    // Issue #8: the coarse RBAC gate lets a User reach this read; scope the task
+    // to the caller's tenant (404 on mismatch) so cross-tenant handoff-status
+    // isn't exposed by id.
+    require_task_tenant(&state, &task_id, &auth_ctx).await?;
     let handoff = TaskHandoffService::new(
         state.db.clone(),
         state.events.clone(),

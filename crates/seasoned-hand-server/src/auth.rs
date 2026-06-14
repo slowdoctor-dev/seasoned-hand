@@ -11,7 +11,7 @@ pub mod middleware {
     use axum::middleware::Next;
     use axum::response::Response;
     use seasoned_hand_core::auth::{
-        Action, AuthContext, AuthError, AuthResource, AuthSessionStore, Role, authorize,
+        Action, AuthContext, AuthError, AuthSessionStore, Role, authorize_coarse,
     };
     use serde::Serialize;
     use std::sync::Arc;
@@ -51,9 +51,18 @@ pub mod middleware {
         req: Request,
         next: Next,
     ) -> Result<Response, (StatusCode, Json<ApiError>)> {
+        // Issue #21: this middleware only runs on routes wrapped by `with_auth`,
+        // which always attach a `RouteAction`. A missing action therefore means a
+        // misconfigured route — fail CLOSED (deny) rather than letting the request
+        // through unauthenticated.
         let action = req.extensions().get::<RouteAction>().copied();
         let Some(RouteAction(action)) = action else {
-            return Ok(next.run(req).await);
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(ApiError {
+                    error: "auth_route_unclassified".to_string(),
+                }),
+            ));
         };
 
         let remote = req
@@ -71,14 +80,11 @@ pub mod middleware {
                 )
             })?;
 
-        let resource = AuthResource {
-            is_same_org: parse_bool_header(req.headers(), "x-seasoned-hand-resource-same-org")
-                .unwrap_or(true),
-            actor_can_share: parse_bool_header(req.headers(), "x-seasoned-hand-resource-can-share")
-                .unwrap_or(true),
-        };
-
-        authorize(action, &resource, &context).map_err(|err| {
+        // Issue #8: coarse, resource-INDEPENDENT RBAC. The forgeable
+        // `x-seasoned-hand-resource-*` headers are gone; per-resource
+        // authorization (handoff tenant-scoping, share `actor_can_share` from the
+        // DB) is enforced downstream by the service layer.
+        authorize_coarse(action, &context).map_err(|err| {
             let status = match err {
                 AuthError::MissingTenantContext => StatusCode::UNAUTHORIZED,
                 AuthError::Unauthorized { .. } => StatusCode::FORBIDDEN,
@@ -93,7 +99,6 @@ pub mod middleware {
 
         let mut req = req;
         req.extensions_mut().insert(context);
-        req.extensions_mut().insert(resource);
         Ok(next.run(req).await)
     }
 
@@ -177,14 +182,6 @@ pub mod middleware {
             "viewer" => Ok(Role::Viewer),
             _ => Err(StatusCode::UNAUTHORIZED),
         }
-    }
-
-    fn parse_bool_header(headers: &HeaderMap, name: &str) -> Option<bool> {
-        optional_header_str(headers, name).and_then(|v| match v.as_str() {
-            "1" | "true" | "yes" => Some(true),
-            "0" | "false" | "no" => Some(false),
-            _ => None,
-        })
     }
 
     fn header_str(headers: &HeaderMap, name: &str) -> Result<String, StatusCode> {
