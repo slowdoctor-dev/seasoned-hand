@@ -36,6 +36,7 @@ async fn test_state() -> AppState {
     let search = SearchClient::new(SearchProvider::Brave { api_key: None });
     let router = SlotRouter::default_for_bifrost();
     AppState::new(pool, redis, sandbox, search, router, Default::default())
+        .allow_insecure_auth_headers()
 }
 
 #[tokio::test]

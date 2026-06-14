@@ -45,7 +45,8 @@ async fn test_state() -> AppState {
         search,
         router,
         Default::default(),
-    );
+    )
+    .allow_insecure_auth_headers();
     pool.with_conn(|conn| {
         conn.execute(
             "INSERT INTO organizations (id, tenant_id, slug, display_name, status, created_at, updated_at)

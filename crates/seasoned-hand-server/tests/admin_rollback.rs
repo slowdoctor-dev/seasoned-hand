@@ -119,7 +119,8 @@ async fn build_harness(session_state: &str, admin_token: Option<&str>) -> Harnes
         search,
         router,
         Default::default(),
-    );
+    )
+    .allow_insecure_auth_headers();
     if let Some(token) = admin_token {
         state = state.with_admin_token(token);
     }

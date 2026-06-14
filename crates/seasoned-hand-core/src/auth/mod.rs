@@ -5,8 +5,10 @@
 
 pub mod context;
 pub mod policy;
+pub mod session;
 pub mod system;
 
 pub use context::{Action, AuthContext, Role};
 pub use policy::{AuthError, AuthResource, authorize};
+pub use session::{AuthLoginError, AuthSessionStore, LoginResult};
 pub use system::SystemAuth;
