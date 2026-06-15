@@ -19,7 +19,7 @@ use seasoned_hand_core::channel::{
 };
 use seasoned_hand_core::events::{Event, EventQuery, EventStore, EventType, NewEvent};
 use seasoned_hand_core::intake::router::{HandleOutcome, RejectionReason};
-use seasoned_hand_dto::ServerEnvelope;
+use seasoned_hand_dto::{BriefingActionTag, CommandPayload, ServerEnvelope};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -48,79 +48,12 @@ pub enum ClientEnvelope {
     },
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "cmd", rename_all = "snake_case")]
-pub enum CommandPayload {
-    Subscribe {
-        session_id: String,
-        from_event_id: Option<i64>,
-    },
-    TaskCreate {
-        input: String,
-        max_steps: Option<u32>,
-        cost_cap_cents: Option<u32>,
-    },
-    /// Story 2.16: `durable` is additive on top of Phase 1 1.17.
-    /// `Some(true)` (the default — `None` resolves to true) emits a
-    /// `task_paused_durable` Misc *before* the existing `task_paused`
-    /// Misc, carrying the sandbox / workspace / event-cursor metadata
-    /// the rebuild path consumes when the sandbox container is gone
-    /// at resume time.
-    TaskPause {
-        session_id: String,
-        #[serde(default)]
-        durable: Option<bool>,
-    },
-    TaskResume {
-        session_id: String,
-    },
-    TaskCancel {
-        session_id: String,
-    },
-    UserResponse {
-        session_id: String,
-        in_reply_to_call_id: String,
-        content: String,
-    },
-    /// Story 2.8b: the briefing-confirm verb the chat client emits in
-    /// response to a `Briefing` Misc event. The Initializer's
-    /// per-task `mpsc::Receiver<UserResponse>` (registered in
-    /// [`AppState::briefing_senders`](crate::AppState::briefing_senders)
-    /// at `task_create` time) consumes the forwarded envelope and the
-    /// confirm gate progresses to `seed_plan_and_run` / `cancelled` /
-    /// next briefing emit.
-    ///
-    /// Wire shape mirrors architecture §4 — `{action: "confirm" |
-    /// "edit" | "cancel", edits?: PartialBrief}` — flattened so the
-    /// JSON form is `{cmd:"briefing_confirm", task_id, in_reply_to_call_id,
-    /// action, edits?}`. The `edits` field is only consulted when
-    /// `action == "edit"`.
-    BriefingConfirm {
-        task_id: String,
-        in_reply_to_call_id: String,
-        action: BriefingActionTag,
-        #[serde(default)]
-        edits: Option<PartialBrief>,
-    },
-}
-
-/// Wire-side tag for the `briefing_confirm` cmd's `action` field.
-/// Distinct from [`BriefingAction`] because the JSON payload pulls
-/// `edits` out into a sibling field rather than nesting under
-/// `Edit { edits }`; we convert in the WS handler.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BriefingActionTag {
-    Confirm,
-    Edit,
-    Cancel,
-}
-
-// The server→client envelope is shared with the wasm UI via seasoned-hand-dto
-// (story 6.3c) — imported above. The inbound `ClientEnvelope` / `CommandPayload`
-// stay server-local: they carry deserialize/dispatch specifics (`durable`
-// pauses, the typed `BriefingActionTag` + `PartialBrief edits`) that the UI's
-// send-only mirror does not need.
+// Issue #19: `CommandPayload` and `BriefingActionTag` are now the single shared
+// definitions in `seasoned-hand-dto` (imported below), used by both the Dioxus UI
+// (serializes) and this server (deserializes) — no more drifting server-local copy.
+// The inbound `ClientEnvelope` wrapper stays server-local (it carries the `Pong`
+// variant the UI's send-only `ClientCommand` doesn't need). `BriefingConfirm.edits`
+// arrives as raw JSON and is parsed into `PartialBrief` in the handler.
 
 /// `/ws` upgrade entry.
 ///
@@ -444,7 +377,12 @@ async fn handle_command(
                 BriefingActionTag::Confirm => BriefingAction::Confirm,
                 BriefingActionTag::Cancel => BriefingAction::Cancel,
                 BriefingActionTag::Edit => BriefingAction::Edit {
-                    edits: edits.unwrap_or_default(),
+                    // Issue #19: `edits` now arrives as raw JSON (the dto type is
+                    // wasm-safe and can't reference core's `PartialBrief`); parse it
+                    // here, defaulting on absence / malformed input.
+                    edits: edits
+                        .and_then(|value| serde_json::from_value::<PartialBrief>(value).ok())
+                        .unwrap_or_default(),
                 },
             };
             let response = UserResponse {

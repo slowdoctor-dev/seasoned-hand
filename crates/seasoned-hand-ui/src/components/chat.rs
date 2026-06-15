@@ -40,6 +40,52 @@ fn extract_briefing(ev: &ServerEvent) -> Option<(String, Option<String>, serde_j
     Some((call_id, task_id, brief))
 }
 
+/// How the chat input behaves, derived from the session's events (issue #20; ports
+/// `deriveInputMode` from the legacy `chat-state.ts`).
+#[derive(Clone, PartialEq)]
+enum InputMode {
+    /// No session yet — submitting creates one.
+    TaskCreate,
+    /// The agent asked a question (`message_ask_user`); submitting answers it,
+    /// tied to the originating ask event id.
+    UserResponse(String),
+    /// The agent is running and not awaiting input — the box is disabled.
+    Disabled,
+}
+
+fn is_message(ev: &ServerEvent, role: Option<&str>) -> bool {
+    ev.payload.get("kind").and_then(|v| v.as_str()) == Some("Message")
+        && role.is_none_or(|r| ev.payload.get("role").and_then(|v| v.as_str()) == Some(r))
+}
+
+/// Derive the input mode: no session → task_create; the latest unanswered
+/// assistant `ui:"ask"` → user_response(ask-event-id); otherwise disabled.
+fn input_mode(events: &[ServerEvent], session: &Option<String>) -> InputMode {
+    let Some(sid) = session else {
+        return InputMode::TaskCreate;
+    };
+    let session_events: Vec<&ServerEvent> = events.iter().filter(|e| &e.session_id == sid).collect();
+    if session_events.is_empty() {
+        return InputMode::TaskCreate;
+    }
+    for i in (0..session_events.len()).rev() {
+        let e = session_events[i];
+        let is_ask = is_message(e, Some("assistant"))
+            && e.payload.get("ui").and_then(|v| v.as_str()) == Some("ask");
+        if is_ask {
+            let answered = session_events[i + 1..]
+                .iter()
+                .any(|later| is_message(later, Some("user")));
+            return if answered {
+                InputMode::Disabled
+            } else {
+                InputMode::UserResponse(e.id.to_string())
+            };
+        }
+    }
+    InputMode::Disabled
+}
+
 #[component]
 pub fn Chat() -> Element {
     let sel = selection();
@@ -47,6 +93,9 @@ pub fn Chat() -> Element {
     let session = sel.session_id;
     let events = sock.events;
     let mut input = use_signal(String::new);
+    // In-flight lock: true between a submit and the next event/session change,
+    // so a double-submit can't fire two task_creates before the ack lands.
+    let mut submitting = use_signal(|| false);
     // Briefing call_ids the user has locally confirmed/cancelled this session.
     let mut resolved = use_signal(HashSet::<String>::new);
 
@@ -64,34 +113,62 @@ pub fn Chat() -> Element {
         });
     }
 
+    // Clear the in-flight lock once any new activity (event / session change)
+    // arrives — the ack/echo has landed.
+    use_effect(move || {
+        let _ = events();
+        let _ = session();
+        submitting.set(false);
+    });
+
+    let evs = events();
+    let sid = session();
+    let mode = input_mode(&evs, &sid);
+    let disabled = submitting() || mode == InputMode::Disabled;
+
     let send_sock = sock.clone();
+    let submit_mode = mode.clone();
+    let submit_sid = sid.clone();
     let on_submit = move |evt: FormEvent| {
         evt.prevent_default();
+        if submitting() {
+            return;
+        }
         let text = input.peek().trim().to_string();
         if text.is_empty() {
             return;
         }
-        match session() {
-            Some(sid) => send_sock.send(CommandPayload::UserResponse {
-                session_id: sid,
-                in_reply_to_call_id: String::new(),
-                content: text,
-            }),
-            None => send_sock.send(CommandPayload::TaskCreate {
+        match &submit_mode {
+            InputMode::Disabled => return,
+            InputMode::TaskCreate => send_sock.send(CommandPayload::TaskCreate {
                 input: text,
                 max_steps: None,
                 cost_cap_cents: None,
             }),
+            InputMode::UserResponse(call_id) => {
+                if let Some(sid) = submit_sid.clone() {
+                    send_sock.send(CommandPayload::UserResponse {
+                        session_id: sid,
+                        in_reply_to_call_id: call_id.clone(),
+                        content: text,
+                    });
+                }
+            }
         }
         input.set(String::new());
+        submitting.set(true);
+    };
+
+    let placeholder = match mode {
+        InputMode::UserResponse(_) => "Answer the agent…",
+        InputMode::Disabled => "Agent is working…",
+        InputMode::TaskCreate => "Delegate a task…",
     };
 
     rsx! {
         div { class: "flex h-full flex-col",
             div { class: "flex-1 space-y-2 overflow-y-auto p-3",
                 {
-                    let sid = session();
-                    let evs = events();
                     let filtered: Vec<ServerEvent> = evs
                         .iter()
                         .filter(|e| sid.as_ref() == Some(&e.session_id))
@@ -123,12 +200,18 @@ pub fn Chat() -> Element {
             }
             form { class: "flex gap-2 border-t border-neutral-800 p-2", onsubmit: on_submit,
                 input {
-                    class: "flex-1 rounded bg-neutral-900 px-2 py-1 outline-none",
+                    class: "flex-1 rounded bg-neutral-900 px-2 py-1 outline-none disabled:opacity-50",
                     value: "{input}",
-                    placeholder: "Delegate a task…",
+                    placeholder,
+                    disabled,
                     oninput: move |e| input.set(e.value()),
                 }
-                button { r#type: "submit", class: "rounded bg-blue-600 px-3 py-1", "Send" }
+                button {
+                    r#type: "submit",
+                    class: "rounded bg-blue-600 px-3 py-1 disabled:opacity-50",
+                    disabled,
+                    "Send"
+                }
             }
         }
     }

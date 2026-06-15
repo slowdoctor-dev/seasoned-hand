@@ -9,7 +9,7 @@
 
 use super::socket;
 use dioxus::prelude::*;
-use seasoned_hand_dto::CommandPayload;
+use seasoned_hand_dto::{BriefingActionTag, CommandPayload};
 
 #[component]
 pub fn BriefingCard(
@@ -132,7 +132,7 @@ pub fn BriefingCard(
                                             sock.send(CommandPayload::BriefingConfirm {
                                                 task_id: tid,
                                                 in_reply_to_call_id: call_id.clone(),
-                                                action: "edit".to_string(),
+                                                action: BriefingActionTag::Edit,
                                                 edits: Some(edits),
                                             });
                                             editing.set(false);
@@ -167,7 +167,7 @@ pub fn BriefingCard(
                                     sock.send(CommandPayload::BriefingConfirm {
                                         task_id: tid,
                                         in_reply_to_call_id: call_id.clone(),
-                                        action: "confirm".to_string(),
+                                        action: BriefingActionTag::Confirm,
                                         edits: None,
                                     });
                                     on_resolve.call(call_id.clone());
@@ -198,7 +198,7 @@ pub fn BriefingCard(
                                     sock.send(CommandPayload::BriefingConfirm {
                                         task_id: tid,
                                         in_reply_to_call_id: call_id.clone(),
-                                        action: "cancel".to_string(),
+                                        action: BriefingActionTag::Cancel,
                                         edits: None,
                                     });
                                     on_resolve.call(call_id.clone());
