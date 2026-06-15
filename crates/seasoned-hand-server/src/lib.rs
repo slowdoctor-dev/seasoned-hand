@@ -1775,7 +1775,7 @@ pub fn app(state: AppState) -> Router {
         }));
 
     // Issue #33: serve the built UI bundle as the fallback. Named API routes
-    // (`/v1/*`, `/ws`, `/healthz`, `/metrics`) always win — the fallback only
+    // (`/v1/*`, `/ws`, `/healthz`) always win — the fallback only
     // fires when no route matches. `ServeDir` returns static assets; its own
     // `.fallback(ServeFile(index.html))` resolves unknown paths to the SPA shell
     // so client-side navigation works. Static serve is intentionally public

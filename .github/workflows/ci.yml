@@ -74,7 +74,9 @@ jobs:
       - uses: extractions/setup-just@v3
       - uses: Swatinem/rust-cache@v2
       - name: Install Dioxus CLI
-        run: cargo install dioxus-cli --locked
+        # Pin to the crate's Dioxus 0.6 line (issue #33 review) so the smoke
+        # validates THIS repo's toolchain, not whatever dx is latest at run time.
+        run: cargo install dioxus-cli --version 0.6.3 --locked
       - name: Build UI bundle
         run: just build-ui
       - name: Assert UI bundle stylesheet wiring

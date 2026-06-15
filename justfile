@@ -78,17 +78,36 @@ _tailwind-cli:
     fi
     os="$(uname -s)"
     arch="$(uname -m)"
+    # Pin BOTH the version and a per-asset sha256 (issue #33 review): build-css
+    # runs in PR CI, so an unverified downloaded executable would be arbitrary
+    # code execution on a mutated/MITM'd release. Digests are for {{tailwind_version}};
+    # bump them whenever tailwind_version changes (recompute with `sha256sum`).
     case "$os:$arch" in
-      Linux:x86_64) asset="tailwindcss-linux-x64" ;;
-      Linux:aarch64|Linux:arm64) asset="tailwindcss-linux-arm64" ;;
-      Darwin:x86_64) asset="tailwindcss-macos-x64" ;;
-      Darwin:arm64|Darwin:aarch64) asset="tailwindcss-macos-arm64" ;;
+      Linux:x86_64) asset="tailwindcss-linux-x64";  sha="2526d063ba03b71f9a3ea7d5cee14f0aec147f117f222d5adc97b1d736d45999" ;;
+      Linux:aarch64|Linux:arm64) asset="tailwindcss-linux-arm64"; sha="3d662377a86d71c43b549dc06b90db4586b4acd412bf827a3268e951661e5adf" ;;
+      Darwin:x86_64) asset="tailwindcss-macos-x64"; sha="e9e830ceb3e70b7e0775a3dd79eee8ec82c6b31270f08f2fa2857d0077045ac3" ;;
+      Darwin:arm64|Darwin:aarch64) asset="tailwindcss-macos-arm64"; sha="a27c43626185953ee19bdace1939c7601e55da654e0b2fc4461e3e29957aa739" ;;
       *) echo "unsupported Tailwind standalone CLI platform: $os/$arch" >&2; exit 1 ;;
     esac
     mkdir -p "$(dirname "$bin")"
     url="https://github.com/tailwindlabs/tailwindcss/releases/download/{{tailwind_version}}/$asset"
-    curl -fsSL "$url" -o "$bin"
-    chmod +x "$bin"
+    tmp="$(mktemp)"
+    curl -fsSL "$url" -o "$tmp"
+    # Verify the digest BEFORE making it executable / moving it into place.
+    if command -v sha256sum >/dev/null 2>&1; then
+      actual="$(sha256sum "$tmp" | awk '{print $1}')"
+    else
+      actual="$(shasum -a 256 "$tmp" | awk '{print $1}')"
+    fi
+    if [[ "$actual" != "$sha" ]]; then
+      rm -f "$tmp"
+      echo "Tailwind CLI sha256 mismatch for $asset" >&2
+      echo "  expected $sha" >&2
+      echo "  actual   $actual" >&2
+      exit 1
+    fi
+    chmod +x "$tmp"
+    mv "$tmp" "$bin"
 
 # === Verification gates ===
 

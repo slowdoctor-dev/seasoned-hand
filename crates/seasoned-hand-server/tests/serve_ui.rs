@@ -95,6 +95,20 @@ async fn serves_index_assets_and_spa_fallback_while_api_routes_win() {
         !health_body.contains("SH-UI-SHELL"),
         "/healthz must hit the API route, not the UI fallback; got: {health_body}"
     );
+
+    // And a `/v1` path is owned by its route, not the SPA fallback (issue #33
+    // review): `/v1/auth/login` is registered for POST, so a GET resolves to the
+    // route's 405 — it must NOT fall through to the index.html shell.
+    let v1 = client
+        .get(format!("{base}/v1/auth/login"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(v1.status(), reqwest::StatusCode::METHOD_NOT_ALLOWED);
+    assert!(
+        !v1.text().await.unwrap().contains("SH-UI-SHELL"),
+        "/v1/* must hit the API router, not the UI fallback"
+    );
 }
 
 #[tokio::test]
