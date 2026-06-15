@@ -313,11 +313,15 @@ impl AgentRunner {
                     .await?;
                     if status_errors >= 4 {
                         self.set_session_state(&req.session_id, "ERROR").await?;
+                        self.finalize(&req.session_id).await;
                         return Err(AgentError::Llm(error));
                     }
                     continue;
                 }
-                Err(error) => return Err(AgentError::Llm(error)),
+                Err(error) => {
+                    self.finalize(&req.session_id).await;
+                    return Err(AgentError::Llm(error));
+                }
             };
 
             let assistant = response
@@ -356,6 +360,7 @@ impl AgentRunner {
                     if let Some(kind) = breaker.note_stuck_and_check(count).await {
                         self.emit_breaker_trigger(&req.session_id, kind).await?;
                     }
+                    self.finalize(&req.session_id).await;
                     return Ok(RunResult {
                         session_id: req.session_id,
                         completed: false,
@@ -430,6 +435,7 @@ impl AgentRunner {
             };
             if let Some(kind) = breaker.note_observation_and_check(output.ok).await {
                 self.emit_breaker_trigger(&req.session_id, kind).await?;
+                self.finalize(&req.session_id).await;
                 return Ok(RunResult {
                     session_id: req.session_id,
                     completed: false,
@@ -463,6 +469,7 @@ impl AgentRunner {
                 if let Some(kind) = breaker.note_cost_and_check(current_cost as u32, cap).await {
                     self.emit_breaker_trigger(&req.session_id, kind).await?;
                 }
+                self.finalize(&req.session_id).await;
                 return Ok(RunResult {
                     session_id: req.session_id,
                     completed: false,
@@ -473,7 +480,7 @@ impl AgentRunner {
 
             if call.function.name == "idle" && output.ok {
                 self.set_session_state(&req.session_id, "FINISHED").await?;
-                self.cancel_tokens.remove(&req.session_id);
+                self.finalize(&req.session_id).await;
                 return Ok(RunResult {
                     session_id: req.session_id,
                     completed: true,
@@ -507,6 +514,8 @@ impl AgentRunner {
                 self.emit_breaker_trigger(&req.session_id, kind).await?;
             }
         }
+        // Terminal exit (max steps reached, or stopped early on no-tool-call).
+        self.finalize(&req.session_id).await;
         Ok(RunResult {
             session_id: req.session_id,
             completed: false,
@@ -634,6 +643,16 @@ impl AgentRunner {
         Ok(u32::try_from(count).unwrap_or(0))
     }
 
+    /// Issue #12: drop per-session bookkeeping (cancel token + cached run config)
+    /// on TERMINAL exits so `cancel_tokens` / `run_config` don't grow without bound
+    /// over the process lifetime. Deliberately NOT called on resumable exits
+    /// (SUSPENDED / VERIFYING): those must keep their entries so `resume_session`
+    /// can re-establish the run.
+    async fn finalize(&self, session_id: &str) {
+        self.cancel_tokens.remove(session_id);
+        self.run_config.lock().await.remove(session_id);
+    }
+
     async fn mark_task_complete(&self, session_id: &str, call_id: &str) -> Result<(), AgentError> {
         self.set_session_state(session_id, "VERIFYING").await?;
         let event = self
@@ -657,7 +676,15 @@ impl AgentRunner {
             triggered_at_event_id: event.id as u64,
         };
         if let Err(error) = self.redis.xadd_json("verify_request", &req).await {
-            tracing::warn!(%error, "failed to enqueue verify_request");
+            // Issue #13: without the enqueued verdict the session would sit in
+            // VERIFYING forever (nothing will ever advance it). Fail it to a
+            // terminal ERROR and clean up rather than warn and strand it.
+            tracing::error!(%error, %session_id, "verify_request enqueue failed; failing session to ERROR");
+            self.set_session_state(session_id, "ERROR").await?;
+            self.finalize(session_id).await;
+            return Err(AgentError::Internal(format!(
+                "failed to enqueue verify_request: {error}"
+            )));
         }
         Ok(())
     }
