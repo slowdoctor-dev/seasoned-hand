@@ -48,9 +48,14 @@ dev-ui:
 build-ui:
     cd crates/seasoned-hand-ui && dx build --platform web --release
 
-# Compile-check the Dioxus UI for wasm (no dx CLI needed — used as a gate).
+# Gate the Dioxus UI (no dx CLI needed). The UI crate is excluded from the root
+# workspace, so the root cargo fmt/clippy/test gates do NOT cover it — this recipe
+# is the only quality gate for the now-canonical UI, so it runs fmt + clippy +
+# check, all on the wasm target.
 check-ui:
-    cd crates/seasoned-hand-ui && cargo check --target wasm32-unknown-unknown
+    cargo fmt --manifest-path crates/seasoned-hand-ui/Cargo.toml -- --check
+    cargo clippy --manifest-path crates/seasoned-hand-ui/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
+    cargo check --manifest-path crates/seasoned-hand-ui/Cargo.toml --target wasm32-unknown-unknown
 
 # === Verification gates ===
 

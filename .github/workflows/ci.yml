@@ -38,16 +38,25 @@ jobs:
         run: cargo test --workspace
 
   ui:
-    name: UI (Dioxus wasm check)
+    name: UI (Dioxus fmt, clippy, wasm check)
     runs-on: ubuntu-latest
+    # The UI crate is excluded from the root workspace, so the `rust` job's
+    # fmt/clippy/test do NOT cover it — this job is the canonical UI's only gate.
+    defaults:
+      run:
+        working-directory: crates/seasoned-hand-ui
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt -- --check
+      - name: Clippy (wasm)
+        run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
       - name: Compile-check the Dioxus UI for wasm
-        working-directory: crates/seasoned-hand-ui
         run: cargo check --target wasm32-unknown-unknown
 
   ignored-tests:

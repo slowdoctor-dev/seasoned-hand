@@ -64,7 +64,8 @@ fn input_mode(events: &[ServerEvent], session: &Option<String>) -> InputMode {
     let Some(sid) = session else {
         return InputMode::TaskCreate;
     };
-    let session_events: Vec<&ServerEvent> = events.iter().filter(|e| &e.session_id == sid).collect();
+    let session_events: Vec<&ServerEvent> =
+        events.iter().filter(|e| &e.session_id == sid).collect();
     if session_events.is_empty() {
         return InputMode::TaskCreate;
     }

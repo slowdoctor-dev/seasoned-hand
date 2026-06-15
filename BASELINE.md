@@ -15,7 +15,7 @@
 | **Repo** | `github.com/slowdoctor-dev/seasoned-hand` (Public) |
 | **License** | Apache-2.0 |
 | **Tagline** | Every task makes the hand wiser. |
-| **Status** | Phase 5 complete → **Phase 6 in progress** (Dioxus frontend migration, ADR-016; started 2026-06-05) |
+| **Status** | Phase 5 complete → **Phase 6 in progress** (open-source release; Dioxus cutover done — Next.js removed in #5, ADR-016) |
 | **Domain** | General-purpose autonomous AI agent platform (no domain assumptions) |
 | **Audience** | Developers + business users (balanced) |
 | **Philosophy** | Digital Employee (not assistant) |

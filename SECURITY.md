@@ -32,7 +32,7 @@ If that's not available, contact the project maintainer via the email listed on 
 Security issues in scope:
 
 - The Seasoned Hand control plane (Rust)
-- The frontend (Next.js)
+- The Dioxus UI (`crates/seasoned-hand-ui`, unified-Rust/wasm — ADR-016)
 - The model router (12-slot routing logic)
 - Tool dispatcher and sandbox integration
 - Configuration handling (API keys, secrets)

@@ -18,8 +18,7 @@
 - [ ] `cargo clippy --all-targets -- -D warnings` passes (no warnings)
 - [ ] `cargo fmt --check` passes
 - [ ] `cargo test --workspace` passes
-- [ ] `pnpm typecheck` passes (if frontend changed)
-- [ ] `pnpm test` passes (if frontend changed)
+- [ ] `just check-ui` passes (if the Dioxus UI changed — fmt + clippy + wasm check)
 - [ ] `./scripts/spec-check.sh` passes
 
 Or simply: `just verify` passes.

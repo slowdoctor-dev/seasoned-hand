@@ -98,7 +98,7 @@ Full architecture: `/specs/01-architecture/ARCHITECTURE.md`
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 cargo test --workspace
-(cd crates/seasoned-hand-ui && cargo check --target wasm32-unknown-unknown)
+just check-ui   # UI crate (excluded from workspace): fmt + clippy + wasm check
 ./scripts/spec-check.sh
 ```
 
@@ -180,14 +180,14 @@ This mirrors how Seasoned Hand itself works (recursive principle).
 
 ## 13. Current state
 
-- **Phase**: 6 in progress (Dioxus frontend migration, ADR-016; started 2026-06-05)
+- **Phase**: 6 in progress (open-source release; the Dioxus cutover, ADR-016, is
+  done — the Next.js frontend was removed in #5)
 - **Branch**: main
-- **Next milestone**: complete the Phase 6 Dioxus cutover (`/specs/phase-6/`
-  architecture + stories already landed) → open-source release surface:
-  documentation polish, contributor onboarding flow, marketplace-style
-  artifact exchange decisions, and the carry-forward dogfood-driven
-  retunes for FTS5 weights (DEBT #76 successor) and curator adaptive
-  policies (DEBT #92 / #94 successors).
+- **Next milestone**: open-source release surface — documentation polish,
+  contributor onboarding flow, marketplace-style artifact exchange decisions, the
+  deferred UI follow-ups (#33: compiled Tailwind v4 + serve the dx bundle), and the
+  carry-forward dogfood-driven retunes for FTS5 weights (DEBT #76 successor) and
+  curator adaptive policies (DEBT #92 / #94 successors).
 
 Check status: `just status` (or `git log --oneline` + `CHANGELOG.md`)
 

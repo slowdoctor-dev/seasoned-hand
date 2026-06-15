@@ -49,5 +49,5 @@ Phase 6 work.
 | 6.3c | Server-side adoption of `-dto` (ServerEnvelope; inbound stays local) | done |
 | 6.4 | Full-fidelity port + ack handling (acks/briefing/deliverables done) | in-progress |
 | 6.5 | Desktop + mobile targets | ready |
-| 6.6 | Cutover — remove Next.js, compiled Tailwind, docker/justfile/docs | ready |
+| 6.6 | Cutover — remove Next.js, infra/docs reconciled | done (#5); Tailwind v4 + dx-serve deferred to #33 |
 | 6.7 | Release-readiness — docs, one-command deploy, CI/CD, community + checklist | ready |

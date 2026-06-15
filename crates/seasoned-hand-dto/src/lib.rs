@@ -3,8 +3,8 @@
 //! Single source of truth for the data shapes that cross the `/v1` REST +
 //! `/ws` WebSocket boundary. Depended on by `seasoned-hand-core` (which
 //! re-exports the domain entities) and `seasoned-hand-ui` (which consumes them
-//! directly), eliminating the hand-mirrored duplication that existed between
-//! the Rust backend and the TypeScript frontend.
+//! directly), eliminating the hand-mirrored duplication that existed while the
+//! UI was a separate TypeScript app (removed in the ADR-016 cutover, #5).
 //!
 //! Constraint: this crate is wasm-safe — pure serde, no I/O dependencies — so a
 //! single definition serves both the native control plane and the wasm UI.

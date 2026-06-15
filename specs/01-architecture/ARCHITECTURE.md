@@ -669,7 +669,7 @@ Every PR must pass:
 ✓ cargo clippy --all-targets -- -D warnings
 ✓ cargo fmt --check
 ✓ cargo test --workspace
-✓ cargo check --target wasm32-unknown-unknown (crates/seasoned-hand-ui — Dioxus, ADR-016)
+✓ just check-ui — UI crate fmt + clippy + wasm check (crates/seasoned-hand-ui, Dioxus, ADR-016)
 ✓ spec-check (custom: verifies code matches /specs)
 ✓ no TODO without linked issue
 ✓ commit message follows convention
