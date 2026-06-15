@@ -157,6 +157,14 @@ pub fn Chat() -> Element {
         }
         input.set(String::new());
         submitting.set(true);
+        // Safety net (issue #20 review): the lock is normally cleared by the next
+        // event/session change, but a send that yields no frame (disconnected
+        // socket, rejected command, ack-only) would otherwise leave the composer
+        // stuck disabled. Clear it after a bounded delay regardless.
+        spawn(async move {
+            gloo_timers::future::TimeoutFuture::new(8_000).await;
+            submitting.set(false);
+        });
     };
 
     let placeholder = match mode {

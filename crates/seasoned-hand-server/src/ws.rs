@@ -376,14 +376,37 @@ async fn handle_command(
             let resolved_action = match action {
                 BriefingActionTag::Confirm => BriefingAction::Confirm,
                 BriefingActionTag::Cancel => BriefingAction::Cancel,
-                BriefingActionTag::Edit => BriefingAction::Edit {
-                    // Issue #19: `edits` now arrives as raw JSON (the dto type is
-                    // wasm-safe and can't reference core's `PartialBrief`); parse it
-                    // here, defaulting on absence / malformed input.
-                    edits: edits
-                        .and_then(|value| serde_json::from_value::<PartialBrief>(value).ok())
-                        .unwrap_or_default(),
-                },
+                BriefingActionTag::Edit => {
+                    // Issue #19: `edits` arrives as raw JSON (the dto type is
+                    // wasm-safe and can't reference core's `PartialBrief`). Absent /
+                    // null is an empty edit, but a MALFORMED edits object is a bad
+                    // command — reject it (matching the pre-unification behaviour
+                    // where a bad shape failed envelope deserialization) rather than
+                    // silently applying an empty edit and consuming an edit cycle.
+                    let parsed = match edits {
+                        None => PartialBrief::default(),
+                        Some(value) => match serde_json::from_value::<PartialBrief>(value) {
+                            Ok(brief) => brief,
+                            Err(_) => {
+                                let _ = tx.send(ServerEnvelope::Error {
+                                    id: Some(cmd_id.clone()),
+                                    kind: "bad_edits".into(),
+                                    message: "briefing_confirm edits is not a valid PartialBrief"
+                                        .into(),
+                                });
+                                let _ = tx.send(ServerEnvelope::Ack {
+                                    id: Uuid::new_v4().to_string(),
+                                    reference: cmd_id,
+                                    ok: false,
+                                    error: Some("bad_edits".into()),
+                                    session_id: None,
+                                });
+                                return;
+                            }
+                        },
+                    };
+                    BriefingAction::Edit { edits: parsed }
+                }
             };
             let response = UserResponse {
                 in_reply_to_call_id,
