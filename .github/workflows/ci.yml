@@ -37,30 +37,18 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-  frontend:
-    name: Frontend (typecheck, lint, build, test)
+  ui:
+    name: UI (Dioxus wasm check)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: "20"
-      - uses: pnpm/action-setup@v3
-        with:
-          version: 9
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Typecheck
-        run: pnpm typecheck
-      - name: Lint
-        run: pnpm lint
-      - name: Build
-        run: pnpm build
-      - name: Test
-        run: pnpm test
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Compile-check the Dioxus UI for wasm
+        working-directory: crates/seasoned-hand-ui
+        run: cargo check --target wasm32-unknown-unknown
 
   ignored-tests:
     name: Ignored tests (workflow_dispatch only)
@@ -304,35 +292,6 @@ jobs:
           exit 1
       - name: Run phase2 webhook → email roundtrip
         run: cargo test -p seasoned-hand-server --test phase2_webhook_roundtrip -- --ignored --nocapture
-
-  frontend-e2e:
-    name: Frontend e2e (Playwright, workflow_dispatch only)
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - uses: pnpm/action-setup@v3
-        with:
-          version: 9
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
-          restore-keys: |
-            playwright-${{ runner.os }}-
-      - name: Install Playwright Chromium
-        run: pnpm playwright install chromium --with-deps
-      - name: Run Playwright tests
-        run: pnpm test:e2e
 
   markdown-lint:
     name: Markdown (specs and docs)

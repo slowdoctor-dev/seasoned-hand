@@ -59,17 +59,11 @@ services:
   #     - ./data/db:/app/data
   #     - ./data/workspaces:/workspaces
 
-  # ===== Frontend (Next.js) =====
-  # Built in Phase 0, story 0.18+
-  # frontend:
-  #   build: ./frontend
-  #   container_name: seasoned-hand-frontend
-  #   restart: unless-stopped
-  #   ports:
-  #     - "3001:3000"
-  #   env_file: .env
-  #   depends_on:
-  #     - control-plane
+  # ===== Frontend (Dioxus, ADR-016) =====
+  # The UI is now a unified Rust/Dioxus wasm bundle (crates/seasoned-hand-ui),
+  # no longer a separate Next.js service. Build it with `just build-ui` (output
+  # under target/dx/). Serving the static bundle from the control plane is a
+  # deferred follow-up; for now run it locally with `just dev-ui`.
 
   # ===== AIO Sandbox (per-session) =====
   # Created dynamically by control plane via bollard.

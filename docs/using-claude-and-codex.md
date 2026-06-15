@@ -136,7 +136,7 @@ CLAUDE.md          ← @AGENTS.md + Claude-specific
 # Codex reads AGENTS.md?
 cd /your/project
 codex --profile fast
-# Ask: "What stack are we using?" → should mention Bifrost/Rust/Next.js
+# Ask: "What stack are we using?" → should mention Bifrost/Rust/Dioxus
 
 # Claude Code reads AGENTS.md via CLAUDE.md?
 claude code

@@ -35,7 +35,7 @@ filesystem = event stream, user programs = playbooks (learned from verified work
 |---|---|
 | LLM Gateway | Bifrost (Go) — 50x faster than LiteLLM |
 | Control plane | Rust + Axum + Tokio + Rig |
-| Frontend | Dioxus (unified Rust → Web/Desktop/Mobile) — ADR-016 amends ADR-002; replaces the Next.js 15 + React 19 stack (retained until Phase 6 cutover) |
+| Frontend | Dioxus (unified Rust → Web/Desktop/Mobile) — ADR-016 amends ADR-002; the Next.js 15 + React 19 stack was removed in the Phase 6 cutover (#5) |
 | Sandbox | AIO Sandbox (Docker) per session |
 | Persistence | SQLite WAL + Redis |
 | Model routing | 12-slot (3 main + 9 auxiliary, Hermes-inspired) |
@@ -71,8 +71,7 @@ Full architecture: `/specs/01-architecture/ARCHITECTURE.md`
   /phase-N/
     requirements.md
     /stories/story-N.X.md
-/crates/               ← Rust workspace: core, server, cli, dto, ui (Dioxus)
-/frontend/             ← legacy Next.js frontend (retained until Phase 6 cutover, ADR-016)
+/crates/               ← Rust workspace: core, server, cli, dto + ui (Dioxus, ADR-016)
 /docs/                 ← human docs
 /prompts/              ← BMAD/GSD session prompts
 /scripts/, /justfile
@@ -99,8 +98,7 @@ Full architecture: `/specs/01-architecture/ARCHITECTURE.md`
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 cargo test --workspace
-pnpm typecheck
-pnpm test
+(cd crates/seasoned-hand-ui && cargo check --target wasm32-unknown-unknown)
 ./scripts/spec-check.sh
 ```
 
@@ -110,7 +108,7 @@ Or: `just verify`
 
 **Rust**: edition 2024, zero clippy warnings, `thiserror` for errors, no `unwrap()` in production, no `unsafe` without justification comment.
 
-**TypeScript**: strict mode, pnpm only, functional components, no `any` (use `unknown`).
+**Dioxus UI** (`crates/seasoned-hand-ui`, ADR-016): edition 2021 (no let-chains), wasm32 target, components are `#[component]` fns, share wire types via `seasoned-hand-dto` (never hand-mirror them).
 
 **Markdown specs**: one H1 per file, ATX headers, code blocks with language tags, wrap at 100 chars.
 

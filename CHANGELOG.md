@@ -63,6 +63,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GLOSSARY / CONTRIBUTING references updated.
 
 ### Removed
+- **Next.js frontend removed — Dioxus cutover** (issue #5, ADR-016 migration plan
+  step 5). Deleted the entire `frontend/` Next.js 15 + React 19 + TypeScript app;
+  the unified-Rust `crates/seasoned-hand-ui` (Dioxus) is now the only UI. Retired
+  the pnpm/Next CI jobs (`frontend`, `frontend-e2e`) and the `typecheck` /
+  `test-frontend` / `dev-frontend` `just` recipes, replacing them with a
+  `cargo check --target wasm32-unknown-unknown` UI gate wired into `just verify`
+  and CI. Dropped the commented Next.js service from `docker-compose.yml` and the
+  `frontend/` ignore rules from `.gitignore`. Live docs (README, AGENTS,
+  BASELINE, ARCHITECTURE v1.5, getting-started) reconciled to Dioxus-only.
+  Deferred to a follow-up: a compiled Tailwind v4 pipeline (UI still loads Tailwind
+  via CDN) and serving the `dx` bundle from the control plane / compose. Historical
+  phase-0..4 specs are left untouched (they record what shipped at the time).
 - Pre-Phase-0 internal bootstrap docs that leaked private development context and
   had no public value now that the project is built and public:
   `docs/github-setup-guide.md`, `docs/first-week-plan.md`, `docs/setup-checklist.md`.

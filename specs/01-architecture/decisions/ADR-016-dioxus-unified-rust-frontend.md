@@ -98,8 +98,12 @@ full port.
 3. **Wire the JS-interop wrappers** for the `AgentComputer` tabs (web/desktop).
 4. **Add targets:** desktop (`dioxus-desktop`), then mobile (read-only
    `AgentComputer`).
-5. **Cutover:** replace `frontend/` with the Dioxus crate; update
-   `docker-compose.yml`, `justfile`, and `docs/`; delete the Next.js app.
+5. **Cutover (DONE — issue #5):** removed `frontend/` (the Next.js app) in favour of
+   the Dioxus crate; updated `docker-compose.yml`, `justfile`, `.github/workflows/ci.yml`,
+   `.gitignore`, and the live docs. The pnpm/Next CI jobs were replaced by a
+   `cargo check --target wasm32-unknown-unknown` UI gate. Two items were deferred to a
+   follow-up: a compiled Tailwind v4 pipeline (the UI still loads Tailwind via CDN) and
+   serving the `dx` bundle from the control plane / compose.
 6. Each step is a Phase 6 story with the usual `just verify` gates (Rust gates now
    cover the UI; the pnpm/Next pipeline is retired, a WASM build target is added).
 

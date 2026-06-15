@@ -83,7 +83,7 @@ tracks "where we are in the task" and prevents goal drift. See ADR-010.
 │  - WebSocket subscribe to event stream                │
 │  - noVNC / Monaco / xterm via JS interop (web+desktop)│
 │  - Mobile AgentComputer degrades to read-only         │
-│  - Shares seasoned-hand-core DTOs (no type codegen)   │
+│  - Shares wire DTOs via seasoned-hand-dto (no codegen)│
 └──────────────────────┬───────────────────────────────┘
                        │ WebSocket + HTTP (/v1 — unchanged)
                        ↓
@@ -669,8 +669,7 @@ Every PR must pass:
 ✓ cargo clippy --all-targets -- -D warnings
 ✓ cargo fmt --check
 ✓ cargo test --workspace
-✓ pnpm typecheck
-✓ pnpm test
+✓ cargo check --target wasm32-unknown-unknown (crates/seasoned-hand-ui — Dioxus, ADR-016)
 ✓ spec-check (custom: verifies code matches /specs)
 ✓ no TODO without linked issue
 ✓ commit message follows convention

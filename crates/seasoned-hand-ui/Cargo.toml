@@ -23,9 +23,8 @@ seasoned-hand-dto = { path = "../seasoned-hand-dto" }
 # REST + WebSocket against the unchanged Axum /v1 + /ws boundary.
 gloo-net = { version = "0.6", features = ["http", "websocket", "json"] }
 
-# Shared data shapes. Mirrors crates/seasoned-hand-core DTOs for now; a
-# wasm-safe `seasoned-hand-dto` workspace crate will replace this mirror
-# (Phase 6 follow-up) so types are shared, not duplicated (ADR-016).
+# serde for the UI's own local view-models and JSON interop. The shared wire
+# DTOs now live in `seasoned-hand-dto` (above), not a hand-mirrored copy.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

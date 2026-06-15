@@ -84,9 +84,8 @@ Full setup walkthrough: [`docs/getting-started.md`](docs/getting-started.md).
     stories/
 /docs/                 ← human docs (methodology, brand, manifesto, kickoff)
 /prompts/              ← BMAD/GSD session prompts
-/crates/               ← Rust workspace (core, server, cli, dto, ui [Dioxus])
+/crates/               ← Rust workspace (core, server, cli, dto) + ui [Dioxus, ADR-016]
 /migrations/           ← SQLite schema migrations
-/frontend/             ← legacy Next.js frontend (retained until Phase 6 cutover, ADR-016)
 /bifrost/              ← Bifrost gateway config
 /scripts/              ← dev scripts
 /justfile              ← task runner

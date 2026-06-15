@@ -39,10 +39,6 @@ dev-server-nodocker:
     PORT="3000" \
     cargo run -p seasoned-hand-server
 
-# Run frontend (Next.js) in dev mode (legacy — being replaced by the Dioxus UI)
-dev-frontend:
-    cd frontend && pnpm dev
-
 # Run the Dioxus UI (ADR-016) in dev mode. Requires the Dioxus CLI:
 #   cargo install dioxus-cli   (provides `dx`)
 dev-ui:
@@ -59,27 +55,19 @@ check-ui:
 # === Verification gates ===
 
 # Run all verification gates (must pass before commit)
-verify: lint typecheck test spec-check
+verify: lint check-ui test spec-check
     @echo "✓ All verification gates passed"
 
-# Lint (Rust + TypeScript)
+# Lint (Rust). The frontend is now unified Rust (Dioxus, ADR-016).
 lint:
     cargo clippy --all-targets -- -D warnings
     cargo fmt --check
-    cd frontend && pnpm lint
-
-# Type check (TypeScript)
-typecheck:
-    cd frontend && pnpm typecheck
 
 # Run all tests
-test: test-backend test-frontend
+test: test-backend
 
 test-backend:
     cargo test --workspace
-
-test-frontend:
-    cd frontend && pnpm test
 
 # Verify code matches /specs
 spec-check:
@@ -122,7 +110,7 @@ setup:
 # Remove all containers, volumes (DESTRUCTIVE)
 clean:
     docker compose down -v
-    rm -rf bifrost/data target frontend/.next frontend/node_modules
+    rm -rf bifrost/data target
 
 # === Bifrost-specific ===
 
