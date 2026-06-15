@@ -18,8 +18,11 @@ use lettre::transport::smtp::AsyncSmtpTransport;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncTransport, Message, Tokio1Executor};
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 
 use crate::channel::ChannelError;
+
+use super::EMAIL_NETWORK_TIMEOUT;
 
 /// Sending side of [`super::EmailChannel`]. The boxed trait is
 /// constructed from `EmailChannelConfig` at registration time; tests
@@ -54,6 +57,7 @@ impl LettreSmtpTransport {
             .map_err(|err| ChannelError::Internal(format!("smtp relay setup: {err}")))?
             .port(config.port)
             .credentials(creds)
+            .timeout(Some(EMAIL_NETWORK_TIMEOUT))
             .build();
         Ok(Self { inner })
     }
@@ -62,10 +66,10 @@ impl LettreSmtpTransport {
 #[async_trait]
 impl EmailTransport for LettreSmtpTransport {
     async fn send(&self, message: Message) -> Result<String, ChannelError> {
-        let response = self
-            .inner
-            .send(message)
+        let send = self.inner.send(message);
+        let response = timeout(EMAIL_NETWORK_TIMEOUT, send)
             .await
+            .map_err(|_| ChannelError::Transport("smtp send timed out".into()))?
             .map_err(|err| ChannelError::Transport(format!("smtp send: {err}")))?;
         // lettre's Response carries the multi-line server reply; we
         // join the first line (typically `250 OK <queue-id>`) for the

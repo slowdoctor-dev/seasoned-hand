@@ -69,6 +69,11 @@ pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// "exponential backoff up to a 5-min cap").
 pub const POLL_BACKOFF_CEILING: Duration = Duration::from_secs(300);
 
+/// Network operation timeout for email channel IMAP/SMTP calls. Matches the
+/// webhook/ntfy 15s posture so a hung mail server advances into retry backoff
+/// instead of stalling the intake loop forever.
+pub const EMAIL_NETWORK_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// EmailChannel — one struct, three role traits. Constructed via
 /// [`EmailChannel::builder`] (see also `register_email_channel` on
 /// the server crate's `AppState` for the env-driven boot path).
@@ -270,11 +275,23 @@ impl IntakeProvider for EmailChannel {
                 _ = tokio::time::sleep(wait) => {}
             }
 
-            match self.poll_once(&sink).await {
-                Ok(_) => {
+            match tokio::time::timeout(EMAIL_NETWORK_TIMEOUT, self.poll_once(&sink)).await {
+                Err(_) => {
+                    let next = if backoff.is_zero() {
+                        Duration::from_secs(30)
+                    } else {
+                        std::cmp::min(backoff * 2, POLL_BACKOFF_CEILING)
+                    };
+                    tracing::warn!(
+                        backoff_secs = next.as_secs(),
+                        "email: poll cycle timed out; backing off"
+                    );
+                    backoff = next;
+                }
+                Ok(Ok(_)) => {
                     backoff = Duration::from_secs(0);
                 }
-                Err(err) => {
+                Ok(Err(err)) => {
                     // Cap the doubling at POLL_BACKOFF_CEILING. First
                     // failure jumps straight to 30 s so a flapping
                     // server doesn't get hammered between flap cycles.

@@ -26,6 +26,7 @@
 //! refs: /specs/phase-2/architecture.md §2.7, §2.8, §2.9, §9
 //! refs: /specs/phase-2/stories/story-2.10.md
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -149,22 +150,29 @@ impl WebhookChannel {
             message: format!("invalid url: {e}"),
         })?;
 
-        if let Err(err) = ssrf::assert_public_address(&url, &self.allowlist).await {
-            return Err(match err {
-                ssrf::AssertError::Rejected(_) => ChannelError::RemoteRejected {
-                    status: 400,
-                    message: "private_address_rejected".into(),
-                },
-                ssrf::AssertError::HostMissing => ChannelError::RemoteRejected {
-                    status: 400,
-                    message: "host_missing".into(),
-                },
-                ssrf::AssertError::Resolve(msg) => ChannelError::Transport(msg),
-            });
-        }
+        let resolved = ssrf::resolve_public_addrs(&url, &self.allowlist)
+            .await
+            .map_err(map_ssrf_error)?;
 
-        let resp = self
-            .http
+        let host = url
+            .host_str()
+            .ok_or_else(|| map_ssrf_error(ssrf::AssertError::HostMissing))?;
+        let client;
+        let http = if host.parse::<IpAddr>().is_ok() {
+            // Literal IP URLs have no DNS-rebinding surface; keep using the
+            // configured client so tests/custom boot code retain their timeouts.
+            &self.http
+        } else {
+            client = Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .redirect(reqwest::redirect::Policy::none())
+                .resolve_to_addrs(host, &resolved)
+                .build()
+                .map_err(|e| ChannelError::Internal(format!("webhook pinned client: {e}")))?;
+            &client
+        };
+
+        let resp = http
             .post(url)
             .json(&body)
             .send()
@@ -187,6 +195,20 @@ impl WebhookChannel {
             });
         }
         Ok((status, body_val))
+    }
+}
+
+fn map_ssrf_error(err: ssrf::AssertError) -> ChannelError {
+    match err {
+        ssrf::AssertError::Rejected(_) => ChannelError::RemoteRejected {
+            status: 400,
+            message: "private_address_rejected".into(),
+        },
+        ssrf::AssertError::HostMissing => ChannelError::RemoteRejected {
+            status: 400,
+            message: "host_missing".into(),
+        },
+        ssrf::AssertError::Resolve(msg) => ChannelError::Transport(msg),
     }
 }
 

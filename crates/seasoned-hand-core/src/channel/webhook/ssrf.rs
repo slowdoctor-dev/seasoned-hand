@@ -15,7 +15,7 @@
 //! refs: /specs/phase-2/architecture.md §9
 //! refs: /specs/phase-2/stories/story-2.10.md
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use ipnet::IpNet;
 use reqwest::Url;
@@ -50,16 +50,29 @@ pub fn parse_allowlist(raw: &str) -> Result<Vec<IpNet>, ipnet::AddrParseError> {
 /// are checked directly — a literal `http://10.0.0.1/admin` URL is
 /// rejected even with no resolver running.
 pub async fn assert_public_address(url: &Url, allowlist: &[IpNet]) -> Result<(), AssertError> {
-    let host = url.host_str().ok_or(AssertError::HostMissing)?.to_string();
-    let port = url.port_or_known_default().unwrap_or(0);
+    resolve_public_addrs(url, allowlist).await.map(|_| ())
+}
 
-    let resolved: Vec<IpAddr> = if let Ok(addr) = host.parse::<IpAddr>() {
-        vec![addr]
+/// DNS-resolve `url` once, validate every candidate address, and return the
+/// exact socket addresses the HTTP client must pin for the subsequent request.
+/// This closes the DNS-rebinding TOCTOU where validation resolves one address
+/// but reqwest later re-resolves the hostname at connect time.
+pub async fn resolve_public_addrs(
+    url: &Url,
+    allowlist: &[IpNet],
+) -> Result<Vec<SocketAddr>, AssertError> {
+    let host = url.host_str().ok_or(AssertError::HostMissing)?.to_string();
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| AssertError::Resolve(format!("no port for URL scheme {}", url.scheme())))?;
+
+    let resolved: Vec<SocketAddr> = if let Ok(addr) = host.parse::<IpAddr>() {
+        vec![SocketAddr::new(addr, port)]
     } else {
         let pairs = lookup_host(format!("{host}:{port}"))
             .await
             .map_err(|e| AssertError::Resolve(e.to_string()))?;
-        pairs.map(|sa| sa.ip()).collect()
+        pairs.collect()
     };
 
     if resolved.is_empty() {
@@ -68,15 +81,16 @@ pub async fn assert_public_address(url: &Url, allowlist: &[IpNet]) -> Result<(),
         )));
     }
 
-    for ip in &resolved {
-        if !is_publicly_routable(*ip) && !in_allowlist(*ip, allowlist) {
+    for addr in &resolved {
+        let ip = addr.ip();
+        if !is_publicly_routable(ip) && !in_allowlist(ip, allowlist) {
             return Err(AssertError::Rejected(SsrfRejection {
-                ip: *ip,
+                ip,
                 host: host.clone(),
             }));
         }
     }
-    Ok(())
+    Ok(resolved)
 }
 
 /// Reasons [`assert_public_address`] can fail. Split from
@@ -213,5 +227,21 @@ mod tests {
     fn parse_allowlist_skips_blank_entries() {
         let nets = parse_allowlist("10.0.0.0/8, ,192.168.0.0/16").unwrap();
         assert_eq!(nets.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn resolve_public_addrs_returns_validated_literal_socket() {
+        let url = Url::parse("http://8.8.8.8:8080/hook").unwrap();
+        let addrs = resolve_public_addrs(&url, &[]).await.unwrap();
+        assert_eq!(addrs, vec!["8.8.8.8:8080".parse().unwrap()]);
+    }
+
+    #[tokio::test]
+    async fn resolve_public_addrs_rejects_private_literal_without_allowlist() {
+        let url = Url::parse("http://127.0.0.1:8080/hook").unwrap();
+        let err = resolve_public_addrs(&url, &[]).await.unwrap_err();
+        assert!(
+            matches!(err, AssertError::Rejected(rej) if rej.ip == IpAddr::V4(Ipv4Addr::LOCALHOST))
+        );
     }
 }

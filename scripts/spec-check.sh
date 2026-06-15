@@ -160,6 +160,15 @@ check "Session search FTS diacritic folding tokenizer guard" \
    && grep -q \"tokenize='unicode61 remove_diacritics 2'\" migrations/V023__restore_session_search_fts_tokenizer.sql \
    && ! find migrations -name 'V0[2-9][4-9]__*.sql' -print0 | xargs -0 grep -L \"tokenize='unicode61 remove_diacritics 2'\" | xargs grep -l 'CREATE VIRTUAL TABLE session_search_fts'"
 
+# Check 13: Issue #16 / V024 SOP tenant-scope guard.
+# SOP shares are tenant-scoped; the SOP row must be tenant-scoped too so
+# an admin cannot share a foreign tenant's SOP id into their own tenant.
+check "SOP tenant_id regression guard" \
+  "[ -f migrations/V024__tenant_scope_sops.sql ] \
+   && grep -q \"ALTER TABLE sops ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'legacy-default'\" migrations/V024__tenant_scope_sops.sql \
+   && grep -q \"CREATE INDEX IF NOT EXISTS idx_sops_tenant ON sops(tenant_id)\" migrations/V024__tenant_scope_sops.sql \
+   && grep -q \"SELECT 1 FROM sops WHERE id = ? AND tenant_id = ?\" crates/seasoned-hand-core/src/sharing/sop.rs"
+
 echo ""
 echo "=== Results ==="
 echo "Pass: $PASS"

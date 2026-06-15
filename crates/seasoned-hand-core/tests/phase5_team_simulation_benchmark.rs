@@ -96,8 +96,8 @@ async fn seed_team_fixture(pool: &DbPool) {
         }
         // One SOP for sharing scenarios.
         conn.execute(
-            "INSERT INTO sops (id, title, content, version, enforced, created_at, updated_at)
-             VALUES ('sop-team-onboarding', 'Onboarding', 'Steps', 1, 0, 0, 0)",
+            "INSERT INTO sops (id, tenant_id, title, content, version, enforced, created_at, updated_at)
+             VALUES ('sop-team-onboarding', 'tenant-team', 'Onboarding', 'Steps', 1, 0, 0, 0)",
             [],
         )?;
         // Cross-tenant probe data: a 2nd tenant with isolated content

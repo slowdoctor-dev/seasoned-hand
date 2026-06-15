@@ -260,8 +260,8 @@ async fn sop_read_returns_row_by_id() {
     cx.events
         .with_conn(|conn| {
             conn.execute(
-                "INSERT INTO sops (id, title, content, version, enforced, created_at, updated_at)
-                 VALUES ('sop-1', 'Deploy', 'Use checklist', 1, 1, 1, 1)",
+                "INSERT INTO sops (id, tenant_id, title, content, version, enforced, created_at, updated_at)
+                 VALUES ('sop-1', 'tenant-a', 'Deploy', 'Use checklist', 1, 1, 1, 1)",
                 [],
             )
             .unwrap();
@@ -394,8 +394,8 @@ async fn learning_tools_surface_is_live() {
     cx.events
         .with_conn(|conn| {
             conn.execute(
-                "INSERT INTO sops (id, title, content, version, enforced, created_at, updated_at)
-                 VALUES ('sop-a', 'A', 'Body', 1, 1, 1, 1)",
+                "INSERT INTO sops (id, tenant_id, title, content, version, enforced, created_at, updated_at)
+                 VALUES ('sop-a', 'tenant-a', 'A', 'Body', 1, 1, 1, 1)",
                 [],
             )
             .unwrap();
