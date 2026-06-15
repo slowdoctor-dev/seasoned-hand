@@ -29,17 +29,6 @@ impl SqliteEventStore {
         }
     }
 
-    pub async fn reserve_next_id(&self) -> Result<i64, EventError> {
-        self.pool
-            .with_conn(|conn| {
-                conn.query_row("SELECT COALESCE(MAX(id), 0) + 1 FROM events", [], |row| {
-                    row.get(0)
-                })
-                .map_err(EventError::from)
-            })
-            .await
-    }
-
     pub async fn with_conn<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut rusqlite::Connection) -> R + Send,
