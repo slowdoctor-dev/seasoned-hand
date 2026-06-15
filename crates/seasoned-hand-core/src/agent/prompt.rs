@@ -53,13 +53,10 @@ pub(crate) async fn build_messages(
         });
     }
 
-    // Issue #11: rebuild the tool-call protocol faithfully. Each tool call is an
-    // `Action` event immediately followed by its `Observation`; emit them as a
-    // paired assistant `tool_calls` message + `tool` result so no `role:"tool"`
-    // message is orphaned (which providers reject with a 400). Narration is UI-only
-    // (story 1.15) and injection skill events are skipped so the agent's context is
-    // free of its own outward chatter. Unpaired Action/Observation events (rare — a
-    // mid-dispatch failure) degrade to plain text rather than break the sequence.
+    // Issue #11: rebuild the tool-call protocol faithfully so no `role:"tool"`
+    // message is orphaned (which providers reject with a 400) — see `pair_messages`.
+    // Narration is UI-only (story 1.15) and injection skill events are skipped so
+    // the agent's context stays free of its own outward chatter.
     let relevant: Vec<&Event> = all_events
         .iter()
         .filter(|event| !is_injection_skill_event(event) && !is_narrate_message(event))
@@ -75,34 +72,44 @@ pub(crate) async fn build_messages(
 /// unit tested directly.
 fn pair_messages(relevant: &[&Event]) -> Vec<Message> {
     let mut messages = Vec::new();
+    // The matching `Observation` is not necessarily adjacent to its `Action`: a
+    // tool may append its own events (a `message_notify_user` Message, a
+    // `feature_mark_done` Misc, …) between the pre-hook Action and the post-hook
+    // Observation. Match by `call_id` instead — scan forward to the next Action —
+    // and emit the assistant `tool_calls` + `tool` result *contiguously* (the
+    // protocol requires them adjacent), processing any intervening events after.
+    let mut paired_observation = vec![false; relevant.len()];
     let mut i = 0;
     while i < relevant.len() {
+        if paired_observation[i] {
+            // This Observation was already emitted next to its Action.
+            i += 1;
+            continue;
+        }
         let event = relevant[i];
         match event.event_type {
             EventType::Action => {
                 let call_id = string_field(event, "call_id");
-                let paired_observation = call_id.as_deref().and_then(|id| {
-                    relevant.get(i + 1).filter(|next| {
-                        next.event_type == EventType::Observation
-                            && string_field(next, "call_id").as_deref() == Some(id)
-                    })
-                });
-                match (call_id, paired_observation) {
-                    (Some(id), Some(observation)) => {
+                let observation = call_id
+                    .as_deref()
+                    .and_then(|id| find_observation(relevant, i + 1, id));
+                match (call_id, observation) {
+                    (Some(id), Some(obs_idx)) => {
                         messages.push(assistant_tool_call(&id, event));
-                        messages.push(tool_result(&id, observation));
-                        i += 2;
+                        messages.push(tool_result(&id, relevant[obs_idx]));
+                        paired_observation[obs_idx] = true;
                     }
                     _ => {
                         // Tool call with no matching observation — plain assistant
                         // text, never a dangling `tool_calls` (also a protocol error).
                         messages.push(action_as_text(event));
-                        i += 1;
                     }
                 }
+                i += 1;
             }
             EventType::Observation => {
-                // Observation with no preceding matching Action — fold to plain text.
+                // An observation reached without being paired to a preceding
+                // Action (orphan) — fold to plain text, never a bare role:"tool".
                 messages.push(observation_as_text(event));
                 i += 1;
             }
@@ -117,6 +124,25 @@ fn pair_messages(relevant: &[&Event]) -> Vec<Message> {
         }
     }
     messages
+}
+
+/// First `Observation` matching `call_id` at or after `from`, searching only up
+/// to the next `Action` (one tool call per iteration, so the result precedes the
+/// next call). Returns its index.
+fn find_observation(relevant: &[&Event], from: usize, call_id: &str) -> Option<usize> {
+    let mut idx = from;
+    while idx < relevant.len() {
+        match relevant[idx].event_type {
+            EventType::Action => return None,
+            EventType::Observation
+                if string_field(relevant[idx], "call_id").as_deref() == Some(call_id) =>
+            {
+                return Some(idx);
+            }
+            _ => idx += 1,
+        }
+    }
+    None
 }
 
 fn string_field(event: &Event, key: &str) -> Option<String> {
@@ -319,5 +345,34 @@ mod prompt_tests {
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].role, Role::Assistant);
         assert!(msgs[0].tool_calls.is_none());
+    }
+
+    #[test]
+    fn action_pairs_with_non_adjacent_observation() {
+        // A tool that appends its own event between the pre-hook Action and the
+        // post-hook Observation (e.g. message_notify_user / feature_mark_done)
+        // must still pair by call_id, not adjacency.
+        let relevant = [
+            event(
+                EventType::Action,
+                json!({"tool": "message_notify_user", "body": {"content": "hi"}, "call_id": "c9"}),
+            ),
+            event(
+                EventType::Message,
+                json!({"role": "assistant", "content": "hi"}),
+            ),
+            event(EventType::Observation, json!({"call_id": "c9", "ok": true})),
+        ];
+        let refs: Vec<&Event> = relevant.iter().collect();
+        let msgs = pair_messages(&refs);
+        assert_eq!(msgs.len(), 3);
+        // assistant tool_call + tool result emitted contiguously (protocol-valid)…
+        assert_eq!(msgs[0].role, Role::Assistant);
+        assert_eq!(msgs[0].tool_calls.as_ref().unwrap()[0].id, "c9");
+        assert_eq!(msgs[1].role, Role::Tool);
+        assert_eq!(msgs[1].tool_call_id.as_deref(), Some("c9"));
+        // …then the intervening message, after the pair.
+        assert_eq!(msgs[2].role, Role::Assistant);
+        assert_eq!(msgs[2].content.as_deref(), Some("hi"));
     }
 }

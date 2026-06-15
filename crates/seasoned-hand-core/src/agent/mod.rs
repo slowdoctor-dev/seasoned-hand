@@ -319,7 +319,12 @@ impl AgentRunner {
                     continue;
                 }
                 Err(error) => {
-                    self.finalize(&req.session_id).await;
+                    // A single non-status LLM failure (Http / JsonParse /
+                    // MissingChoice) is a RESUMABLE infra error, not terminal —
+                    // unlike the 4x-consecutive-status path above which sets ERROR.
+                    // Leave the session state and its run-config / cancel-token
+                    // intact so it can be retried, and do NOT finalize (issue #12:
+                    // finalize is for terminal exits only; this isn't one).
                     return Err(AgentError::Llm(error));
                 }
             };
