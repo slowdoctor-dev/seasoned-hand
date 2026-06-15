@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Self-host the UI from the control plane** (issue #33, deferred from #5). When
+  `SH_UI_DIST` points at a built Dioxus bundle, the Axum server serves it as the
+  router **fallback** (`tower-http` `ServeDir` + `ServeFile` SPA fallback) so a
+  single binary serves `/v1` + `/ws` + the UI. API routes always win; the static
+  serve is public (the shell calls the auth-gated API itself); a missing/invalid
+  `SH_UI_DIST` fails fast at boot, and unset → API-only (unchanged). New
+  `AppState::with_ui_dist` builder + `serve_ui` integration test. Net-new dep:
+  `tower-http 0.6` (`fs`), server crate only (ARCHITECTURE.md §1.1 addendum).
 - **Dioxus UI functional progress** (Phase 6 story 6.4, partial): WS ack handling
   captures the `task_create` session_id into the shared selection; an interactive
   **BriefingCard** (confirm / **edit** / cancel via `briefing_confirm`);
@@ -33,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   errors. Server-side adoption of the session/WS types is story 6.3b.
 
 ### Changed
+- **Dioxus Tailwind pipeline** (issue #33, deferred from #5): replaced the Tailwind
+  CDN `<script>` with a pinned Tailwind **v4.3.1 standalone-CLI** build (no Node) —
+  `just build-css` emits the gitignored `crates/seasoned-hand-ui/assets/tailwind.css`
+  (purged via `@source` content detection) wired through Dioxus `[web.resource]`;
+  `dev-ui`/`build-ui` build the CSS first, while `check-ui` stays a Rust/wasm-only
+  gate. CI's `ui` job validates `build-css`; a `workflow_dispatch`-only `ui-bundle`
+  job runs a full `dx build` and asserts the bundle ships exactly one stylesheet.
 - **`SandboxClient` connects to Docker lazily** — `SandboxClient::new` no longer
   opens the Docker socket at construction; the daemon is connected on first
   actual container operation (cached via `OnceCell`). This lets the control

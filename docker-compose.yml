@@ -60,10 +60,11 @@ services:
   #     - ./data/workspaces:/workspaces
 
   # ===== Frontend (Dioxus, ADR-016) =====
-  # The UI is now a unified Rust/Dioxus wasm bundle (crates/seasoned-hand-ui),
-  # no longer a separate Next.js service. Build it with `just build-ui` (output
-  # under target/dx/). Serving the static bundle from the control plane is a
-  # deferred follow-up; for now run it locally with `just dev-ui`.
+  # The UI is a unified Rust/Dioxus wasm bundle (crates/seasoned-hand-ui), not a
+  # separate service. Build it with `just build-ui`, then have the control plane
+  # self-host it (single binary) by setting SH_UI_DIST to the bundle dir — see
+  # the commented control-plane service above and .env.example (issue #33). For
+  # local UI dev with hot reload, run `just dev-ui` instead.
 
   # ===== AIO Sandbox (per-session) =====
   # Created dynamically by control plane via bollard.

@@ -1,20 +1,20 @@
 # Story 6.6 — Cutover: remove Next.js, compiled Tailwind, infra/docs
 
-> **Status**: done (issue #5) — core cutover landed; 2 ACs deferred to issue #33.
+> **Status**: done — core cutover in #5; the Tailwind + serve follow-ups in #33.
 
 Once parity (6.4) and web+desktop targets (6.5) are verified, retire the Next.js
 frontend. The destructive removal + infra/docs reconciliation shipped in #5; the
 compiled-Tailwind pipeline and serving the bundle were split into the #33
-follow-up so they don't block the cutover.
+follow-up so they didn't block the cutover — both now landed.
 
 ## Acceptance criteria
 
-- [ ] **Deferred to #33.** Replace the Tailwind CDN (`index.html`) with the
-      compiled Tailwind v4 pipeline for the Dioxus crate (parity with the old build).
-- [ ] **Deferred to #33.** `docker-compose.yml`: replace the `frontend` (Node/Next)
-      service with a static-serve of the `dx build` web bundle (or have the Rust
-      server serve it). The commented Next service was removed in #5; the dx-serve
-      decision is the #33 part.
+- [x] **(#33)** Replaced the Tailwind CDN (`index.html`) with a pinned Tailwind v4
+      standalone-CLI build (no Node) wired through Dioxus `[web.resource]`; purged
+      via `@source` content detection. `just build-css` / `build-ui`.
+- [x] **(#33)** The control plane serves the built bundle directly (`SH_UI_DIST` →
+      `tower-http` ServeDir + SPA fallback) — single binary, no separate service.
+      Chosen over a dedicated compose service (decided with the user).
 - [x] `justfile`: `dev-frontend` removed; `dev-ui` / `build-ui` are canonical.
 - [x] `docs/getting-started.md` + README updated for the Dioxus stack and `dx`.
 - [x] Delete `frontend/` (Next.js app) and its `pnpm` tooling.

@@ -247,6 +247,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     state = state.with_rollback_on_verifier_fail(rollback_flag);
 
+    // Issue #33: optionally self-host the built Dioxus UI bundle. When
+    // `SH_UI_DIST` points at a `dx build` output dir, the control plane serves it
+    // as the router fallback (single-binary deploy). Fail fast on a misconfigured
+    // path so a typo doesn't silently leave the UI unserved with a healthy-looking
+    // server. Unset → API-only (the default).
+    if let Some(raw) = std::env::var("SH_UI_DIST")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    {
+        let dir = std::path::PathBuf::from(raw.trim());
+        if !dir.is_dir() {
+            return Err(format!(
+                "SH_UI_DIST is set to '{}', which is not a directory. Build the UI \
+                 first (`just build-ui`) and point SH_UI_DIST at the bundle dir, or \
+                 unset it to run API-only.",
+                dir.display()
+            )
+            .into());
+        }
+        if !dir.join("index.html").is_file() {
+            return Err(format!(
+                "SH_UI_DIST '{}' has no index.html — it does not look like a built \
+                 UI bundle. Run `just build-ui` and point SH_UI_DIST at its output.",
+                dir.display()
+            )
+            .into());
+        }
+        tracing::info!(ui_dist = %dir.display(), "serving the Dioxus UI bundle as the router fallback");
+        state = state.with_ui_dist(dir);
+    }
+
     // Phase 1 / story 1.9: when the verifier slot is enabled, load the
     // FAIL-biased system prompt from disk. Missing file is a startup-
     // fatal configuration error.

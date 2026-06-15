@@ -6,6 +6,7 @@ target/
 # Dioxus / wasm build output
 target/dx/
 dist/
+crates/seasoned-hand-ui/assets/tailwind.css
 
 # Node (legacy Next.js frontend removed in #5 cutover; kept for stray tooling)
 node_modules/

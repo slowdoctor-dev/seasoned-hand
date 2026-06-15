@@ -1,6 +1,11 @@
 # Seasoned Hand — Task runner
 # Install just: brew install just  OR  cargo install just
 
+tailwind_version := "v4.3.1"
+tailwind_bin := "target/tools/tailwindcss"
+ui_css_output := "crates/seasoned-hand-ui/assets/tailwind.css"
+ui_dist := "target/dx/seasoned-hand-ui/release/web/public"
+
 # Default: show available commands
 default:
     @just --list
@@ -41,12 +46,19 @@ dev-server-nodocker:
 
 # Run the Dioxus UI (ADR-016) in dev mode. Requires the Dioxus CLI:
 #   cargo install dioxus-cli   (provides `dx`)
-dev-ui:
+dev-ui: build-css
     cd crates/seasoned-hand-ui && dx serve --platform web
 
+# Build the Tailwind v4 stylesheet with the pinned standalone CLI (no Node).
+build-css: _tailwind-cli
+    mkdir -p crates/seasoned-hand-ui/assets
+    {{tailwind_bin}} -i crates/seasoned-hand-ui/input.css -o {{ui_css_output}} --minify
+    test -s {{ui_css_output}}
+
 # Build the Dioxus UI to a static web bundle (output under target/dx/).
-build-ui:
+build-ui: build-css
     cd crates/seasoned-hand-ui && dx build --platform web --release
+    test -d {{ui_dist}}
 
 # Gate the Dioxus UI (no dx CLI needed). The UI crate is excluded from the root
 # workspace, so the root cargo fmt/clippy/test gates do NOT cover it — this recipe
@@ -56,6 +68,27 @@ check-ui:
     cargo fmt --manifest-path crates/seasoned-hand-ui/Cargo.toml -- --check
     cargo clippy --manifest-path crates/seasoned-hand-ui/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
     cargo check --manifest-path crates/seasoned-hand-ui/Cargo.toml --target wasm32-unknown-unknown
+
+_tailwind-cli:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bin="{{tailwind_bin}}"
+    if [[ -x "$bin" ]]; then
+      exit 0
+    fi
+    os="$(uname -s)"
+    arch="$(uname -m)"
+    case "$os:$arch" in
+      Linux:x86_64) asset="tailwindcss-linux-x64" ;;
+      Linux:aarch64|Linux:arm64) asset="tailwindcss-linux-arm64" ;;
+      Darwin:x86_64) asset="tailwindcss-macos-x64" ;;
+      Darwin:arm64|Darwin:aarch64) asset="tailwindcss-macos-arm64" ;;
+      *) echo "unsupported Tailwind standalone CLI platform: $os/$arch" >&2; exit 1 ;;
+    esac
+    mkdir -p "$(dirname "$bin")"
+    url="https://github.com/tailwindlabs/tailwindcss/releases/download/{{tailwind_version}}/$asset"
+    curl -fsSL "$url" -o "$bin"
+    chmod +x "$bin"
 
 # === Verification gates ===
 

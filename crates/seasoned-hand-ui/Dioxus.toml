@@ -7,8 +7,8 @@ title = "Seasoned Hand"
 
 [web.watcher]
 reload_html = true
-watch_path = ["src", "index.html"]
+watch_path = ["src", "index.html", "input.css"]
 
 [web.resource]
-style = []
+style = ["assets/tailwind.css"]
 script = []

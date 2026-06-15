@@ -15,6 +15,8 @@ use axum::{
     routing::{MethodRouter, get},
 };
 use dashmap::DashMap;
+use tower_http::services::{ServeDir, ServeFile};
+
 use seasoned_hand_core::agent::breaker::BreakerRegistry;
 use seasoned_hand_core::agent::init::briefing::UserResponse;
 use seasoned_hand_core::agent::init::feature_list::FeatureList;
@@ -204,6 +206,14 @@ pub struct AppState {
     /// channel itself is harmless to register early — its
     /// `IntakeProvider::run` parks on shutdown.
     pub cli_channel: Arc<CliChannel>,
+    /// Issue #33: when `Some`, the control plane serves the built Dioxus UI
+    /// bundle at this directory as the router fallback (static assets + SPA
+    /// `index.html`), so a single binary self-hosts both the `/v1` + `/ws` API
+    /// and the web UI. `None` (the default, and whenever `SH_UI_DIST` is unset)
+    /// leaves the server API-only — unmatched paths 404 as before, which is what
+    /// every test relies on. Set from `SH_UI_DIST` in `main.rs`
+    /// ([`AppState::with_ui_dist`]); the env path is validated at boot.
+    pub ui_dist: Option<std::path::PathBuf>,
 }
 
 /// Story 2.20: configuration bundle for the NarratorHook's
@@ -544,6 +554,7 @@ impl AppState {
             notify_config,
             workspace_ttl_cron,
             cli_channel: Arc::new(CliChannel::new()),
+            ui_dist: None,
         };
         // Story 2.8b: attach the confirm-gate Initializer spawner so
         // every Created intake event flows through to the briefing
@@ -780,6 +791,15 @@ impl AppState {
     /// Defaults `false` per phase-1/DEBT.md #3.
     pub fn with_rollback_on_verifier_fail(mut self, enabled: bool) -> Self {
         self.checkpoint_rollback_on_verifier_fail = enabled;
+        self
+    }
+
+    /// Issue #33: serve the built Dioxus UI bundle at `dir` as the router
+    /// fallback (see [`AppState::ui_dist`]). `main.rs` calls this with the
+    /// `SH_UI_DIST` path after validating the directory exists; tests pass a
+    /// temp dir directly.
+    pub fn with_ui_dist(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.ui_dist = Some(dir.into());
         self
     }
 }
@@ -1505,7 +1525,10 @@ async fn get_progress(
 }
 
 pub fn app(state: AppState) -> Router {
-    Router::new()
+    // Issue #33: when SH_UI_DIST is configured, the built Dioxus bundle is served
+    // as the router fallback. Cloned out before `with_state` consumes `state`.
+    let ui_dist = state.ui_dist.clone();
+    let router = Router::new()
         .route("/healthz", public(get(healthz)))
         // Issue #7 / ADR-018: auth endpoints — login is public (mints the first
         // credential); dev-login self-gates on loopback + flag.
@@ -1749,8 +1772,28 @@ pub fn app(state: AppState) -> Router {
         .layer(Extension(auth::middleware::AuthDeps {
             sessions: state.auth_sessions.clone(),
             allow_insecure_headers: state.allow_insecure_headers,
-        }))
-        .with_state(state)
+        }));
+
+    // Issue #33: serve the built UI bundle as the fallback. Named API routes
+    // (`/v1/*`, `/ws`, `/healthz`, `/metrics`) always win — the fallback only
+    // fires when no route matches. `ServeDir` returns static assets; its own
+    // `.fallback(ServeFile(index.html))` resolves unknown paths to the SPA shell
+    // so client-side navigation works. Static serve is intentionally public
+    // (unauthenticated): it's just the app shell + assets; the UI then calls the
+    // auth-gated `/v1` + `/ws` API itself. Added after the auth `Extension` layer
+    // so the static serve isn't wrapped by request-scoped API plumbing.
+    let router = match ui_dist {
+        Some(dir) => {
+            let index_html = dir.join("index.html");
+            let serve = ServeDir::new(&dir)
+                .append_index_html_on_directories(true)
+                .fallback(ServeFile::new(index_html));
+            router.fallback_service(serve)
+        }
+        None => router,
+    };
+
+    router.with_state(state)
 }
 
 // ---------------------------------------------------------------------------

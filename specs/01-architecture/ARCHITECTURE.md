@@ -146,6 +146,17 @@ tracks "where we are in the task" and prevents goal drift. See ADR-010.
     Google AI)
 ```
 
+> **UI hosting (issue #33).** The Dioxus UI is a static wasm bundle and is
+> deployment-independent of the control plane. Two topologies are supported:
+> (a) **dev** — `dx serve` / `just dev-ui` runs the UI on its own port against the
+> `/v1` + `/ws` API; (b) **single-binary self-host** — `just build-ui` produces a
+> static bundle and the control plane serves it as the router **fallback** when
+> `SH_UI_DIST` points at the bundle dir. The API routes (`/v1/*`, `/ws`,
+> `/healthz`, `/metrics`) always take precedence; the fallback only serves the
+> shell + assets and resolves unknown paths to `index.html` (SPA). Static serve is
+> public (the shell calls the auth-gated API itself). Net-new dep (per §9):
+> `tower-http 0.6` (`fs` feature — `ServeDir`/`ServeFile`), server crate only.
+>
 > **Phase 2 channel-framework addendum** (per AGENTS.md §9 — net-new
 > Rust deps trigger a one-line note):
 > `lettre 0.11` (SMTP send, EmailChannel delivery + notify),

@@ -8,6 +8,9 @@ license.workspace = true
 seasoned-hand-core = { path = "../seasoned-hand-core" }
 seasoned-hand-dto = { path = "../seasoned-hand-dto" }
 axum = { workspace = true, features = ["ws"] }
+# Issue #33: ServeDir/ServeFile to serve the built Dioxus UI bundle (opt-in via
+# SH_UI_DIST) so the control plane can self-host the UI as a single binary.
+tower-http = { version = "0.6", features = ["fs"] }
 tokio = { workspace = true }
 tokio-util = "0.7"
 tracing = { workspace = true }

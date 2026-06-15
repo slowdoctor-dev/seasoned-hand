@@ -52,7 +52,17 @@ docker compose up -d
 open http://localhost:3000
 ```
 
-Full setup walkthrough: [`docs/getting-started.md`](docs/getting-started.md).
+**Serving the UI.** The Dioxus UI is a static wasm bundle. For development run it
+on its own port with `just dev-ui`. To self-host the whole app as a single binary,
+build the bundle and let the control plane serve it:
+
+```bash
+just build-ui                 # produces a static bundle under target/dx/
+SH_UI_DIST=<bundle-dir> cargo run -p seasoned-hand-server   # serves /v1 + /ws + UI
+```
+
+With `SH_UI_DIST` unset the server is API-only. Full walkthrough:
+[`docs/getting-started.md`](docs/getting-started.md).
 
 ## Development methodology
 
