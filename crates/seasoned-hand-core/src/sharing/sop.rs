@@ -137,10 +137,16 @@ impl SopShareService {
         let perm = permission.as_db_str().to_string();
         self.db
             .with_conn(move |conn| {
+                // Issue #16: tenant-scope the SOP existence check. `sops`
+                // gained `tenant_id` in V024; without this predicate an admin
+                // (who bypasses the actor_can_share gate) could create a
+                // tenant-A share row against a tenant-B SOP id.
                 let sop_exists = conn
-                    .query_row("SELECT 1 FROM sops WHERE id = ?", params![sop_id], |row| {
-                        row.get::<_, i64>(0)
-                    })
+                    .query_row(
+                        "SELECT 1 FROM sops WHERE id = ? AND tenant_id = ?",
+                        params![sop_id, tenant],
+                        |row| row.get::<_, i64>(0),
+                    )
                     .optional()?
                     .is_some();
                 if !sop_exists {
@@ -470,8 +476,8 @@ mod tests {
                 [],
             )?;
             conn.execute(
-                "INSERT INTO sops (id, title, content, version, enforced, created_at, updated_at)
-                 VALUES ('sop-1', 'Deploy', 'Checklist', 1, 1, 1, 1)",
+                "INSERT INTO sops (id, tenant_id, title, content, version, enforced, created_at, updated_at)
+                 VALUES ('sop-1', 'tenant-a', 'Deploy', 'Checklist', 1, 1, 1, 1)",
                 [],
             )?;
             conn.execute(
@@ -538,8 +544,8 @@ mod tests {
         seed(&pool).await;
         pool.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO sops (id, title, content, version, enforced, created_at, updated_at)
-                 VALUES ('sop-2', 'Incident', 'Steps', 1, 1, 1, 1)",
+                "INSERT INTO sops (id, tenant_id, title, content, version, enforced, created_at, updated_at)
+                 VALUES ('sop-2', 'tenant-a', 'Incident', 'Steps', 1, 1, 1, 1)",
                 [],
             )?;
             Ok::<(), rusqlite::Error>(())
@@ -586,6 +592,52 @@ mod tests {
         );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].sop_id, "sop-1");
+    }
+
+    #[tokio::test]
+    async fn admin_cannot_share_a_foreign_tenant_sop() {
+        let pool = open_pool().await;
+        seed(&pool).await;
+        pool.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO organizations (id, tenant_id, slug, display_name, status, created_at, updated_at)
+                 VALUES ('org-b', 'tenant-b', 'org-b', 'Org B', 'active', 1, 1)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO sops (id, tenant_id, title, content, version, enforced, created_at, updated_at)
+                 VALUES ('sop-foreign', 'tenant-b', 'Foreign SOP', 'Nope', 1, 1, 1, 1)",
+                [],
+            )?;
+            Ok::<(), rusqlite::Error>(())
+        })
+        .await
+        .expect("seed foreign sop");
+
+        let service = SopShareService::new(pool.clone());
+        let err = service
+            .share(
+                &ctx(Role::Admin, "u-admin"),
+                "sop-foreign",
+                "viewer@acme.dev",
+                SopPermission::Viewer,
+                None,
+            )
+            .await
+            .expect_err("tenant-a admin must not share tenant-b SOP");
+        assert!(matches!(err, SopShareError::SopNotFound(id) if id == "sop-foreign"));
+
+        let leaked_rows: i64 = pool
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM sop_shares WHERE sop_id = 'sop-foreign'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .await
+            .expect("count");
+        assert_eq!(leaked_rows, 0);
     }
 
     // --- Story 5.21: optimistic concurrency on re-share/unshare -------

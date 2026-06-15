@@ -11,8 +11,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 
 use crate::channel::ChannelError;
+
+use super::EMAIL_NETWORK_TIMEOUT;
 
 /// One fetched message: the IMAP UID + raw RFC 822 bytes. The poll
 /// loop hands the bytes to `mailparse` to extract sender / subject /
@@ -70,13 +73,13 @@ impl MailboxFetcher for AsyncImapFetcher {
         run_session(&self.config, |session| {
             Box::pin(async move {
                 use futures_util::StreamExt;
-                session
-                    .select("INBOX")
+                timeout(EMAIL_NETWORK_TIMEOUT, session.select("INBOX"))
                     .await
+                    .map_err(|_| ChannelError::Transport("imap select timed out".into()))?
                     .map_err(|err| ChannelError::Transport(format!("imap select: {err}")))?;
-                let unseen = session
-                    .uid_search("UNSEEN")
+                let unseen = timeout(EMAIL_NETWORK_TIMEOUT, session.uid_search("UNSEEN"))
                     .await
+                    .map_err(|_| ChannelError::Transport("imap uid_search timed out".into()))?
                     .map_err(|err| ChannelError::Transport(format!("imap uid_search: {err}")))?;
                 if unseen.is_empty() {
                     return Ok(Vec::new());
@@ -89,11 +92,20 @@ impl MailboxFetcher for AsyncImapFetcher {
                     .collect::<Vec<_>>()
                     .join(",");
                 let mut out = Vec::with_capacity(uids.len());
-                let mut stream = session
-                    .uid_fetch(&set, "(UID RFC822)")
-                    .await
-                    .map_err(|err| ChannelError::Transport(format!("imap uid_fetch: {err}")))?;
-                while let Some(item) = stream.next().await {
+                let mut stream = timeout(
+                    EMAIL_NETWORK_TIMEOUT,
+                    session.uid_fetch(&set, "(UID RFC822)"),
+                )
+                .await
+                .map_err(|_| ChannelError::Transport("imap uid_fetch timed out".into()))?
+                .map_err(|err| ChannelError::Transport(format!("imap uid_fetch: {err}")))?;
+                loop {
+                    let item = timeout(EMAIL_NETWORK_TIMEOUT, stream.next())
+                        .await
+                        .map_err(|_| {
+                            ChannelError::Transport("imap fetch stream timed out".into())
+                        })?;
+                    let Some(item) = item else { break };
                     let msg = item.map_err(|err| {
                         ChannelError::Transport(format!("imap fetch stream: {err}"))
                     })?;
@@ -115,17 +127,26 @@ impl MailboxFetcher for AsyncImapFetcher {
         run_session(&self.config, |session| {
             Box::pin(async move {
                 use futures_util::StreamExt;
-                session
-                    .select("INBOX")
+                timeout(EMAIL_NETWORK_TIMEOUT, session.select("INBOX"))
                     .await
+                    .map_err(|_| ChannelError::Transport("imap select timed out".into()))?
                     .map_err(|err| ChannelError::Transport(format!("imap select: {err}")))?;
-                let mut store_stream = session
-                    .uid_store(uid.to_string(), "+FLAGS (\\Seen)")
-                    .await
-                    .map_err(|err| ChannelError::Transport(format!("imap uid_store: {err}")))?;
+                let mut store_stream = timeout(
+                    EMAIL_NETWORK_TIMEOUT,
+                    session.uid_store(uid.to_string(), "+FLAGS (\\Seen)"),
+                )
+                .await
+                .map_err(|_| ChannelError::Transport("imap uid_store timed out".into()))?
+                .map_err(|err| ChannelError::Transport(format!("imap uid_store: {err}")))?;
                 // Drain the response stream so the server-side STORE
                 // completes before we LOGOUT in `run_session`.
-                while let Some(item) = store_stream.next().await {
+                loop {
+                    let item = timeout(EMAIL_NETWORK_TIMEOUT, store_stream.next())
+                        .await
+                        .map_err(|_| {
+                            ChannelError::Transport("imap uid_store stream timed out".into())
+                        })?;
+                    let Some(item) = item else { break };
                     item.map_err(|err| {
                         ChannelError::Transport(format!("imap uid_store stream: {err}"))
                     })?;
@@ -154,8 +175,9 @@ where
     use tokio_rustls::rustls::pki_types::ServerName;
 
     let addr = format!("{}:{}", config.host, config.port);
-    let tcp = TcpStream::connect(&addr)
+    let tcp = timeout(EMAIL_NETWORK_TIMEOUT, TcpStream::connect(&addr))
         .await
+        .map_err(|_| ChannelError::Transport(format!("imap tcp connect {addr}: timed out")))?
         .map_err(|err| ChannelError::Transport(format!("imap tcp connect {addr}: {err}")))?;
 
     let tls_config = ClientConfig::builder()
@@ -164,19 +186,22 @@ where
     let connector = TlsConnector::from(Arc::new(tls_config));
     let dns_name = ServerName::try_from(config.host.clone())
         .map_err(|err| ChannelError::Internal(format!("imap dns name {:?}: {err}", config.host)))?;
-    let tls = connector
-        .connect(dns_name, tcp)
+    let tls = timeout(EMAIL_NETWORK_TIMEOUT, connector.connect(dns_name, tcp))
         .await
+        .map_err(|_| ChannelError::Transport("imap tls handshake timed out".into()))?
         .map_err(|err| ChannelError::Transport(format!("imap tls handshake: {err}")))?;
 
     let client = async_imap::Client::new(tls);
-    let mut session = client
-        .login(&config.username, &config.password)
-        .await
-        .map_err(|(err, _)| ChannelError::Transport(format!("imap login: {err}")))?;
+    let mut session = timeout(
+        EMAIL_NETWORK_TIMEOUT,
+        client.login(&config.username, &config.password),
+    )
+    .await
+    .map_err(|_| ChannelError::Transport("imap login timed out".into()))?
+    .map_err(|(err, _)| ChannelError::Transport(format!("imap login: {err}")))?;
 
     let outcome = body(&mut session).await;
-    let _ = session.logout().await;
+    let _ = timeout(EMAIL_NETWORK_TIMEOUT, session.logout()).await;
     outcome
 }
 

@@ -353,7 +353,11 @@ pub enum ServerEnvelope {
     },
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// Client→server command — the **single** source of truth shared by the Dioxus UI
+/// (which serializes it) and the server (which deserializes it), issue #19. JSON is
+/// tagged on `cmd`. Previously this was duplicated as a server-local copy that had
+/// drifted (durable pause, `u32` widths, the typed `action`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum CommandPayload {
     Subscribe {
@@ -364,12 +368,16 @@ pub enum CommandPayload {
     TaskCreate {
         input: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        max_steps: Option<i64>,
+        max_steps: Option<u32>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        cost_cap_cents: Option<i64>,
+        cost_cap_cents: Option<u32>,
     },
+    /// Story 2.16: `durable` is additive. `Some(true)` / `None` (default) → durable
+    /// pause; `Some(false)` → plain pause.
     TaskPause {
         session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        durable: Option<bool>,
     },
     TaskResume {
         session_id: String,
@@ -382,13 +390,26 @@ pub enum CommandPayload {
         in_reply_to_call_id: String,
         content: String,
     },
+    /// `edits` carries a `PartialBrief` as raw JSON (only consulted when
+    /// `action == Edit`); kept as `Value` so this wasm-safe crate does not depend
+    /// on the native `seasoned-hand-core`.
     BriefingConfirm {
         task_id: String,
         in_reply_to_call_id: String,
-        action: String,
+        action: BriefingActionTag,
         #[serde(skip_serializing_if = "Option::is_none")]
         edits: Option<serde_json::Value>,
     },
+}
+
+/// Briefing-confirm verb (issue #19; moved here from the server). Serializes
+/// snake_case: `confirm` / `edit` / `cancel`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BriefingActionTag {
+    Confirm,
+    Edit,
+    Cancel,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -406,7 +427,7 @@ impl ClientCommand {
     pub fn new(id: String, ts: Timestamp, payload: CommandPayload) -> Self {
         let session_id = match &payload {
             CommandPayload::Subscribe { session_id, .. }
-            | CommandPayload::TaskPause { session_id }
+            | CommandPayload::TaskPause { session_id, .. }
             | CommandPayload::TaskResume { session_id }
             | CommandPayload::TaskCancel { session_id }
             | CommandPayload::UserResponse { session_id, .. } => Some(session_id.clone()),
@@ -419,5 +440,62 @@ impl ClientCommand {
             ts,
             payload,
         }
+    }
+}
+
+#[cfg(test)]
+mod command_payload_tests {
+    use super::*;
+
+    fn roundtrip(payload: CommandPayload) {
+        // Issue #19: one shared type — what the UI serializes, the server
+        // deserializes — so serialize↔deserialize must be symmetric.
+        let json = serde_json::to_string(&payload).unwrap();
+        let back: CommandPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(payload, back);
+    }
+
+    #[test]
+    fn durable_pause_roundtrips_and_serializes_the_field() {
+        let pause = CommandPayload::TaskPause {
+            session_id: "s1".into(),
+            durable: Some(true),
+        };
+        let json = serde_json::to_string(&pause).unwrap();
+        assert!(json.contains("\"cmd\":\"task_pause\""));
+        assert!(json.contains("\"durable\":true"));
+        roundtrip(pause);
+        // Omitted durable still deserializes (defaults to None → durable pause).
+        let parsed: CommandPayload =
+            serde_json::from_str(r#"{"cmd":"task_pause","session_id":"s1"}"#).unwrap();
+        assert_eq!(
+            parsed,
+            CommandPayload::TaskPause {
+                session_id: "s1".into(),
+                durable: None
+            }
+        );
+    }
+
+    #[test]
+    fn task_create_uses_u32_widths() {
+        roundtrip(CommandPayload::TaskCreate {
+            input: "do it".into(),
+            max_steps: Some(24),
+            cost_cap_cents: Some(500),
+        });
+    }
+
+    #[test]
+    fn briefing_confirm_action_is_snake_case_enum() {
+        let confirm = CommandPayload::BriefingConfirm {
+            task_id: "t1".into(),
+            in_reply_to_call_id: "c1".into(),
+            action: BriefingActionTag::Edit,
+            edits: Some(serde_json::json!({"goal": "x"})),
+        };
+        let json = serde_json::to_string(&confirm).unwrap();
+        assert!(json.contains("\"action\":\"edit\""));
+        roundtrip(confirm);
     }
 }

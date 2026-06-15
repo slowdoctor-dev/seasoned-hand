@@ -76,19 +76,23 @@ pub async fn run(cmd: SopCmd, client: &ApiClient, json: bool) -> Result<()> {
         } => {
             let now = now_micros();
             let sop_id = id.clone();
-            pool.with_conn(move |conn| -> Result<()> {
-                conn.execute(
-                    "INSERT INTO sops (id, title, content, version, enforced, created_at, updated_at)
-                     VALUES (?, ?, ?, 1, ?, ?, ?)",
-                    params![id, title, content, bool_to_i64(enforced), now, now],
-                )?;
-                Ok(())
-            })
-            .await?;
+            // Issue #16: SOPs are tenant-scoped (V024). Resolve the actor's tenant
+            // first and stamp it on the row, so the SOP is owned by the creating
+            // tenant rather than the `legacy-default` column default.
             let tenant_id =
                 std::env::var("SH_TENANT_ID").unwrap_or_else(|_| "legacy-default".to_string());
             let owner_user_id = std::env::var("SH_ACTOR_USER_ID")
                 .unwrap_or_else(|_| "user-cli-operator".to_string());
+            let tenant_for_insert = tenant_id.clone();
+            pool.with_conn(move |conn| -> Result<()> {
+                conn.execute(
+                    "INSERT INTO sops (id, tenant_id, title, content, version, enforced, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
+                    params![id, tenant_for_insert, title, content, bool_to_i64(enforced), now, now],
+                )?;
+                Ok(())
+            })
+            .await?;
             SopShareService::new(pool.clone())
                 .ensure_default_owner(&tenant_id, &sop_id, &owner_user_id)
                 .await?;

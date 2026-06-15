@@ -40,8 +40,10 @@ async fn boot() -> String {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO sops (id, title, content, version, enforced, created_at, updated_at)
-             VALUES ('sop-1', 'Deploy', 'Checklist', 1, 1, 1, 1)",
+            // Issue #16: sops are tenant-scoped (V024). Seed under tenant-a so the
+            // share existence check (now `WHERE id = ? AND tenant_id = ?`) matches.
+            "INSERT INTO sops (id, tenant_id, title, content, version, enforced, created_at, updated_at)
+             VALUES ('sop-1', 'tenant-a', 'Deploy', 'Checklist', 1, 1, 1, 1)",
             [],
         )
         .unwrap();
