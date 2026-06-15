@@ -33,6 +33,16 @@ AI 코딩 에이전트 (1개 이상 — 본인 선호에 따라):
 > ```
 > 단, 실제 작업 실행은 여전히 Docker가 필요합니다.
 
+> **단일 바이너리로 UI 셀프호스팅 (issue #33)**
+> UI는 정적 wasm 번들입니다. 컨트롤 플레인이 직접 서빙하게 하려면 번들을 빌드한
+> 뒤 `SH_UI_DIST`를 번들 디렉터리로 지정하세요. 그러면 서버가 `/v1` + `/ws` API와
+> UI를 한 프로세스에서 제공합니다(API 라우트가 항상 우선; 정적 서빙은 공개):
+> ```bash
+> just build-ui                                    # target/dx/ 아래 정적 번들 생성
+> SH_UI_DIST=<번들-경로> cargo run -p seasoned-hand-server
+> ```
+> `SH_UI_DIST`를 지정하지 않으면 서버는 API 전용으로 동작합니다(기존과 동일).
+
 API 키 1개 이상:
 - Anthropic ($) — 강력 추천
 - OpenAI ($)

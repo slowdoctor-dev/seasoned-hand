@@ -51,13 +51,42 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
           components: clippy, rustfmt
+      - uses: extractions/setup-just@v3
       - uses: Swatinem/rust-cache@v2
+      - name: Build Tailwind CSS
+        run: cd ../.. && just build-css
       - name: Format check
         run: cargo fmt -- --check
       - name: Clippy (wasm)
         run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
       - name: Compile-check the Dioxus UI for wasm
         run: cargo check --target wasm32-unknown-unknown
+
+  ui-bundle:
+    name: UI bundle smoke (workflow_dispatch only)
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: extractions/setup-just@v3
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Dioxus CLI
+        # Pin to the crate's Dioxus 0.6 line (issue #33 review) so the smoke
+        # validates THIS repo's toolchain, not whatever dx is latest at run time.
+        run: cargo install dioxus-cli --version 0.6.3 --locked
+      - name: Build UI bundle
+        run: just build-ui
+      - name: Assert UI bundle stylesheet wiring
+        run: |
+          set -euo pipefail
+          dist="target/dx/seasoned-hand-ui/release/web/public"
+          test -f "$dist/index.html"
+          find "$dist" -name '*.css' -type f | grep -q .
+          count="$(grep -o 'rel="stylesheet"' "$dist/index.html" | wc -l | tr -d ' ')"
+          test "$count" = "1"
 
   ignored-tests:
     name: Ignored tests (workflow_dispatch only)

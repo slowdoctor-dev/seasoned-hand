@@ -1,6 +1,11 @@
 # Seasoned Hand — Task runner
 # Install just: brew install just  OR  cargo install just
 
+tailwind_version := "v4.3.1"
+tailwind_bin := "target/tools/tailwindcss"
+ui_css_output := "crates/seasoned-hand-ui/assets/tailwind.css"
+ui_dist := "target/dx/seasoned-hand-ui/release/web/public"
+
 # Default: show available commands
 default:
     @just --list
@@ -41,12 +46,19 @@ dev-server-nodocker:
 
 # Run the Dioxus UI (ADR-016) in dev mode. Requires the Dioxus CLI:
 #   cargo install dioxus-cli   (provides `dx`)
-dev-ui:
+dev-ui: build-css
     cd crates/seasoned-hand-ui && dx serve --platform web
 
+# Build the Tailwind v4 stylesheet with the pinned standalone CLI (no Node).
+build-css: _tailwind-cli
+    mkdir -p crates/seasoned-hand-ui/assets
+    {{tailwind_bin}} -i crates/seasoned-hand-ui/input.css -o {{ui_css_output}} --minify
+    test -s {{ui_css_output}}
+
 # Build the Dioxus UI to a static web bundle (output under target/dx/).
-build-ui:
+build-ui: build-css
     cd crates/seasoned-hand-ui && dx build --platform web --release
+    test -d {{ui_dist}}
 
 # Gate the Dioxus UI (no dx CLI needed). The UI crate is excluded from the root
 # workspace, so the root cargo fmt/clippy/test gates do NOT cover it — this recipe
@@ -56,6 +68,46 @@ check-ui:
     cargo fmt --manifest-path crates/seasoned-hand-ui/Cargo.toml -- --check
     cargo clippy --manifest-path crates/seasoned-hand-ui/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
     cargo check --manifest-path crates/seasoned-hand-ui/Cargo.toml --target wasm32-unknown-unknown
+
+_tailwind-cli:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bin="{{tailwind_bin}}"
+    if [[ -x "$bin" ]]; then
+      exit 0
+    fi
+    os="$(uname -s)"
+    arch="$(uname -m)"
+    # Pin BOTH the version and a per-asset sha256 (issue #33 review): build-css
+    # runs in PR CI, so an unverified downloaded executable would be arbitrary
+    # code execution on a mutated/MITM'd release. Digests are for {{tailwind_version}};
+    # bump them whenever tailwind_version changes (recompute with `sha256sum`).
+    case "$os:$arch" in
+      Linux:x86_64) asset="tailwindcss-linux-x64";  sha="2526d063ba03b71f9a3ea7d5cee14f0aec147f117f222d5adc97b1d736d45999" ;;
+      Linux:aarch64|Linux:arm64) asset="tailwindcss-linux-arm64"; sha="3d662377a86d71c43b549dc06b90db4586b4acd412bf827a3268e951661e5adf" ;;
+      Darwin:x86_64) asset="tailwindcss-macos-x64"; sha="e9e830ceb3e70b7e0775a3dd79eee8ec82c6b31270f08f2fa2857d0077045ac3" ;;
+      Darwin:arm64|Darwin:aarch64) asset="tailwindcss-macos-arm64"; sha="a27c43626185953ee19bdace1939c7601e55da654e0b2fc4461e3e29957aa739" ;;
+      *) echo "unsupported Tailwind standalone CLI platform: $os/$arch" >&2; exit 1 ;;
+    esac
+    mkdir -p "$(dirname "$bin")"
+    url="https://github.com/tailwindlabs/tailwindcss/releases/download/{{tailwind_version}}/$asset"
+    tmp="$(mktemp)"
+    curl -fsSL "$url" -o "$tmp"
+    # Verify the digest BEFORE making it executable / moving it into place.
+    if command -v sha256sum >/dev/null 2>&1; then
+      actual="$(sha256sum "$tmp" | awk '{print $1}')"
+    else
+      actual="$(shasum -a 256 "$tmp" | awk '{print $1}')"
+    fi
+    if [[ "$actual" != "$sha" ]]; then
+      rm -f "$tmp"
+      echo "Tailwind CLI sha256 mismatch for $asset" >&2
+      echo "  expected $sha" >&2
+      echo "  actual   $actual" >&2
+      exit 1
+    fi
+    chmod +x "$tmp"
+    mv "$tmp" "$bin"
 
 # === Verification gates ===
 
