@@ -11,8 +11,8 @@ members = [
 # the backend gates (`cargo clippy --all-targets`, `cargo test --workspace`)
 # native-only and green. Build the UI with `cargo build -p seasoned-hand-ui
 # --target wasm32-unknown-unknown` (or `dx build`) from crates/seasoned-hand-ui.
-# Follow-up (Phase 6 story): extract a wasm-safe `seasoned-hand-dto` workspace
-# member so the UI shares DTOs with core instead of mirroring them.
+# The UI shares wire DTOs with the backend via the `seasoned-hand-dto` workspace
+# member (no hand-mirrored types).
 exclude = [
     "crates/seasoned-hand-ui",
 ]

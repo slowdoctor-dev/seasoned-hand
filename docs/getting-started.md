@@ -7,7 +7,8 @@
 설치할 것 (필수):
 - Docker Desktop (또는 호환: Colima, Rancher Desktop)
 - Rust 1.78+ (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
-- Node 20+ + pnpm (`npm install -g pnpm`)
+- Dioxus CLI (`cargo install dioxus-cli` — `dx`) + wasm 타깃
+  (`rustup target add wasm32-unknown-unknown`) — UI는 이제 통합 Rust/Dioxus입니다 (ADR-016)
 - `just` (`brew install just` 또는 `cargo install just`)
 
 AI 코딩 에이전트 (1개 이상 — 본인 선호에 따라):
@@ -21,10 +22,10 @@ AI 코딩 에이전트 (1개 이상 — 본인 선호에 따라):
 - Ollama (`brew install ollama`) — 로컬 LLM
 - LM Studio — 로컬 LLM GUI
 
-> **Docker 없이 개발하기 (frontend / API 작업)**
+> **Docker 없이 개발하기 (UI / API 작업)**
 > Docker는 *작업(task) 실행*(샌드박스 컨테이너 생성)과 샌드박스 통합 테스트에만
 > 필수입니다. 컨트롤 플레인은 Docker/Redis 없이도 부팅됩니다(`SandboxClient`는
-> Docker에 지연 연결, Redis는 graceful degrade). frontend/UI 또는 `/v1` REST
+> Docker에 지연 연결, Redis는 graceful degrade). UI 또는 `/v1` REST
 > 작업만 한다면:
 > ```bash
 > just dev-server-nodocker   # SQLite 기반 /v1 API on :3000 (Docker 불필요)

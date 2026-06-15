@@ -77,9 +77,8 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 cargo test --workspace
 
-# Frontend (if changed)
-pnpm typecheck
-pnpm test
+# Dioxus UI (if changed) — fmt + clippy + wasm check
+just check-ui
 
 # Spec compliance
 ./scripts/spec-check.sh

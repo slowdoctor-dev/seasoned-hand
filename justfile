@@ -39,10 +39,6 @@ dev-server-nodocker:
     PORT="3000" \
     cargo run -p seasoned-hand-server
 
-# Run frontend (Next.js) in dev mode (legacy — being replaced by the Dioxus UI)
-dev-frontend:
-    cd frontend && pnpm dev
-
 # Run the Dioxus UI (ADR-016) in dev mode. Requires the Dioxus CLI:
 #   cargo install dioxus-cli   (provides `dx`)
 dev-ui:
@@ -52,34 +48,31 @@ dev-ui:
 build-ui:
     cd crates/seasoned-hand-ui && dx build --platform web --release
 
-# Compile-check the Dioxus UI for wasm (no dx CLI needed — used as a gate).
+# Gate the Dioxus UI (no dx CLI needed). The UI crate is excluded from the root
+# workspace, so the root cargo fmt/clippy/test gates do NOT cover it — this recipe
+# is the only quality gate for the now-canonical UI, so it runs fmt + clippy +
+# check, all on the wasm target.
 check-ui:
-    cd crates/seasoned-hand-ui && cargo check --target wasm32-unknown-unknown
+    cargo fmt --manifest-path crates/seasoned-hand-ui/Cargo.toml -- --check
+    cargo clippy --manifest-path crates/seasoned-hand-ui/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
+    cargo check --manifest-path crates/seasoned-hand-ui/Cargo.toml --target wasm32-unknown-unknown
 
 # === Verification gates ===
 
 # Run all verification gates (must pass before commit)
-verify: lint typecheck test spec-check
+verify: lint check-ui test spec-check
     @echo "✓ All verification gates passed"
 
-# Lint (Rust + TypeScript)
+# Lint (Rust). The frontend is now unified Rust (Dioxus, ADR-016).
 lint:
     cargo clippy --all-targets -- -D warnings
     cargo fmt --check
-    cd frontend && pnpm lint
-
-# Type check (TypeScript)
-typecheck:
-    cd frontend && pnpm typecheck
 
 # Run all tests
-test: test-backend test-frontend
+test: test-backend
 
 test-backend:
     cargo test --workspace
-
-test-frontend:
-    cd frontend && pnpm test
 
 # Verify code matches /specs
 spec-check:
@@ -122,7 +115,7 @@ setup:
 # Remove all containers, volumes (DESTRUCTIVE)
 clean:
     docker compose down -v
-    rm -rf bifrost/data target frontend/.next frontend/node_modules
+    rm -rf bifrost/data target
 
 # === Bifrost-specific ===
 

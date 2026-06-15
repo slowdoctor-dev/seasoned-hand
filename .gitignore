@@ -3,11 +3,12 @@ target/
 **/*.rs.bk
 # NOTE: Cargo.lock IS committed (this is an application, not a library)
 
-# Node
+# Dioxus / wasm build output
+target/dx/
+dist/
+
+# Node (legacy Next.js frontend removed in #5 cutover; kept for stray tooling)
 node_modules/
-frontend/.next/
-frontend/out/
-frontend/build/
 *.tsbuildinfo
 .pnpm-debug.log*
 

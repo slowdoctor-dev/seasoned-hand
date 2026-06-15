@@ -15,7 +15,7 @@
 | **Repo** | `github.com/slowdoctor-dev/seasoned-hand` (Public) |
 | **License** | Apache-2.0 |
 | **Tagline** | Every task makes the hand wiser. |
-| **Status** | Phase 5 complete → **Phase 6 in progress** (Dioxus frontend migration, ADR-016; started 2026-06-05) |
+| **Status** | Phase 5 complete → **Phase 6 in progress** (open-source release; Dioxus cutover done — Next.js removed in #5, ADR-016) |
 | **Domain** | General-purpose autonomous AI agent platform (no domain assumptions) |
 | **Audience** | Developers + business users (balanced) |
 | **Philosophy** | Digital Employee (not assistant) |
@@ -56,7 +56,7 @@ OS-shape foundation (see `/specs/phase-2/architecture.md`).
 |---|---|---|
 | LLM Gateway | Bifrost (Go) | ADR-001: 50x faster than LiteLLM, single binary |
 | Control plane | Rust + Axum + Tokio + Rig | ADR-002: memory predictability, true concurrency |
-| Frontend | Dioxus (unified Rust → Web/Desktop/Mobile) | ADR-016: replaces the Next.js + React + TS frontend (amends frontend clause of ADR-002); shares `seasoned-hand-core` DTOs; Phase 6 staged migration. Shipped Next.js stack (Phase 0 story 0.18) retained until cutover. UI stack in ARCHITECTURE.md §1.1 (v1.5) |
+| Frontend | Dioxus (unified Rust → Web/Desktop/Mobile) | ADR-016: replaces the Next.js + React + TS frontend (amends frontend clause of ADR-002); shares wire DTOs via `seasoned-hand-dto`. The Next.js stack (Phase 0 story 0.18) was removed in the Phase 6 cutover (#5). UI stack in ARCHITECTURE.md §1.1 (v1.5) |
 | Sandbox | AIO Sandbox (Docker per session) | ADR-004: isolation per task |
 | Persistence | SQLite WAL + Redis | ADR-005: SQLite for events, Redis for pub/sub |
 | Model routing | 12-slot (3 main + 9 auxiliary) | ADR-003: Hermes-inspired |

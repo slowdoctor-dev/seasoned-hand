@@ -42,7 +42,8 @@ Pick a story from the current phase that's not yet `Status: in-progress` or `don
 See `/AGENTS.md` § 7.
 
 - Rust: edition 2024, zero clippy warnings, `thiserror` for errors
-- TypeScript: strict mode, pnpm, functional components, no `any`
+- Dioxus UI (`crates/seasoned-hand-ui`, ADR-016): edition 2021, wasm32 target,
+  `#[component]` fns, share wire types via `seasoned-hand-dto`
 - Markdown: ATX headers, code blocks with language tags, wrap at 100 chars
 
 ## Commit messages

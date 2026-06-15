@@ -27,8 +27,9 @@ deliverables, provenance, channel framework, durable pause/resume), the 4-layer
 learning system (Phase 3), the curator + self-improvement loop (Phase 4), and
 multi-user + organization (Phase 5 — RBAC, tenant isolation, audit log, per-user
 cost ledger, SOP/playbook sharing) have shipped. **Phase 6 (open-source release)
-is underway, starting with the Dioxus frontend migration** (unified-Rust UI for
-web/desktop/mobile, per ADR-016). A release-readiness checklist (perf seal,
+is underway; the Dioxus frontend cutover is complete** (the Next.js app was
+removed in #5 — the UI is now a unified-Rust Dioxus crate for web/desktop/mobile,
+per ADR-016). A release-readiness checklist (perf seal,
 Docker-host tests, doc reconciliation) runs in parallel and gates the public
 release tag — see [`/specs/06-roadmap/ROADMAP.md`](specs/06-roadmap/ROADMAP.md).
 
@@ -84,9 +85,8 @@ Full setup walkthrough: [`docs/getting-started.md`](docs/getting-started.md).
     stories/
 /docs/                 ← human docs (methodology, brand, manifesto, kickoff)
 /prompts/              ← BMAD/GSD session prompts
-/crates/               ← Rust workspace (core, server, cli, dto, ui [Dioxus])
+/crates/               ← Rust workspace (core, server, cli, dto) + ui [Dioxus, ADR-016]
 /migrations/           ← SQLite schema migrations
-/frontend/             ← legacy Next.js frontend (retained until Phase 6 cutover, ADR-016)
 /bifrost/              ← Bifrost gateway config
 /scripts/              ← dev scripts
 /justfile              ← task runner
