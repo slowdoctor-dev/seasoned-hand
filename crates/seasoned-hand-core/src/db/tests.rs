@@ -726,5 +726,53 @@ mod fts5 {
             })
             .await;
         }
+
+        #[tokio::test]
+        async fn session_search_fts_folds_diacritics() {
+            let pool = open(":memory:").await.unwrap();
+            pool.with_conn(|conn| {
+                let fts_sql: String = conn
+                    .query_row(
+                        "SELECT sql FROM sqlite_master
+                         WHERE type = 'table' AND name = 'session_search_fts'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert!(
+                    fts_sql.contains("tokenize='unicode61 remove_diacritics 2'"),
+                    "session_search_fts must preserve V010 diacritic folding tokenizer: {fts_sql}"
+                );
+
+                conn.execute(
+                    "INSERT INTO session_search_index (
+                        event_id, session_id, timestamp, event_type, source,
+                        searchable_text, tenant_id, visibility_level
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    rusqlite::params![
+                        202_i64,
+                        "session-cafe",
+                        20_i64,
+                        "Observation",
+                        "tool.browser",
+                        "opened café menu",
+                        "tenant-a",
+                        "viewer",
+                    ],
+                )
+                .unwrap();
+
+                let hits: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM session_search_fts
+                         WHERE session_search_fts MATCH 'cafe'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(hits, 1, "plain cafe query must match café content");
+            })
+            .await;
+        }
     }
 }

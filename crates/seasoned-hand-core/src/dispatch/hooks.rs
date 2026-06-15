@@ -121,8 +121,7 @@ impl EventEmittingHook {
         body: &[u8],
         content_type: &str,
     ) -> Result<EventPayloadBody, crate::events::EventError> {
-        let next_id = self.events.reserve_next_id().await?;
-        write_large_or_inline(&ctx.sandbox, &ctx.session_id, next_id, body, content_type).await
+        write_large_or_inline(&ctx.sandbox, &ctx.session_id, body, content_type).await
     }
 }
 

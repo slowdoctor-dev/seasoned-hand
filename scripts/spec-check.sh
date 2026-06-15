@@ -148,6 +148,18 @@ check "Task parent FK + schedule index regression guard" \
    && ! find migrations -name 'V0[2-9][2-9]__*.sql' -print0 | xargs -0 grep -L 'CREATE INDEX idx_tasks_parent[[:space:]]*ON tasks(parent_task_id)' | xargs grep -l 'CREATE TABLE tasks_' \
    && ! find migrations -name 'V0[2-9][2-9]__*.sql' -print0 | xargs -0 grep -L 'CREATE INDEX idx_tasks_schedule[[:space:]]*ON tasks(schedule) WHERE schedule IS NOT NULL' | xargs grep -l 'CREATE TABLE tasks_'"
 
+# Check 12: Issue #15 / V023 session-search FTS tokenizer guard.
+# V018 rebuilt `session_search_fts` for RBAC visibility columns but dropped
+# V010's unicode61 diacritic folding tokenizer. Pin the forward migration so
+# future FTS rebuilds do not silently regress café -> cafe matching again.
+check "Session search FTS diacritic folding tokenizer guard" \
+  "[ -f migrations/V023__restore_session_search_fts_tokenizer.sql ] \
+   && grep -q \"CREATE VIRTUAL TABLE session_search_fts USING fts5\" migrations/V023__restore_session_search_fts_tokenizer.sql \
+   && grep -q \"tenant_id UNINDEXED\" migrations/V023__restore_session_search_fts_tokenizer.sql \
+   && grep -q \"visibility_level UNINDEXED\" migrations/V023__restore_session_search_fts_tokenizer.sql \
+   && grep -q \"tokenize='unicode61 remove_diacritics 2'\" migrations/V023__restore_session_search_fts_tokenizer.sql \
+   && ! find migrations -name 'V0[2-9][4-9]__*.sql' -print0 | xargs -0 grep -L \"tokenize='unicode61 remove_diacritics 2'\" | xargs grep -l 'CREATE VIRTUAL TABLE session_search_fts'"
+
 echo ""
 echo "=== Results ==="
 echo "Pass: $PASS"

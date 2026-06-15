@@ -161,17 +161,9 @@ async fn capture_track_b(
         }
     };
 
-    let next_id = match hook.events.reserve_next_id().await {
-        Ok(id) => id,
-        Err(error) => {
-            tracing::warn!(%error, "browser_tracks: reserve_next_id failed");
-            return;
-        }
-    };
     let dom_text_ref = match write_large_or_inline(
         &ctx.sandbox,
         &ctx.session_id,
-        next_id,
         dom_text.as_bytes(),
         "text/plain",
     )

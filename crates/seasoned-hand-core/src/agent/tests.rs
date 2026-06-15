@@ -596,9 +596,10 @@ async fn recite_integration_fires_on_tenth_iteration() {
 #[tokio::test]
 async fn idle_call_pushes_verify_request_and_transitions_to_verifying() {
     let h = harness_with_verifier(vec![completion(vec![("call-1", "idle", json!({}))])]).await;
-    let result = h.runner.run(req(&h.session_id, 4)).await.expect("run");
-    assert!(!result.completed);
-    assert_eq!(session_state(&h.db, &h.session_id).await, "VERIFYING");
+    let run = h.runner.run(req(&h.session_id, 4)).await;
+
+    // The verifier_request event is appended BEFORE the enqueue, so it is present
+    // regardless of whether Redis is reachable.
     let events = h
         .events
         .query(&h.session_id, EventQuery::default())
@@ -609,8 +610,18 @@ async fn idle_call_pushes_verify_request_and_transitions_to_verifying() {
             && event.data.get("kind").and_then(Value::as_str) == Some("verifier_request")
             && event.data.get("trigger").and_then(Value::as_str) == Some("TaskComplete")
     }));
-    if let Ok(len) = h.redis.xlen("verify_request").await {
-        assert!(len >= 1);
+
+    let state = session_state(&h.db, &h.session_id).await;
+    if h.redis.xlen("verify_request").await.is_ok() {
+        // Redis reachable: the verdict is enqueued and the session parks in VERIFYING.
+        let result = run.expect("run ok when redis reachable");
+        assert!(!result.completed);
+        assert_eq!(state, "VERIFYING");
+    } else {
+        // Issue #13: Redis unreachable → the verdict can't be enqueued, so the run
+        // fails terminally (ERROR) instead of stranding forever in VERIFYING.
+        assert!(run.is_err(), "enqueue failure must surface as a run error");
+        assert_eq!(state, "ERROR");
     }
 }
 
@@ -649,7 +660,11 @@ async fn message_notify_user_without_final_does_not_trigger() {
 #[tokio::test]
 async fn resume_continues_iteration_counter() {
     let h = harness_with_verifier(vec![
-        completion(vec![("call-1", "idle", json!({}))]),
+        completion(vec![(
+            "call-1",
+            "message_ask_user",
+            json!({"content":"need input"}),
+        )]),
         completion(vec![(
             "call-2",
             "message_notify_user",
@@ -658,7 +673,9 @@ async fn resume_continues_iteration_counter() {
     ])
     .await;
     let first = h.runner.run(req(&h.session_id, 4)).await.expect("run");
-    // The first run terminates at the idle → VERIFYING transition.
+    // The first run terminates at the message_ask_user → SUSPENDED transition (a
+    // resumable state that, unlike idle → VERIFYING, does not depend on Redis being
+    // reachable — see issue #13).
     assert_eq!(first.steps, 1);
     let resumed = h
         .runner
