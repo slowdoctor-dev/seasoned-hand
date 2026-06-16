@@ -7,6 +7,7 @@
 //!
 //! refs: /specs/phase-2/architecture.md §2.8 "Email intake"
 
+use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -44,12 +45,23 @@ pub trait MailboxFetcher: Send + Sync {
 }
 
 /// IMAP credentials + endpoint the [`AsyncImapFetcher`] connects to.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ImapConfig {
     pub host: String,
     pub port: u16,
     pub username: String,
     pub password: String,
+}
+
+impl fmt::Debug for ImapConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ImapConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &"***")
+            .finish()
+    }
 }
 
 /// Production fetcher: opens a fresh TLS-wrapped IMAP session per

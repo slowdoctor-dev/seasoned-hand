@@ -53,6 +53,28 @@ async fn file_db_uses_wal_mode() {
 }
 
 #[tokio::test]
+async fn file_db_sets_busy_timeout_and_synchronous_normal() {
+    // Issue #22: a file-backed connection must carry busy_timeout=5000 (wait for
+    // the lock instead of an immediate SQLITE_BUSY) and synchronous=NORMAL.
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("pragmas.db");
+    let url = format!("sqlite:{}", path.display());
+    let pool = open(&url).await.expect("open file db");
+    pool.with_conn(|conn| {
+        let busy: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(busy, 5000, "busy_timeout must be 5000ms");
+        // synchronous: 1 == NORMAL.
+        let sync: i64 = conn
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(sync, 1, "synchronous must be NORMAL (1)");
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn foreign_keys_are_enforced() {
     let pool = open(":memory:").await.unwrap();
     pool.with_conn(|conn| {

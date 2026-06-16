@@ -95,7 +95,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/github-setup-guide.md`, `docs/first-week-plan.md`, `docs/setup-checklist.md`.
   (Historical content remains in git history.)
 
+### Security
+- **Medium-severity hardening — issue #22 batch A** (latent findings from the
+  2026-06-14 repo review):
+  - **No more plaintext credentials in `Debug`.** `ImapConfig`/`SmtpConfig`
+    (`channel/email/imap.rs`, `smtp.rs`) now hand-write `Debug` to redact the
+    password as `***` (host/port/username stay visible), so a stray `{:?}`/tracing
+    at boot can't leak it.
+  - **ntfy topic validated + percent-encoded.** `channel/ntfy.rs` rejects topics
+    containing a scheme/`/`/`\`/`@`/`..`/`:`/control chars and percent-encodes the
+    remainder, so a crafted `target_ref` can't rewrite the target URL.
+  - **Inbound email Message-ID / attachment filename sanitized.**
+    `channel/email/mod.rs` strips CR/LF (header-injection) and `/`/`\` (path
+    traversal), caps length, trims leading/trailing dots, and falls back to
+    `attachment` — applied to both inbound parse and outbound `filename_for`.
+  - **Dioxus interop no longer builds JS via `Debug`.** `ui/src/interop.rs` encodes
+    every value passed to the Monaco/xterm/noVNC `document::eval` shims with
+    `serde_json` (plus U+2028/U+2029 escaping) instead of `{:?}` — attacker-
+    influenced workspace content (a Monaco `value`) can no longer break out of the
+    string literal and inject script.
+
 ### Fixed
+- **Medium-severity correctness — issue #22 batch A:**
+  - **Cost client now has a 15s HTTP timeout** (`cost/mod.rs`) — a hung Bifrost
+    can no longer stall cost snapshots (and the cost-cap polling that depends on
+    them) indefinitely.
+  - **SQLite `busy_timeout = 5000` + `synchronous = NORMAL`** set on file-backed
+    connections (`db/mod.rs`) — a writer waits for the lock instead of failing
+    immediately with `SQLITE_BUSY` once the multi-connection pay-down lands.
+  - **Removed a latent `unwrap()`** in `checkpoint/persistence.rs` — the cursor is
+    now bound directly via the query `match` (no `has_cursor`/`unwrap()` desync).
 - Public-hygiene cleanup before open-sourcing: genericized a personal dev-machine
   path in `specs/phase-0/stories/story-0.18.md`; blanked the placeholder Bifrost
   dev keys in `.env.example`; refreshed the ADR index (`specs/01-architecture/

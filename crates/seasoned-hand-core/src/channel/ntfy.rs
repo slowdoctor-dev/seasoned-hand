@@ -79,13 +79,7 @@ impl NotifySink for NtfyChannel {
         target: &NotifyTarget,
         event: &NotifyEvent,
     ) -> Result<NotifyReceipt, ChannelError> {
-        let topic = target.target_ref.trim();
-        if topic.is_empty() {
-            return Err(ChannelError::RemoteRejected {
-                status: 400,
-                message: "empty_topic".into(),
-            });
-        }
+        let topic = encode_topic(&target.target_ref)?;
         let url = format!("{}/{}", self.host, topic);
 
         let body = serde_json::to_vec(&event.payload)
@@ -190,6 +184,30 @@ fn trim_trailing_slash(mut s: String) -> String {
         s.pop();
     }
     s
+}
+
+fn encode_topic(raw: &str) -> Result<String, ChannelError> {
+    let topic = raw.trim();
+    if topic.is_empty() {
+        return Err(ChannelError::RemoteRejected {
+            status: 400,
+            message: "empty_topic".into(),
+        });
+    }
+    if topic.contains("://")
+        || topic.contains('/')
+        || topic.contains('\\')
+        || topic.contains('@')
+        || topic.contains("..")
+        || topic.contains(':')
+        || topic.chars().any(char::is_control)
+    {
+        return Err(ChannelError::RemoteRejected {
+            status: 400,
+            message: "invalid_topic".into(),
+        });
+    }
+    Ok(urlencoding::encode(topic).into_owned())
 }
 
 use crate::text::truncate;
@@ -310,6 +328,32 @@ mod tests {
                 assert_eq!(message, "empty_topic");
             }
             other => panic!("expected RemoteRejected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ntfy_topic_is_single_encoded_path_segment() {
+        assert_eq!(
+            encode_topic("team alerts").expect("encoded"),
+            "team%20alerts"
+        );
+        for topic in [
+            "alerts/ops",
+            "alerts\\ops",
+            "https://evil.example/topic",
+            "user@host",
+            "../admin",
+            "tenant:alerts",
+            "alerts\r\nX-Header: yes",
+        ] {
+            let err = encode_topic(topic).expect_err("topic rejected");
+            match err {
+                ChannelError::RemoteRejected { status, message } => {
+                    assert_eq!(status, 400);
+                    assert_eq!(message, "invalid_topic");
+                }
+                other => panic!("expected RemoteRejected, got {other:?}"),
+            }
         }
     }
 }

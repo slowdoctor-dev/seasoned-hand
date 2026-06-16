@@ -68,6 +68,50 @@ fn channel_with(
         .expect("build channel")
 }
 
+#[test]
+fn email_endpoint_config_debug_redacts_passwords() {
+    let imap = ImapConfig {
+        host: "imap.example.com".into(),
+        port: 993,
+        username: "operator".into(),
+        password: "imap-secret".into(),
+    };
+    let smtp = SmtpConfig {
+        host: "smtp.example.com".into(),
+        port: 587,
+        username: "operator".into(),
+        password: "smtp-secret".into(),
+    };
+
+    let imap_debug = format!("{imap:?}");
+    let smtp_debug = format!("{smtp:?}");
+
+    assert!(imap_debug.contains("imap.example.com"));
+    assert!(imap_debug.contains("operator"));
+    assert!(imap_debug.contains("password: \"***\""));
+    assert!(!imap_debug.contains("imap-secret"));
+
+    assert!(smtp_debug.contains("smtp.example.com"));
+    assert!(smtp_debug.contains("operator"));
+    assert!(smtp_debug.contains("password: \"***\""));
+    assert!(!smtp_debug.contains("smtp-secret"));
+}
+
+#[test]
+fn email_untrusted_header_tokens_are_sanitized() {
+    assert_eq!(
+        sanitize_message_id(" <abc/def\\ghi@example.com>\r\nInjected: yes "),
+        "<abcdefghi@example.com>"
+    );
+    assert_eq!(sanitize_filename("../evil\\report\r\n.csv"), "evilreport");
+    assert_eq!(sanitize_filename("\r\n/\\ "), "attachment");
+
+    let long_msgid = "a".repeat(300);
+    let long_filename = "b".repeat(300);
+    assert_eq!(sanitize_message_id(&long_msgid).chars().count(), 256);
+    assert_eq!(sanitize_filename(&long_filename).chars().count(), 128);
+}
+
 #[tokio::test]
 async fn email_imap_intake_creates_event_from_test_message() {
     let mailbox = Arc::new(MockMailbox::new());

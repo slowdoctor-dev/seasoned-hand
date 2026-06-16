@@ -151,7 +151,8 @@ impl EmailChannel {
         let from = header_value(&parsed, "From").unwrap_or_default();
         let from_addr = parse_address(&from);
         let subject = header_value(&parsed, "Subject").unwrap_or_default();
-        let message_id = header_value(&parsed, "Message-ID").unwrap_or_default();
+        let message_id =
+            sanitize_message_id(&header_value(&parsed, "Message-ID").unwrap_or_default());
 
         // Gate 1: allow-list. Default-deny per architecture §9 — an
         // empty list rejects every sender.
@@ -559,7 +560,7 @@ fn walk_attachments(parsed: &ParsedMail<'_>, out: &mut Vec<AttachmentInfo>) {
         let content_type = parsed.ctype.mimetype.clone();
         if let Ok(bytes) = parsed.get_body_raw() {
             out.push(AttachmentInfo {
-                filename,
+                filename: sanitize_filename(&filename),
                 content_type,
                 bytes,
             });
@@ -600,6 +601,42 @@ fn normalize_msgid(raw: &str) -> String {
     format!("<{inner}>")
 }
 
+fn sanitize_message_id(raw: &str) -> String {
+    let first_line = raw.split(['\r', '\n']).next().unwrap_or("");
+    truncate_chars(
+        &first_line
+            .chars()
+            .filter(|c| !c.is_control() && !matches!(c, '/' | '\\'))
+            .collect::<String>(),
+        256,
+    )
+    .trim()
+    .to_string()
+}
+
+fn sanitize_filename(raw: &str) -> String {
+    let first_line = raw.split(['\r', '\n']).next().unwrap_or("");
+    let sanitized = truncate_chars(
+        &first_line
+            .chars()
+            .filter(|c| !c.is_control() && !matches!(c, '/' | '\\'))
+            .collect::<String>(),
+        128,
+    )
+    .trim()
+    .trim_matches('.')
+    .to_string();
+    if sanitized.is_empty() {
+        "attachment".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
 fn guess_content_type(format: &str) -> ContentType {
     match format {
         "pdf" => ContentType::parse("application/pdf").unwrap_or(ContentType::TEXT_PLAIN),
@@ -625,8 +662,9 @@ fn guess_content_type(format: &str) -> ContentType {
 }
 
 fn filename_for(deliverable: &Deliverable) -> String {
-    std::path::Path::new(&deliverable.rendered_content_path)
+    let filename = std::path::Path::new(&deliverable.rendered_content_path)
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| format!("deliverable-{}.{}", deliverable.id, deliverable.format))
+        .unwrap_or_else(|| format!("deliverable-{}.{}", deliverable.id, deliverable.format));
+    sanitize_filename(&filename)
 }

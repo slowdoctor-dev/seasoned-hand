@@ -187,23 +187,25 @@ impl CheckpointStore {
         let rows: Vec<Checkpoint> = self
             .pool
             .with_conn(move |conn| -> rusqlite::Result<Vec<Checkpoint>> {
-                let (sql, has_cursor) = match cursor {
-                    Some(_) => (
+                // Issue #22: select the SQL by cursor; the cursor value itself is
+                // bound in the query match below (no `cursor.unwrap()` — the
+                // previous `has_cursor` bool let the value desync from the flag,
+                // a latent panic that violated the no-unwrap rule).
+                let sql = match cursor {
+                    Some(_) => {
                         "SELECT id, session_id, plan_phase_id, git_sha, label, \
                                 triggered_by_event_id, rolled_back_at, rolled_back_by, created_at \
                            FROM checkpoints \
                           WHERE session_id = ? AND created_at < ? \
-                          ORDER BY created_at DESC LIMIT ?",
-                        true,
-                    ),
-                    None => (
+                          ORDER BY created_at DESC LIMIT ?"
+                    }
+                    None => {
                         "SELECT id, session_id, plan_phase_id, git_sha, label, \
                                 triggered_by_event_id, rolled_back_at, rolled_back_by, created_at \
                            FROM checkpoints \
                           WHERE session_id = ? \
-                          ORDER BY created_at DESC LIMIT ?",
-                        false,
-                    ),
+                          ORDER BY created_at DESC LIMIT ?"
+                    }
                 };
                 let mut stmt = conn.prepare(sql)?;
                 let map_row = |row: &rusqlite::Row<'_>| {
@@ -219,12 +221,13 @@ impl CheckpointStore {
                         created_at: row.get(8)?,
                     })
                 };
-                let rows = if has_cursor {
-                    stmt.query_map(params![sid, cursor.unwrap(), limit], map_row)?
-                        .collect::<rusqlite::Result<Vec<_>>>()?
-                } else {
-                    stmt.query_map(params![sid, limit], map_row)?
-                        .collect::<rusqlite::Result<Vec<_>>>()?
+                let rows = match cursor {
+                    Some(c) => stmt
+                        .query_map(params![sid, c, limit], map_row)?
+                        .collect::<rusqlite::Result<Vec<_>>>()?,
+                    None => stmt
+                        .query_map(params![sid, limit], map_row)?
+                        .collect::<rusqlite::Result<Vec<_>>>()?,
                 };
                 Ok(rows)
             })
