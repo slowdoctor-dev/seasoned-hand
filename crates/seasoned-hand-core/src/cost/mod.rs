@@ -36,8 +36,17 @@ pub struct CostClient {
 
 impl CostClient {
     pub fn new(base_url: impl Into<String>) -> Self {
+        // Issue #22: bound the Bifrost cost call so a hung gateway can't stall
+        // cost snapshots (and the cost-cap polling that depends on them)
+        // indefinitely. 15s matches the webhook/email network timeouts. The
+        // builder config is static, so `expect` here is a construction invariant,
+        // not a runtime-input failure (same idiom as WebhookChannel).
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .expect("default cost reqwest client");
         Self {
-            http: reqwest::Client::new(),
+            http,
             base_url: normalize_base_url(&base_url.into()),
         }
     }

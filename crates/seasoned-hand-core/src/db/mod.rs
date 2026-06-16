@@ -92,6 +92,16 @@ fn set_pragmas(conn: &Connection, in_memory: bool) -> Result<(), DbError> {
         return Err(DbError::WalNotEnabled(mode));
     }
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    // Issue #22: set a busy_timeout so a writer waits (up to 5s) for the lock
+    // instead of failing immediately with SQLITE_BUSY. Harmless under today's
+    // single-writer mutex, but load-bearing the moment the documented
+    // multi-connection pay-down lands. `synchronous = NORMAL` is the standard,
+    // safe-under-WAL durability/throughput trade-off (a crash can lose the last
+    // commit but never corrupts the DB). Skip for in-memory (no fsync, no lock
+    // contention).
+    if !in_memory {
+        conn.execute_batch("PRAGMA busy_timeout = 5000; PRAGMA synchronous = NORMAL;")?;
+    }
     Ok(())
 }
 

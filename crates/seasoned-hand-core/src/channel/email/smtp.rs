@@ -9,6 +9,7 @@
 //!
 //! refs: /specs/phase-2/architecture.md §2.9 "Email delivery"
 
+use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -37,12 +38,23 @@ pub trait EmailTransport: Send + Sync {
 }
 
 /// Configuration the [`LettreSmtpTransport`] consumes at boot.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SmtpConfig {
     pub host: String,
     pub port: u16,
     pub username: String,
     pub password: String,
+}
+
+impl fmt::Debug for SmtpConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SmtpConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &"***")
+            .finish()
+    }
 }
 
 /// Production SMTP transport: lettre over Tokio + rustls.
