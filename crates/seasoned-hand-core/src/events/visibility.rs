@@ -132,6 +132,18 @@ pub fn apply(conn: &Connection, event: &Event) -> ProjectionOutcome {
 /// residual fully would mean adding a populated `events.tenant_id` column with a
 /// backfill migration over the append-only table — deferred until a concrete
 /// multi-legacy-tenant deployment needs it.
+///
+/// Parent-mismatch note (issue #22 batch B review): this projection resolves a
+/// session **task-first** (`COALESCE(t.tenant_id, p.tenant_id)`, project taken
+/// from the task), so for a corrupt session whose `project_id` and `task_id`
+/// point at *different* tenants it deterministically assigns the task's tenant
+/// and exposes only the **redacted** projection to that single tenant. The
+/// **raw** read guards (`server::require_session_tenant` / `list_sessions` /
+/// `require_verification_tenant`) are stricter: they fail closed and make such a
+/// session invisible to *every* tenant. So there is no cross-tenant *raw* leak;
+/// the residual is only that the deterministic redacted projection is visible to
+/// the task's tenant. Well-formed sessions (task and own-project agree, or one is
+/// null) are unaffected.
 fn resolve_tenant_id(conn: &Connection, session_id: &str) -> rusqlite::Result<String> {
     // The join chain mirrors `billing::user_cost::flush`'s aggregation
     // CTE: prefer the task's tenant (post-V014 NOT NULL) and fall back

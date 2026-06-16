@@ -120,13 +120,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **`list_events` now routes through the canonical `require_session_tenant`
     guard** (`server/src/lib.rs`) instead of an inline `JOIN projects … p.tenant_id`.
     The old inner join excluded chat-spawned sessions (project_id NULL, tenancy
-    from `task_id`), so their legitimate owner got a spurious 404; the canonical
-    `COALESCE(p.tenant_id, t.tenant_id)` resolves them correctly.
-  - **`list_sessions` tenant filter fixed to the canonical join.** It previously
-    matched `sessions.project_id IN (SELECT id FROM tasks …)` — overloading a
-    project id against task ids, returning the wrong set and dropping task-spawned
-    sessions. Now `LEFT JOIN projects/tasks … WHERE COALESCE(p.tenant_id,
-    t.tenant_id) = ?`.
+    from `task_id`), so their legitimate owner got a spurious 404.
+  - **`list_sessions` tenant filter fixed.** It previously matched
+    `sessions.project_id IN (SELECT id FROM tasks …)` — overloading a project id
+    against task ids, returning the wrong set and dropping task-spawned sessions.
+  - **Fail-closed session-tenancy predicate** (review hardening): the shared
+    `SESSION_TENANT_PREDICATE` now requires *every* present direct parent (project
+    via `project_id`, task via `task_id`) to match the tenant and excludes orphans,
+    so a corrupt row whose project and task resolve to *different* tenants belongs
+    to **neither** — closing a `COALESCE(p, t)` vs task-first-projection disagreement
+    that could have let one tenant read a mismatched session's raw events. Applied
+    uniformly to `require_session_tenant`, `list_sessions`, and
+    `require_verification_tenant`.
   - **Added a cross-tenant regression test for the redacted feed**
     (`GET /v1/events/:session_id`): a tenant-A caller reads none of a tenant-B
     session's rows; the tenant-B caller sees its own. Plus task-spawned

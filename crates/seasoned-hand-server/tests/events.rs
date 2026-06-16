@@ -267,6 +267,86 @@ async fn list_sessions_includes_project_and_task_spawned_sessions() {
     );
 }
 
+/// Seed a session whose direct parents disagree on tenant: project_id → tenant-A,
+/// task_id → tenant-B. A corrupt/partially-migrated shape that must belong to
+/// NEITHER tenant (fail-closed), not leak to whichever parent a tenant shares.
+async fn seed_mismatched_parent_session(state: &AppState) {
+    state
+        .db
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, tenant_id, title, status, created_at, updated_at) \
+                 VALUES ('pA', 'tenant-a', 'projA', 'active', 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, tenant_id, title, status, created_at, updated_at) \
+                 VALUES ('pBb', 'tenant-b', 'projBb', 'active', 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tasks (id, project_id, tenant_id, title, brief, status, \
+                   expected_due_at, completed_at, failure_reason, parent_task_id, schedule, \
+                   skill_attached_event_id, created_at, updated_at) \
+                 VALUES ('tkB', 'pBb', 'tenant-b', 'taskB', NULL, 'running', NULL, NULL, \
+                   NULL, NULL, NULL, NULL, 3, 3)",
+                [],
+            )
+            .unwrap();
+            // project_id -> tenant-a, task_id -> tenant-b: parents disagree.
+            conn.execute(
+                "INSERT INTO sessions (id, project_id, task_id, created_at, updated_at, state) \
+                 VALUES ('s_mismatch', 'pA', 'tkB', 3, 3, 'RUNNING')",
+                [],
+            )
+            .unwrap();
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn mismatched_parent_session_is_invisible_to_both_tenants() {
+    // Issue #22 batch B review: fail-closed when a session's project and task
+    // resolve to different tenants — neither tenant may read it (raw events) or
+    // list it. A plain COALESCE(project, task) would have leaked it to tenant-A.
+    let (base, state) = boot().await;
+    seed_mismatched_parent_session(&state).await;
+
+    for (tenant, org, user) in [
+        ("tenant-a", "org-a", "user-a"),
+        ("tenant-b", "org-b", "user-b"),
+    ] {
+        let client = auth_client_for(tenant, org, user, "admin");
+        // Raw events feed: 404 for both.
+        let events = client
+            .get(format!("{base}/v1/sessions/s_mismatch/events"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            events.status(),
+            StatusCode::NOT_FOUND,
+            "{tenant} must not read raw events of a mismatched-parent session"
+        );
+        // Session listing: absent for both.
+        let list = client
+            .get(format!("{base}/v1/sessions"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(list.status(), StatusCode::OK);
+        let rows: serde_json::Value = list.json().await.unwrap();
+        let has = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"].as_str() == Some("s_mismatch"));
+        assert!(!has, "{tenant} must not list a mismatched-parent session");
+    }
+}
+
 #[tokio::test]
 async fn redacted_feed_isolates_cross_tenant() {
     // B3: GET /v1/events/:session_id (the redacted feed) filters by the caller's
