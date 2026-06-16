@@ -907,9 +907,12 @@ mod tests {
         assert!(
             matches!(
                 err,
-                PlaybookShareError::Auth(AuthError::Unauthorized { .. })
+                PlaybookShareError::Auth(AuthError::Unauthorized {
+                    action: Action::PlaybookShare,
+                    ..
+                })
             ),
-            "expected Unauthorized, got {err:?}"
+            "expected Unauthorized{{action: PlaybookShare}}, got {err:?}"
         );
     }
 

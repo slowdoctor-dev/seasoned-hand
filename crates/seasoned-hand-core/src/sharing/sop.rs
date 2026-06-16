@@ -771,8 +771,14 @@ mod tests {
             .await
             .expect_err("a user must not enumerate another user's shares");
         assert!(
-            matches!(err, SopShareError::Auth(AuthError::Unauthorized { .. })),
-            "expected Unauthorized, got {err:?}"
+            matches!(
+                err,
+                SopShareError::Auth(AuthError::Unauthorized {
+                    action: Action::SopShare,
+                    ..
+                })
+            ),
+            "expected Unauthorized{{action: SopShare}}, got {err:?}"
         );
     }
 
