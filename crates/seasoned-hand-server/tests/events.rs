@@ -165,3 +165,169 @@ async fn list_events_400_for_unknown_type() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
+
+// --- Issue #22 batch B: tenant-isolation correctness ------------------------
+
+fn auth_client_for(tenant: &str, org: &str, user: &str, role: &str) -> reqwest::Client {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("x-seasoned-hand-tenant-id", tenant.parse().unwrap());
+    headers.insert("x-seasoned-hand-organization-id", org.parse().unwrap());
+    headers.insert("x-seasoned-hand-actor-user-id", user.parse().unwrap());
+    headers.insert("x-seasoned-hand-org-role", role.parse().unwrap());
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .unwrap()
+}
+
+/// Seed a chat-spawned session whose tenancy comes ONLY from `task_id`
+/// (project_id NULL) — the path `initializer_spawner` takes.
+async fn seed_task_spawned_session(state: &AppState) {
+    state
+        .db
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO tasks (id, project_id, tenant_id, title, brief, status, \
+                   expected_due_at, completed_at, failure_reason, parent_task_id, schedule, \
+                   skill_attached_event_id, created_at, updated_at) \
+                 VALUES ('tk1', 'p1', 'legacy-default', 'chat', NULL, 'running', NULL, NULL, \
+                   NULL, NULL, NULL, NULL, 2, 2)",
+                [],
+            )
+            .unwrap();
+            // project_id NULL: tenancy must resolve via task_id.
+            conn.execute(
+                "INSERT INTO sessions (id, project_id, task_id, created_at, updated_at, state) \
+                 VALUES ('s_chat', NULL, 'tk1', 2, 2, 'RUNNING')",
+                [],
+            )
+            .unwrap();
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn list_events_reaches_task_spawned_session() {
+    // B1: a chat-spawned session (project_id NULL, tenancy from task_id) must be
+    // reachable by its tenant. The old inline `JOIN projects` 404'd it.
+    let (base, state) = boot().await;
+    seed_task_spawned_session(&state).await;
+    let resp = auth_client()
+        .get(format!("{base}/v1/sessions/s_chat/events"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "task-spawned session must not 404 for its tenant"
+    );
+}
+
+#[tokio::test]
+async fn list_events_task_spawned_session_404_for_other_tenant() {
+    // B1 isolation: a different tenant still gets 404 for the task-spawned session.
+    let (base, state) = boot().await;
+    seed_task_spawned_session(&state).await;
+    let resp = auth_client_for("tenant-b", "org-b", "user-b", "admin")
+        .get(format!("{base}/v1/sessions/s_chat/events"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn list_sessions_includes_project_and_task_spawned_sessions() {
+    // B2: the canonical join returns BOTH project-spawned (s1) and task-spawned
+    // (s_chat) sessions for the tenant. The old `project_id IN (SELECT id FROM
+    // tasks ...)` filter matched the wrong column and returned neither.
+    let (base, state) = boot().await;
+    seed_task_spawned_session(&state).await;
+    let resp = auth_client()
+        .get(format!("{base}/v1/sessions"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rows: serde_json::Value = resp.json().await.unwrap();
+    let ids: Vec<&str> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["id"].as_str())
+        .collect();
+    assert!(
+        ids.contains(&"s1"),
+        "project-spawned session missing: {ids:?}"
+    );
+    assert!(
+        ids.contains(&"s_chat"),
+        "task-spawned session missing: {ids:?}"
+    );
+}
+
+#[tokio::test]
+async fn redacted_feed_isolates_cross_tenant() {
+    // B3: GET /v1/events/:session_id (the redacted feed) filters by the caller's
+    // tenant via visibility::query. A tenant-A caller must NOT read a tenant-B
+    // session's rows; the tenant-B caller sees its own.
+    let (base, state) = boot().await;
+    state
+        .db
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, tenant_id, title, status, created_at, updated_at) \
+                 VALUES ('pB', 'tenant-b', 'projB', 'active', 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, project_id, created_at, updated_at, state) \
+                 VALUES ('sB', 'pB', 1, 1, 'RUNNING')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events (session_id, timestamp, type, source, data) \
+                 VALUES ('sB', 1, 'Misc', 'test', '{}')",
+                [],
+            )
+            .unwrap();
+            let eid: i64 = conn
+                .query_row("SELECT id FROM events WHERE session_id = 'sB'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            conn.execute(
+                "INSERT INTO tenant_event_view \
+                   (event_id, tenant_id, visibility_level, redacted_data, searchable_text, created_at) \
+                 VALUES (?, 'tenant-b', 'user', '{\"k\":\"secretB\"}', 'secretB', 1)",
+                rusqlite::params![eid],
+            )
+            .unwrap();
+        })
+        .await;
+
+    // tenant-A (legacy-default) must see NONE of tenant-B's rows.
+    let a = auth_client();
+    let resp = a.get(format!("{base}/v1/events/sB")).send().await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rows: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        rows.as_array().unwrap().len(),
+        0,
+        "cross-tenant leak: tenant-A read tenant-B's redacted events"
+    );
+
+    // Positive control: tenant-B sees its own redacted row.
+    let b = auth_client_for("tenant-b", "org-b", "user-b", "admin");
+    let resp = b.get(format!("{base}/v1/events/sB")).send().await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rows: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        rows.as_array().unwrap().len(),
+        1,
+        "tenant-B must see its own redacted event"
+    );
+}

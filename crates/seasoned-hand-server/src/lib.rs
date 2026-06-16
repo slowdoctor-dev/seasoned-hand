@@ -1051,27 +1051,12 @@ async fn list_events(
         limit: params.limit,
     };
 
-    let session_exists = state
-        .db
-        .with_conn({
-            let session_id = session_id.clone();
-            let tenant_id = auth_ctx.tenant_id.clone();
-            move |conn| {
-                conn.query_row::<i64, _, _>(
-                    "SELECT 1
-                       FROM sessions s
-                       JOIN projects p ON p.id = s.project_id
-                      WHERE s.id = ? AND p.tenant_id = ?",
-                    rusqlite::params![session_id, tenant_id],
-                    |row| row.get(0),
-                )
-                .is_ok()
-            }
-        })
-        .await;
-    if !session_exists {
-        return Err(api_err(StatusCode::NOT_FOUND, "session_not_found".into()));
-    }
+    // Issue #22: route through the canonical tenant guard instead of an inline
+    // `JOIN projects ... p.tenant_id = ?`. The inner join excluded chat-spawned
+    // sessions (project_id NULL, tenancy from task_id) — `require_session_tenant`
+    // uses `COALESCE(p.tenant_id, t.tenant_id)`, so the legitimate owner of a
+    // task-spawned session no longer gets a spurious 404.
+    require_session_tenant(&state, &session_id, &auth_ctx).await?;
 
     match state.events.query(&session_id, filter).await {
         Ok(events) => Ok(Json(events)),
@@ -1197,13 +1182,19 @@ async fn list_sessions(
     let sessions = state
         .db
         .with_conn(move |conn| -> rusqlite::Result<Vec<SessionSummary>> {
+            // Issue #22: the previous filter matched `sessions.project_id IN
+            // (SELECT id FROM tasks ...)` — overloading a project id against task
+            // ids, so it returned the wrong set (and dropped chat-spawned sessions
+            // whose tenancy comes from `task_id`). Use the canonical tenancy join,
+            // identical to `require_session_tenant`: a session belongs to the
+            // tenant when COALESCE(project.tenant_id, task.tenant_id) matches.
             let mut stmt = conn.prepare(
-                "SELECT id, created_at, updated_at, state, title, cost_cents, tool_calls \
-                 FROM sessions
-                 WHERE project_id IN (
-                    SELECT id FROM tasks WHERE tenant_id = ?
-                 )
-                 ORDER BY updated_at DESC LIMIT ?",
+                "SELECT s.id, s.created_at, s.updated_at, s.state, s.title, s.cost_cents, s.tool_calls \
+                 FROM sessions s \
+                 LEFT JOIN projects p ON p.id = s.project_id \
+                 LEFT JOIN tasks t ON t.id = s.task_id \
+                 WHERE COALESCE(p.tenant_id, t.tenant_id) = ? \
+                 ORDER BY s.updated_at DESC LIMIT ?",
             )?;
             let rows = stmt.query_map(rusqlite::params![tenant_id, limit], |row| {
                 let state_str: String = row.get(3)?;
