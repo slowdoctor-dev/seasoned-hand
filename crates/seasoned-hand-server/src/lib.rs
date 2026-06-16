@@ -1071,9 +1071,10 @@ async fn list_events(
 
     // Issue #22: route through the canonical tenant guard instead of an inline
     // `JOIN projects ... p.tenant_id = ?`. The inner join excluded chat-spawned
-    // sessions (project_id NULL, tenancy from task_id) — `require_session_tenant`
-    // uses `COALESCE(p.tenant_id, t.tenant_id)`, so the legitimate owner of a
-    // task-spawned session no longer gets a spurious 404.
+    // sessions (project_id NULL, tenancy from task_id); `require_session_tenant`
+    // applies the shared fail-closed `SESSION_TENANT_PREDICATE`, so the legitimate
+    // owner of a task-spawned session no longer gets a spurious 404 (and a
+    // mismatched-parent session stays invisible to every tenant).
     require_session_tenant(&state, &session_id, &auth_ctx).await?;
 
     match state.events.query(&session_id, filter).await {
