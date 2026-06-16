@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::auth::{Action, AuthContext, AuthError, AuthResource, authorize};
+use crate::auth::{Action, AuthContext, AuthError, AuthResource, Role, authorize};
 use crate::db::DbPool;
 use crate::sharing::concurrency::{StaleRevision, check_precondition};
 use crate::time::now_micros;
@@ -342,14 +342,24 @@ impl SopShareService {
         auth: &AuthContext,
         user_id: &str,
     ) -> Result<Vec<SopShareRow>, SopShareError> {
-        authorize(
-            Action::SopShare,
-            &AuthResource {
-                is_same_org: true,
-                actor_can_share: true,
-            },
-            auth,
-        )?;
+        // Issue #30: self-or-admin gate. This previously called `authorize` with a
+        // hard-coded `actor_can_share: true`, which (a) is the wrong gate — that
+        // flag is the CREATE-a-share capability, not a read scope — and (b) let any
+        // `User` list shares for an ARBITRARY `user_id`. There is no HTTP route to
+        // this method today, so it is defense-in-depth: a user may list only their
+        // own shares; an admin may list anyone's. Tenant check first so a malformed
+        // admin context fails closed as `MissingTenantContext` rather than passing.
+        if auth.tenant_id.trim().is_empty() {
+            return Err(AuthError::MissingTenantContext.into());
+        }
+        if auth.effective_role() != Role::Admin && auth.actor_user_id != user_id {
+            return Err(AuthError::Unauthorized {
+                role: auth.effective_role(),
+                action: Action::SopShare,
+                reason: "may only list your own shares unless admin",
+            }
+            .into());
+        }
         let tenant = auth.tenant_id.clone();
         let user_id = user_id.to_string();
         self.db
@@ -723,5 +733,63 @@ mod tests {
             )
             .await
             .expect("second share — no precondition, must succeed");
+    }
+
+    // Issue #30: list_for_user self-or-admin gate (defense-in-depth; no route today).
+
+    #[tokio::test]
+    async fn admin_can_list_any_users_sop_shares() {
+        let pool = open_pool().await;
+        seed(&pool).await;
+        let service = SopShareService::new(pool);
+        let rows = service
+            .list_for_user(&ctx(Role::Admin, "u-admin"), "u-owner")
+            .await
+            .expect("admin lists another user's shares");
+        assert!(rows.iter().any(|r| r.subject_id == "u-owner"));
+    }
+
+    #[tokio::test]
+    async fn user_can_list_their_own_sop_shares() {
+        let pool = open_pool().await;
+        seed(&pool).await;
+        let service = SopShareService::new(pool);
+        let rows = service
+            .list_for_user(&ctx(Role::User, "u-owner"), "u-owner")
+            .await
+            .expect("user lists own shares");
+        assert!(rows.iter().any(|r| r.subject_id == "u-owner"));
+    }
+
+    #[tokio::test]
+    async fn user_cannot_list_another_users_sop_shares() {
+        let pool = open_pool().await;
+        seed(&pool).await;
+        let service = SopShareService::new(pool);
+        let err = service
+            .list_for_user(&ctx(Role::User, "u-viewer"), "u-owner")
+            .await
+            .expect_err("a user must not enumerate another user's shares");
+        assert!(
+            matches!(err, SopShareError::Auth(AuthError::Unauthorized { .. })),
+            "expected Unauthorized, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_sop_shares_fails_closed_without_tenant() {
+        let pool = open_pool().await;
+        seed(&pool).await;
+        let service = SopShareService::new(pool);
+        let mut bad = ctx(Role::Admin, "u-admin");
+        bad.tenant_id = "  ".into();
+        let err = service
+            .list_for_user(&bad, "u-owner")
+            .await
+            .expect_err("empty tenant must fail closed, even for admin");
+        assert!(
+            matches!(err, SopShareError::Auth(AuthError::MissingTenantContext)),
+            "expected MissingTenantContext, got {err:?}"
+        );
     }
 }
