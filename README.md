@@ -91,7 +91,7 @@ With `SH_UI_DIST` unset the server is API-only. Full walkthrough:
   /00-philosophy/      ← VISION, PRINCIPLES, NON_GOALS
   /01-architecture/
     ARCHITECTURE.md    ← overall (immutable)
-    /decisions/        ← ADR-001 to ADR-017
+    /decisions/        ← ADR-001 to ADR-018
   /06-roadmap/
     ROADMAP.md
   /07-research/        ← external interviews (e.g., Manus direct Q&A)
