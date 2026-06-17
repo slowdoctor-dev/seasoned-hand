@@ -11,11 +11,15 @@ WORKDIR /app
 RUN rustup target add wasm32-unknown-unknown \
  && cargo install dioxus-cli --version 0.6.3 --locked
 COPY . .
-# Tailwind v4 standalone CLI (pinned; matches justfile build-css) — purged CSS, no Node.
+# Tailwind v4 standalone CLI (pinned version + sha256, matching justfile build-css —
+# never exec an unverified downloaded binary). Purged CSS, no Node.
 RUN curl -fsSL \
       https://github.com/tailwindlabs/tailwindcss/releases/download/v4.3.1/tailwindcss-linux-x64 \
-      -o /usr/local/bin/tailwindcss \
- && chmod +x /usr/local/bin/tailwindcss \
+      -o /tmp/tailwindcss \
+ && echo "2526d063ba03b71f9a3ea7d5cee14f0aec147f117f222d5adc97b1d736d45999  /tmp/tailwindcss" \
+      | sha256sum -c - \
+ && chmod +x /tmp/tailwindcss \
+ && mv /tmp/tailwindcss /usr/local/bin/tailwindcss \
  && mkdir -p crates/seasoned-hand-ui/assets \
  && tailwindcss -i crates/seasoned-hand-ui/input.css \
       -o crates/seasoned-hand-ui/assets/tailwind.css --minify
