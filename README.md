@@ -62,7 +62,7 @@ on its own port with `just dev-ui`. To self-host the whole app as a single binar
 build the bundle and let the control plane serve it:
 
 ```bash
-just build-ui                 # produces a static bundle under target/dx/
+just build-ui                 # bundle: crates/seasoned-hand-ui/target/dx/seasoned-hand-ui/release/web/public
 SH_UI_DIST=<bundle-dir> cargo run -p seasoned-hand-server   # serves /v1 + /ws + UI
 ```
 

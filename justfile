@@ -4,7 +4,7 @@
 tailwind_version := "v4.3.1"
 tailwind_bin := "target/tools/tailwindcss"
 ui_css_output := "crates/seasoned-hand-ui/assets/tailwind.css"
-ui_dist := "target/dx/seasoned-hand-ui/release/web/public"
+ui_dist := "crates/seasoned-hand-ui/target/dx/seasoned-hand-ui/release/web/public"
 
 # Default: show available commands
 default:
@@ -55,7 +55,8 @@ build-css: _tailwind-cli
     {{tailwind_bin}} -i crates/seasoned-hand-ui/input.css -o {{ui_css_output}} --minify
     test -s {{ui_css_output}}
 
-# Build the Dioxus UI to a static web bundle (output under target/dx/).
+# Build the Dioxus UI to a static web bundle. The UI crate is excluded from the
+# root workspace, so output lands under crates/seasoned-hand-ui/target/dx/.
 build-ui: build-css
     cd crates/seasoned-hand-ui && dx build --platform web --release
     test -d {{ui_dist}}

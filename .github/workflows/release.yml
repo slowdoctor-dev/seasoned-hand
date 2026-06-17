@@ -52,7 +52,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           tar -C target/release -czf "dist/seasoned-hand-server-linux-x64.tar.gz" seasoned-hand-server
-          tar -C target/dx/seasoned-hand-ui/release/web -czf "dist/seasoned-hand-ui-web.tar.gz" public
+          tar -C crates/seasoned-hand-ui/target/dx/seasoned-hand-ui/release/web -czf "dist/seasoned-hand-ui-web.tar.gz" public
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

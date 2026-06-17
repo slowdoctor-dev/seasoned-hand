@@ -89,7 +89,7 @@ jobs:
       - name: Assert UI bundle stylesheet wiring
         run: |
           set -euo pipefail
-          dist="target/dx/seasoned-hand-ui/release/web/public"
+          dist="crates/seasoned-hand-ui/target/dx/seasoned-hand-ui/release/web/public"
           test -f "$dist/index.html"
           find "$dist" -name '*.css' -type f | grep -q .
           count="$(grep -o 'rel="stylesheet"' "$dist/index.html" | wc -l | tr -d ' ')"

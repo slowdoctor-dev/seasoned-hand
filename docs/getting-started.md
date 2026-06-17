@@ -38,7 +38,7 @@ AI 코딩 에이전트 (1개 이상 — 본인 선호에 따라):
 > 뒤 `SH_UI_DIST`를 번들 디렉터리로 지정하세요. 그러면 서버가 `/v1` + `/ws` API와
 > UI를 한 프로세스에서 제공합니다(API 라우트가 항상 우선; 정적 서빙은 공개):
 > ```bash
-> just build-ui                                    # target/dx/ 아래 정적 번들 생성
+> just build-ui                                    # 번들: crates/seasoned-hand-ui/target/dx/seasoned-hand-ui/release/web/public
 > SH_UI_DIST=<번들-경로> cargo run -p seasoned-hand-server
 > ```
 > `SH_UI_DIST`를 지정하지 않으면 서버는 API 전용으로 동작합니다(기존과 동일).

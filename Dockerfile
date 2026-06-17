@@ -38,7 +38,9 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=backend /app/target/release/seasoned-hand-server /usr/local/bin/seasoned-hand-server
-COPY --from=ui /app/target/dx/seasoned-hand-ui/release/web/public /app/ui
+# The UI crate is excluded from the root cargo workspace, so its build artifacts
+# land under the crate's own target dir, not the repo-root target/.
+COPY --from=ui /app/crates/seasoned-hand-ui/target/dx/seasoned-hand-ui/release/web/public /app/ui
 # Defaults for the containerized deployment (override via compose/.env). The server
 # binds loopback by default — in a container it must bind 0.0.0.0. SH_UI_DIST makes
 # the control plane self-serve the bundle. DB + workspaces live under /app/data
