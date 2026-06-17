@@ -337,7 +337,9 @@ impl NotifyWorker {
             target,
             payload: Some(req.payload.clone()),
             ok,
-            error,
+            // Issue #23: scrub credentials from the persisted error text — a failed
+            // webhook/HTTP error commonly carries a URL with an embedded token.
+            error: error.as_deref().map(crate::text::scrub_secrets),
             sent_at: now_micros(),
         };
         self.inner.notifications_sent.insert(row).await?;
