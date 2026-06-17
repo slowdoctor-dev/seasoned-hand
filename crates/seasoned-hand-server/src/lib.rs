@@ -3069,6 +3069,14 @@ fn map_invitation_error(err: InvitationError) -> ApiErrorResponse {
             api_err(StatusCode::FORBIDDEN, "cross_tenant_denied".into())
         }
         InvitationError::InvalidRole(_) => api_err(StatusCode::BAD_REQUEST, "invalid_role".into()),
+        // Issue #22: login-token verification outcomes. Collapse all three to a
+        // single opaque 401 so a caller can't distinguish unknown / expired /
+        // already-consumed (no token-state oracle).
+        InvitationError::InvalidToken
+        | InvitationError::TokenExpired
+        | InvitationError::TokenAlreadyConsumed => {
+            api_err(StatusCode::UNAUTHORIZED, "invalid_login_token".into())
+        }
         InvitationError::Sqlite(_) | InvitationError::AuditWrite(_) => {
             api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
         }

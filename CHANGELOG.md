@@ -96,6 +96,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Historical content remains in git history.)
 
 ### Security
+- **Audit integrity, store-layer access control, invitation tokens — issue #22
+  batch E:**
+  - **Audit log is now tamper-evident + append-only at the DB layer**
+    (`audit/ledger.rs`, migration **V026**). Each row carries a SHA-256
+    `row_hash = H(prev_hash || row fields)` chained from the previous row (global
+    chain; genesis = 64 zeros; legacy rows keep NULL hashes and the chain starts
+    from the first hashed row). `BEFORE UPDATE`/`BEFORE DELETE` triggers
+    `RAISE(ABORT)` so the table can't be mutated or deleted from — append-only is
+    enforced by SQLite, not just convention. Added a `verify_chain` check. *(Codex)*
+  - **Store-layer IDOR / privilege-escalation closed** (`org/mod.rs`).
+    `Organization::get` / `User::get` / `for_user_project` are now tenant-scoped
+    (a foreign-tenant PK reads as `NotFound`); `soft_deactivate` and the
+    escalation-primitive `update_role` require an `AuthContext`, enforce
+    `authorize(MembershipManage)` (admin-only), and scope the mutation to the
+    caller's tenant. (Latent — these stores have no HTTP route yet; defense-in-depth.)
+  - **Invitation login tokens are now verified, single-use, and expiring**
+    (`org/invitation.rs`). `verify_and_consume_login_token` hash-checks the token,
+    rejects unknown/expired (>7d from `created_at`)/already-consumed, and consumes
+    it atomically (`UPDATE … WHERE consumed_at IS NULL`) so concurrent logins can't
+    both succeed. Previously the minted tokens were stored but never read.
 - **Request hardening — issue #22 batch D:**
   - **Explicit request body cap** (`DefaultBodyLimit::max(1 MiB)`, server `app()`)
     replacing axum's silent 2 MB default, applied to every route incl. the

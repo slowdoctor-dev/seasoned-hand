@@ -106,6 +106,118 @@ async fn record_inserts_audit_row_and_emits_dual_write_event() {
 }
 
 #[tokio::test]
+async fn record_hash_chain_links_new_rows_and_verifies_cleanly() {
+    let (_pool, logger) = setup().await;
+    let first = logger
+        .record(
+            &ctx(Role::Admin, "user-admin"),
+            rec(AuditAction::TaskHandoff, "t-1"),
+        )
+        .await
+        .expect("first record");
+    let second = logger
+        .record(
+            &ctx(Role::Admin, "user-admin"),
+            rec(AuditAction::SopShare, "sop-1"),
+        )
+        .await
+        .expect("second record");
+
+    logger.verify_chain().await.expect("clean chain verifies");
+
+    let first_chain = logger
+        .chain_row(&first)
+        .await
+        .expect("first chain query")
+        .expect("first chain row");
+    let second_chain = logger
+        .chain_row(&second)
+        .await
+        .expect("second chain query")
+        .expect("second chain row");
+    assert_eq!(
+        first_chain.prev_hash.as_deref(),
+        Some("0000000000000000000000000000000000000000000000000000000000000000")
+    );
+    assert_eq!(second_chain.prev_hash, first_chain.row_hash);
+    assert!(
+        second_chain.row_hash.is_some(),
+        "new audit rows must carry row_hash"
+    );
+}
+
+#[tokio::test]
+async fn audit_log_rejects_update_and_delete() {
+    let (pool, logger) = setup().await;
+    let id = logger
+        .record(
+            &ctx(Role::Admin, "user-admin"),
+            rec(AuditAction::TaskHandoff, "t-1"),
+        )
+        .await
+        .expect("record");
+
+    let update_id = id.clone();
+    let update_err = pool
+        .with_conn(move |conn| {
+            conn.execute(
+                "UPDATE audit_log SET reason = 'tampered' WHERE id = ?",
+                params![update_id],
+            )
+        })
+        .await
+        .expect_err("audit update must be rejected");
+    assert!(update_err.to_string().contains("append-only"));
+
+    let delete_id = id.clone();
+    let delete_err = pool
+        .with_conn(move |conn| {
+            conn.execute("DELETE FROM audit_log WHERE id = ?", params![delete_id])
+        })
+        .await
+        .expect_err("audit delete must be rejected");
+    assert!(delete_err.to_string().contains("append-only"));
+}
+
+#[tokio::test]
+async fn verify_chain_detects_bad_inserted_hash_link() {
+    let (pool, logger) = setup().await;
+    logger
+        .record(
+            &ctx(Role::Admin, "user-admin"),
+            rec(AuditAction::TaskHandoff, "t-1"),
+        )
+        .await
+        .expect("record");
+
+    pool.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO audit_log (
+               id, tenant_id, organization_id, actor_user_id, action,
+               resource_type, resource_id, target_user_id, decision, reason,
+               metadata, created_at, prev_hash, row_hash
+             ) VALUES (
+               'audit-bad-link', 'tenant-test', 'org-test', 'user-admin',
+               'task.cancel', 'task', 't-bad', NULL, NULL, NULL,
+               '{}', 999, 'bad-prev', 'bad-row'
+             )",
+            [],
+        )
+    })
+    .await
+    .expect("manual insert is allowed; verification should detect tamper");
+
+    let err = logger
+        .verify_chain()
+        .await
+        .expect_err("bad link must fail chain verification");
+    assert!(matches!(
+        err,
+        AuditChainError::PrevHashMismatch { id, .. } if id == "audit-bad-link"
+    ));
+}
+
+#[tokio::test]
 async fn query_admin_sees_all_org_rows() {
     let (_pool, logger) = setup().await;
     logger

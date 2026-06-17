@@ -2,11 +2,23 @@
 //! refs: /specs/phase-5/stories/story-5.4.md
 
 use super::*;
-use crate::auth::Role;
+use crate::auth::{AuthContext, Role};
 use crate::db;
 use rusqlite::params;
 
 const TENANT: &str = "tenant-test";
+
+/// Admin `AuthContext` for the given tenant — the privileged caller the
+/// store-layer `authorize(MembershipManage)` checks now require (issue #22).
+fn admin_ctx(tenant: &str) -> AuthContext {
+    AuthContext {
+        tenant_id: tenant.into(),
+        organization_id: "org-test".into(),
+        actor_user_id: "u-admin".into(),
+        org_role: Role::Admin,
+        project_override_role: None,
+    }
+}
 
 async fn setup() -> (
     DbPool,
@@ -36,7 +48,7 @@ async fn organization_store_round_trip() {
         })
         .await
         .expect("insert");
-    let got = orgs.get(&id).await.expect("get");
+    let got = orgs.get(&id, TENANT).await.expect("get");
     assert_eq!(got.tenant_id, TENANT);
     assert_eq!(got.slug, "acme");
     assert_eq!(got.display_name, "Acme Corp");
@@ -64,13 +76,16 @@ async fn user_store_insert_get_and_deactivate() {
         })
         .await
         .expect("insert");
-    assert_eq!(users.get(&id).await.unwrap().status, "active");
-    users.soft_deactivate(&id).await.expect("deactivate");
-    assert_eq!(users.get(&id).await.unwrap().status, "deactivated");
+    assert_eq!(users.get(&id, TENANT).await.unwrap().status, "active");
+    users
+        .soft_deactivate(&id, &admin_ctx(TENANT))
+        .await
+        .expect("deactivate");
+    assert_eq!(users.get(&id, TENANT).await.unwrap().status, "deactivated");
 
     // Deactivate of a non-existent user surfaces NotFound, not a silent no-op.
     let err = users
-        .soft_deactivate("user-nonexistent")
+        .soft_deactivate("user-nonexistent", &admin_ctx(TENANT))
         .await
         .expect_err("non-existent must fail");
     assert!(matches!(err, OrgStoreError::NotFound(_)));
@@ -180,7 +195,7 @@ async fn membership_update_role_round_trip() {
         .await
         .unwrap();
     memberships
-        .update_role(&membership, Role::Admin)
+        .update_role(&membership, Role::Admin, &admin_ctx(TENANT))
         .await
         .expect("update");
     let updated = memberships
@@ -227,13 +242,140 @@ async fn project_role_override_precedence() {
         })
         .await
         .expect("override insert");
-    let role = overrides.for_user_project(&user, "proj-x").await.unwrap();
+    let role = overrides
+        .for_user_project(&user, "proj-x", TENANT)
+        .await
+        .unwrap();
     assert_eq!(role, Some(Role::Admin));
 
     // No row for a different project returns None (org role takes over).
     let none = overrides
-        .for_user_project(&user, "proj-other")
+        .for_user_project(&user, "proj-other", TENANT)
         .await
         .unwrap();
     assert_eq!(none, None);
+}
+
+// --- Issue #22: store-layer IDOR / privilege-escalation guards ---------------
+
+fn user_ctx(tenant: &str) -> AuthContext {
+    AuthContext {
+        tenant_id: tenant.into(),
+        organization_id: "org-test".into(),
+        actor_user_id: "u-user".into(),
+        org_role: Role::User,
+        project_override_role: None,
+    }
+}
+
+#[tokio::test]
+async fn org_and_user_get_are_tenant_scoped() {
+    let (_db, orgs, users, _, _) = setup().await;
+    let org = orgs
+        .insert(NewOrganization {
+            tenant_id: "tenant-a".into(),
+            slug: "a".into(),
+            display_name: "A".into(),
+        })
+        .await
+        .unwrap();
+    let user = users
+        .insert(NewUser {
+            tenant_id: "tenant-a".into(),
+            email: "a@e.com".into(),
+            display_name: "A".into(),
+        })
+        .await
+        .unwrap();
+    // Same tenant: visible.
+    assert!(orgs.get(&org, "tenant-a").await.is_ok());
+    assert!(users.get(&user, "tenant-a").await.is_ok());
+    // Foreign tenant: a valid PK reads as NotFound (no cross-tenant disclosure).
+    assert!(matches!(
+        orgs.get(&org, "tenant-b").await,
+        Err(OrgStoreError::NotFound(_))
+    ));
+    assert!(matches!(
+        users.get(&user, "tenant-b").await,
+        Err(OrgStoreError::NotFound(_))
+    ));
+}
+
+#[tokio::test]
+async fn update_role_requires_admin_and_is_tenant_scoped() {
+    let (_db, orgs, users, memberships, _) = setup().await;
+    let org = orgs
+        .insert(NewOrganization {
+            tenant_id: "tenant-a".into(),
+            slug: "a".into(),
+            display_name: "A".into(),
+        })
+        .await
+        .unwrap();
+    let user = users
+        .insert(NewUser {
+            tenant_id: "tenant-a".into(),
+            email: "a@e.com".into(),
+            display_name: "A".into(),
+        })
+        .await
+        .unwrap();
+    let membership = memberships
+        .insert(NewMembership {
+            tenant_id: "tenant-a".into(),
+            organization_id: org,
+            user_id: user,
+            role: Role::Viewer,
+            is_primary: true,
+        })
+        .await
+        .unwrap();
+
+    // A non-admin cannot escalate (privilege-escalation primitive).
+    assert!(matches!(
+        memberships
+            .update_role(&membership, Role::Admin, &user_ctx("tenant-a"))
+            .await,
+        Err(OrgStoreError::Auth(_))
+    ));
+    // An admin of a DIFFERENT tenant cannot reach this membership by id.
+    assert!(matches!(
+        memberships
+            .update_role(&membership, Role::Admin, &admin_ctx("tenant-b"))
+            .await,
+        Err(OrgStoreError::NotFound(_))
+    ));
+    // The tenant's own admin can.
+    memberships
+        .update_role(&membership, Role::Admin, &admin_ctx("tenant-a"))
+        .await
+        .expect("same-tenant admin update");
+}
+
+#[tokio::test]
+async fn soft_deactivate_requires_admin_and_is_tenant_scoped() {
+    let (_db, _, users, _, _) = setup().await;
+    let user = users
+        .insert(NewUser {
+            tenant_id: "tenant-a".into(),
+            email: "a@e.com".into(),
+            display_name: "A".into(),
+        })
+        .await
+        .unwrap();
+    // Non-admin denied.
+    assert!(matches!(
+        users.soft_deactivate(&user, &user_ctx("tenant-a")).await,
+        Err(OrgStoreError::Auth(_))
+    ));
+    // Foreign-tenant admin can't reach the row.
+    assert!(matches!(
+        users.soft_deactivate(&user, &admin_ctx("tenant-b")).await,
+        Err(OrgStoreError::NotFound(_))
+    ));
+    // Same-tenant admin succeeds.
+    users
+        .soft_deactivate(&user, &admin_ctx("tenant-a"))
+        .await
+        .expect("same-tenant admin deactivate");
 }

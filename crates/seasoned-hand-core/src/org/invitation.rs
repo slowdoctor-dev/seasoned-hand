@@ -39,7 +39,21 @@ pub enum InvitationError {
     Sqlite(#[from] rusqlite::Error),
     #[error("audit write: {0}")]
     AuditWrite(String),
+    // Issue #22: login-token verification outcomes. `InvalidToken` is returned
+    // for both "no such token" and "already consumed" at the API boundary so an
+    // attacker can't distinguish, but the internal variants stay distinct for
+    // logging/tests.
+    #[error("invalid login token")]
+    InvalidToken,
+    #[error("login token expired")]
+    TokenExpired,
+    #[error("login token already consumed")]
+    TokenAlreadyConsumed,
 }
+
+/// Issue #22: invitation login tokens expire 7 days after mint. Stored without a
+/// dedicated `expires_at` column, so expiry is derived from `created_at` (micros).
+pub const LOGIN_TOKEN_TTL_MICROS: i64 = 7 * 24 * 60 * 60 * 1_000_000;
 
 #[derive(Clone)]
 pub struct InvitationService {
@@ -191,6 +205,53 @@ impl InvitationService {
             display_name,
             login_token: token_plain,
         })
+    }
+
+    /// Issue #22: verify a plaintext invitation login token and atomically
+    /// **consume** it (single-use). The token was previously minted, hashed, and
+    /// stored by `invite_user` but never verified or consumed — dead weight that
+    /// would become replayable / non-expiring the moment a login route reads it.
+    ///
+    /// Returns the `user_id` the token grants. Fails closed: unknown, expired, or
+    /// already-consumed tokens are rejected, and the consume is a conditional
+    /// UPDATE (`consumed_at IS NULL`) so two concurrent logins can't both succeed.
+    pub async fn verify_and_consume_login_token(
+        &self,
+        token_plain: &str,
+    ) -> Result<String, InvitationError> {
+        let token_hash = sha256_hex(token_plain.as_bytes());
+        let now = now_micros();
+        self.db
+            .with_conn(move |conn| {
+                let row: Option<(String, i64, Option<i64>)> = conn
+                    .query_row(
+                        "SELECT user_id, created_at, consumed_at \
+                         FROM user_invitation_tokens WHERE token_hash = ?",
+                        params![token_hash],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .optional()?;
+                let Some((user_id, created_at, consumed_at)) = row else {
+                    return Err(InvitationError::InvalidToken);
+                };
+                if consumed_at.is_some() {
+                    return Err(InvitationError::TokenAlreadyConsumed);
+                }
+                if now.saturating_sub(created_at) > LOGIN_TOKEN_TTL_MICROS {
+                    return Err(InvitationError::TokenExpired);
+                }
+                // Atomic single-use: only the first concurrent consumer wins.
+                let n = conn.execute(
+                    "UPDATE user_invitation_tokens SET consumed_at = ? \
+                     WHERE token_hash = ? AND consumed_at IS NULL",
+                    params![now, token_hash],
+                )?;
+                if n == 0 {
+                    return Err(InvitationError::TokenAlreadyConsumed);
+                }
+                Ok(user_id)
+            })
+            .await
     }
 
     pub async fn list_org_users(
