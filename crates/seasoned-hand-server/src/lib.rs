@@ -10,9 +10,8 @@ use axum::{
     Extension, Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, StatusCode},
-    middleware,
     response::IntoResponse,
-    routing::{MethodRouter, get},
+    routing::get,
 };
 use dashmap::DashMap;
 use tower_http::services::{ServeDir, ServeFile};
@@ -25,7 +24,7 @@ use seasoned_hand_core::agent::init::progress;
 use seasoned_hand_core::agent::narrate::NarratorHook;
 use seasoned_hand_core::agent::{AgentRunner, AgentRunnerDeps};
 use seasoned_hand_core::audit::{AuditLogger, AuditQuery};
-use seasoned_hand_core::auth::{Action, AuthContext, authorize_coarse};
+use seasoned_hand_core::auth::{Action, AuthContext};
 use seasoned_hand_core::billing::{ReconciliationJob, ReconciliationReport};
 use seasoned_hand_core::browser::tracks::PostBrowserActionHook;
 use seasoned_hand_core::capability::ModelCapabilities;
@@ -56,14 +55,14 @@ use seasoned_hand_core::handoff::{HandoffRequest, TaskHandoffService};
 use seasoned_hand_core::intake::{IntakeEventStore, IntakeRouter};
 use seasoned_hand_core::llm::LlmClient;
 use seasoned_hand_core::notify::{NotificationsSentStore, NotifyConfig};
-use seasoned_hand_core::org::{InvitationError, InvitationService, InviteOutcome, MembershipRow};
+use seasoned_hand_core::org::{InvitationService, InviteOutcome, MembershipRow};
 use seasoned_hand_core::plan::PlanManager;
 use seasoned_hand_core::project::{ProjectStore, TaskStore};
 use seasoned_hand_core::pubsub::RedisPool;
 use seasoned_hand_core::router::{SlotName, SlotRouter};
 use seasoned_hand_core::sandbox::SandboxClient;
 use seasoned_hand_core::search::SearchClient;
-use seasoned_hand_core::sharing::sop::{SopPermission, SopShareError, SopShareService};
+use seasoned_hand_core::sharing::sop::{SopPermission, SopShareService};
 use seasoned_hand_core::tools::builtin::all_with_task_deliver;
 use seasoned_hand_core::verifier::{
     VerificationStore,
@@ -74,8 +73,19 @@ use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
 mod auth;
+// Issue #22 (batch F): HTTP error machinery + error-mapping helpers, extracted
+// from this file. Further god-file decomposition (guards, state, route modules)
+// is tracked as a follow-up.
+mod error;
+mod guards;
 pub mod initializer_spawner;
 pub mod ws;
+
+use error::{
+    ApiError, ApiResult, api_err, map_audit_query_error, map_handoff_error, map_invitation_error,
+    map_sop_share_error,
+};
+use guards::{authorize_in_handler, public, require_loopback, self_gated, with_auth};
 
 pub use initializer_spawner::WsInitializerSpawner;
 
@@ -869,54 +879,6 @@ pub struct EventsQueryParams {
     #[serde(rename = "type")]
     pub event_type: Option<String>,
     pub limit: Option<usize>,
-}
-
-#[derive(Serialize)]
-struct ApiError {
-    error: String,
-}
-
-type ApiErrorResponse = (StatusCode, Json<ApiError>);
-type ApiResult<T> = Result<T, ApiErrorResponse>;
-
-fn api_err(status: StatusCode, code: String) -> ApiErrorResponse {
-    (status, Json(ApiError { error: code }))
-}
-
-/// Issue #21 — explicit route auth classification. Every route in `app()` is
-/// wrapped by exactly one of `with_auth` (protected), `public`, or `self_gated`,
-/// so there are no bare/unclassified routes that silently skip auth. `with_auth`
-/// attaches the verified-session + coarse-RBAC middleware; `public`/`self_gated`
-/// are explicit markers that document why a route carries no session gate.
-fn with_auth(route: MethodRouter<AppState>, action: Action) -> MethodRouter<AppState> {
-    route
-        .route_layer(middleware::from_fn(auth::middleware::require_auth_context))
-        .layer(Extension(auth::middleware::RouteAction(action)))
-}
-
-/// A genuinely public route (no authentication): health + the login endpoints
-/// that mint the first credential. Identity wrapper — the classification is the
-/// documentation.
-fn public(route: MethodRouter<AppState>) -> MethodRouter<AppState> {
-    route
-}
-
-/// A route that performs its OWN authentication in the handler (loopback and/or
-/// admin/webhook token) rather than via a verified session — operational /
-/// machine endpoints. Identity wrapper; the handler MUST self-guard.
-fn self_gated(route: MethodRouter<AppState>) -> MethodRouter<AppState> {
-    route
-}
-
-fn authorize_in_handler(action: Action, ctx: &AuthContext) -> ApiResult<()> {
-    authorize_coarse(action, ctx).map_err(|err| match err {
-        seasoned_hand_core::auth::AuthError::MissingTenantContext => {
-            api_err(StatusCode::UNAUTHORIZED, "unauthorized_context".into())
-        }
-        seasoned_hand_core::auth::AuthError::Unauthorized { .. } => {
-            api_err(StatusCode::FORBIDDEN, "forbidden_action".into())
-        }
-    })
 }
 
 /// Hardening P5-HARD-IT3-H4: confirm a task belongs to the caller's
@@ -2160,17 +2122,6 @@ use seasoned_hand_core::time::now_micros;
 // guard's job stays the same — keep these routes off the public surface.
 // ---------------------------------------------------------------------------
 
-fn require_loopback(remote: SocketAddr) -> ApiResult<()> {
-    if remote.ip().is_loopback() {
-        Ok(())
-    } else {
-        Err(api_err(
-            StatusCode::FORBIDDEN,
-            "forbidden_non_loopback".into(),
-        ))
-    }
-}
-
 const ADMIN_TOKEN_HEADER: &str = "X-Seasoned-Hand-Admin-Token";
 
 fn require_admin_token_configured(state: &AppState) -> ApiResult<()> {
@@ -3054,35 +3005,6 @@ fn parse_audit_action(value: &str) -> Option<seasoned_hand_core::audit::AuditAct
     }
 }
 
-fn map_invitation_error(err: InvitationError) -> ApiErrorResponse {
-    match err {
-        InvitationError::Auth(seasoned_hand_core::auth::AuthError::MissingTenantContext) => {
-            api_err(StatusCode::UNAUTHORIZED, "unauthorized_context".into())
-        }
-        InvitationError::Auth(seasoned_hand_core::auth::AuthError::Unauthorized { .. }) => {
-            api_err(StatusCode::FORBIDDEN, "forbidden_action".into())
-        }
-        InvitationError::OrganizationNotFound(_) => {
-            api_err(StatusCode::NOT_FOUND, "organization_not_found".into())
-        }
-        InvitationError::CrossTenantDenied => {
-            api_err(StatusCode::FORBIDDEN, "cross_tenant_denied".into())
-        }
-        InvitationError::InvalidRole(_) => api_err(StatusCode::BAD_REQUEST, "invalid_role".into()),
-        // Issue #22: login-token verification outcomes. Collapse all three to a
-        // single opaque 401 so a caller can't distinguish unknown / expired /
-        // already-consumed (no token-state oracle).
-        InvitationError::InvalidToken
-        | InvitationError::TokenExpired
-        | InvitationError::TokenAlreadyConsumed => {
-            api_err(StatusCode::UNAUTHORIZED, "invalid_login_token".into())
-        }
-        InvitationError::Sqlite(_) | InvitationError::AuditWrite(_) => {
-            api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
-        }
-    }
-}
-
 fn parse_since_to_micros(value: &str) -> Result<i64, ()> {
     value.parse::<i64>().map_err(|_| ())
 }
@@ -3093,55 +3015,6 @@ fn is_valid_month_yyyymm(value: &str) -> bool {
         && value[4..6]
             .parse::<u32>()
             .is_ok_and(|m| (1..=12).contains(&m))
-}
-
-fn map_handoff_error(err: seasoned_hand_core::handoff::HandoffError) -> ApiErrorResponse {
-    use seasoned_hand_core::handoff::HandoffError;
-    match err {
-        HandoffError::Auth(seasoned_hand_core::auth::AuthError::MissingTenantContext) => {
-            api_err(StatusCode::UNAUTHORIZED, "unauthorized_context".into())
-        }
-        HandoffError::Auth(seasoned_hand_core::auth::AuthError::Unauthorized { .. }) => {
-            api_err(StatusCode::FORBIDDEN, "forbidden_action".into())
-        }
-        HandoffError::TaskNotFound(_) => api_err(StatusCode::NOT_FOUND, "task_not_found".into()),
-        HandoffError::UserNotFound(_) => api_err(StatusCode::NOT_FOUND, "user_not_found".into()),
-        HandoffError::TerminalState(_) => api_err(StatusCode::CONFLICT, "task_terminal".into()),
-        HandoffError::MustPauseFirst(_) => api_err(StatusCode::CONFLICT, "pause_required".into()),
-        HandoffError::StaleRevision { .. } => {
-            api_err(StatusCode::CONFLICT, "stale_revision".into())
-        }
-        HandoffError::InvalidStatus(_) => {
-            api_err(StatusCode::CONFLICT, "invalid_task_status".into())
-        }
-        HandoffError::Sqlite(error) => {
-            tracing::error!(%error, "handoff sqlite error");
-            api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
-        }
-        HandoffError::Event(error) => {
-            tracing::error!(%error, "handoff event error");
-            api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
-        }
-    }
-}
-
-fn map_audit_query_error(err: seasoned_hand_core::audit::AuditQueryError) -> ApiErrorResponse {
-    use seasoned_hand_core::audit::AuditQueryError;
-    match err {
-        AuditQueryError::Auth(seasoned_hand_core::auth::AuthError::MissingTenantContext) => {
-            api_err(StatusCode::UNAUTHORIZED, "unauthorized_context".into())
-        }
-        AuditQueryError::Auth(seasoned_hand_core::auth::AuthError::Unauthorized { .. }) => {
-            api_err(StatusCode::FORBIDDEN, "forbidden_action".into())
-        }
-        AuditQueryError::InvalidAction(_) => {
-            api_err(StatusCode::BAD_REQUEST, "invalid_action_db".into())
-        }
-        AuditQueryError::Sqlite(error) => {
-            tracing::error!(%error, "audit query sqlite error");
-            api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
-        }
-    }
 }
 
 async fn post_sop_share_handler(
@@ -3222,28 +3095,6 @@ fn parse_sop_permission(value: &str) -> ApiResult<SopPermission> {
             StatusCode::BAD_REQUEST,
             "invalid_permission".into(),
         )),
-    }
-}
-
-fn map_sop_share_error(err: SopShareError) -> ApiErrorResponse {
-    match err {
-        SopShareError::Auth(seasoned_hand_core::auth::AuthError::MissingTenantContext) => {
-            api_err(StatusCode::UNAUTHORIZED, "unauthorized_context".into())
-        }
-        SopShareError::Auth(seasoned_hand_core::auth::AuthError::Unauthorized { .. }) => {
-            api_err(StatusCode::FORBIDDEN, "forbidden_action".into())
-        }
-        SopShareError::SopNotFound(_) => api_err(StatusCode::NOT_FOUND, "sop_not_found".into()),
-        SopShareError::UserNotFound(_) => api_err(StatusCode::NOT_FOUND, "user_not_found".into()),
-        SopShareError::InvalidPermission(_) => api_err(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "invalid_permission_db".into(),
-        ),
-        SopShareError::StaleRevision(_) => api_err(StatusCode::CONFLICT, "stale_revision".into()),
-        SopShareError::Db(error) => {
-            tracing::error!(%error, "sop_share db error");
-            api_err(StatusCode::INTERNAL_SERVER_ERROR, "internal_error".into())
-        }
     }
 }
 

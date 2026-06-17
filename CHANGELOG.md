@@ -41,6 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   errors. Server-side adoption of the session/WS types is story 6.3b.
 
 ### Changed
+- **`server/lib.rs` decomposition started — issue #22 batch F (part 2):** extracted
+  the HTTP error machinery (`error.rs`: `ApiError`/`ApiResult`, `api_err`, the
+  `map_*_error` helpers) and the route classifiers + simple request guards
+  (`guards.rs`: `with_auth`/`public`/`self_gated`, `authorize_in_handler`,
+  `require_loopback`) out of the 4.1k-line god-file. Pure code moves (behavior
+  pinned by the integration suite). The larger, security-critical remainder
+  (`state.rs`, the AppState-coupled tenant guards, and per-domain `routes/`
+  modules) is tracked in #43.
 - **Dioxus Tailwind pipeline** (issue #33, deferred from #5): replaced the Tailwind
   CDN `<script>` with a pinned Tailwind **v4.3.1 standalone-CLI** build (no Node) —
   `just build-css` emits the gitignored `crates/seasoned-hand-ui/assets/tailwind.css`
