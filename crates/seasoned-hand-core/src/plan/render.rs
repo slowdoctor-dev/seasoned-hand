@@ -83,11 +83,15 @@ fn truncate_title(title: &mut String, max_chars: usize) {
 }
 
 pub fn estimate_tokens(input: &str) -> usize {
-    // Issue #23: this runs every agent iteration (via `sticky_render`). A
-    // tokenizer-init failure must not panic the whole loop — fall back to a
-    // ~4-chars-per-token estimate, which is good enough for the budget guard.
+    // Issue #23: this runs every agent iteration (via `sticky_render`), where the
+    // result gates a `<= token_cap` truncation loop. A tokenizer-init failure must
+    // not panic the loop — but the fallback must FAIL CLOSED, i.e. never
+    // *under*-estimate (an under-estimate would let an over-budget plan through).
+    // Byte length is a guaranteed upper bound on the token count (every token spans
+    // >= 1 byte), so it over-estimates and keeps the cap safe. It over-truncates
+    // when the tokenizer is unavailable — acceptable for a rare cold-start failure.
     match tiktoken_rs::p50k_base() {
         Ok(bpe) => bpe.encode_ordinary(input).len(),
-        Err(_) => input.len().div_ceil(4),
+        Err(_) => input.len(),
     }
 }
