@@ -7,6 +7,12 @@
 //! retunes touch one place rather than scattered `bm25(t, w1, w2, ...)`
 //! literals across the matcher / session_search / curator queries.
 //!
+//! Status (issue #23): this surface is **not yet wired into ranking** — the
+//! hand-rolled matcher ranks by its own scoring and does not consult these
+//! weights, and the FTS queries use the uniform default. Wiring it (and a real
+//! retune) is the DEBT #76 successor; until then the weights are intentionally
+//! inert and changing them has no effect on results.
+//!
 //! ## Measurement procedure (for the eventual full retune)
 //!
 //! See `/specs/phase-5/dogfood_fts_retune.md` for the dogfood capture

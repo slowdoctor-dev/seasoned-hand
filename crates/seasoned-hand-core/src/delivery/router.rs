@@ -219,7 +219,9 @@ impl DeliveryRouter {
         err: &ChannelError,
     ) -> Result<DeliveryEventRow, DeliveryRouterError> {
         let now = now_micros();
-        let error_text = err.to_string();
+        // Issue #23: scrub credentials from the error text before it's persisted to
+        // `delivery_events` (a channel error can carry a URL with an embedded token).
+        let error_text = crate::text::scrub_secrets(&err.to_string());
         let new = NewDeliveryEvent {
             tenant_id: deliverable.tenant_id.clone(),
             task_id: deliverable.task_id.clone(),
