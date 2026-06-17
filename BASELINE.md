@@ -120,13 +120,26 @@ These are set. Changing requires new ADR + version bump in `/specs/01-architectu
 9. **Context = RAM, sandbox files = disk** (long-task accuracy depends on this)
 10. **Plan is sticky PCB** (structured, in every iteration context, never free text)
 
-## 8. Open Decisions (TBD before Phase 0 ends)
+## 8. Open Decisions
 
-- [ ] Multi-tenant DB strategy: separate vs shared with user_id
-- [ ] Auth: API key, OAuth, or both
-- [ ] Default cloud sandbox provider for users without local Docker
-- [ ] Opt-in telemetry: format, scope, privacy policy
-- [ ] GitHub repo: stay personal vs move to org (later)
+Reconciled for the Phase 6 open-source release (issue #6). The two design
+questions were answered during Phase 5; the two infra questions are explicitly
+**deferred post-v1** so they don't gate the release tag.
+
+- [x] **Multi-tenant DB strategy** — RESOLVED (Phase 5): single SQLite database,
+  **shared schema with a `tenant_id` column** on every row (NOT NULL since
+  V014–V020), not separate-DB-per-tenant. See ARCHITECTURE §2.5 / ADR-014.
+- [x] **Auth** — RESOLVED (Phase 5/6): **verified opaque session tokens** minted
+  by `/v1/auth/login` and re-resolved server-side (ADR-018), with an explicit,
+  loopback-gated `SH_INSECURE_AUTH_HEADERS` dev/CLI fallback. (Not API-key/OAuth;
+  those can layer in later behind the same `AuthContext`.)
+- [ ] **Default cloud sandbox provider** — DEFERRED post-v1. v1 ships
+  **local-Docker-only** (the sandbox runs on the host Docker daemon); a hosted
+  provider for users without local Docker is a post-release design.
+- [ ] **Opt-in telemetry** — DEFERRED post-v1. v1 collects **no telemetry**
+  (privacy-by-default); any opt-in scheme is designed after release with an
+  explicit format/scope/privacy policy.
+- [ ] GitHub repo: stay personal vs move to org (later, non-blocking).
 
 ## 9. Repository Map
 
