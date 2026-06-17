@@ -36,6 +36,57 @@ impl SqliteEventStore {
     {
         self.pool.with_conn(f).await
     }
+
+    /// Issue #22: the most-recent `limit` events for a session, returned in
+    /// ascending id order. `EventStore::query` is `ORDER BY id ASC LIMIT N`
+    /// (oldest N), which on a long task drops the agent's *recent* activity out of
+    /// the per-iteration context window. This fetches the tail instead — used with
+    /// a seed anchor in `agent::prompt::build_messages`.
+    pub async fn recent_events(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<Event>, EventError> {
+        let session_id = session_id.to_string();
+        let limit = limit.min(1000) as i64;
+        self.pool
+            .with_conn(move |conn| -> Result<Vec<Event>, EventError> {
+                let mut stmt = conn.prepare(
+                    "SELECT id, session_id, timestamp, type, source, data \
+                     FROM events WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+                )?;
+                let rows = stmt.query_map(rusqlite::params![session_id, limit], |row| {
+                    let type_str: String = row.get(3)?;
+                    let data_str: String = row.get(5)?;
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        type_str,
+                        row.get::<_, String>(4)?,
+                        data_str,
+                    ))
+                })?;
+                let mut events = Vec::new();
+                for row in rows {
+                    let (id, session_id, timestamp, type_str, source, data_str) = row?;
+                    let event_type = EventType::from_str(&type_str)?;
+                    let data: serde_json::Value = serde_json::from_str(&data_str)?;
+                    events.push(Event {
+                        id,
+                        session_id,
+                        timestamp,
+                        event_type,
+                        source,
+                        data,
+                    });
+                }
+                // DESC fetch → reverse to ascending id order for the message builder.
+                events.reverse();
+                Ok(events)
+            })
+            .await
+    }
 }
 
 fn now_micros() -> Result<i64, EventError> {

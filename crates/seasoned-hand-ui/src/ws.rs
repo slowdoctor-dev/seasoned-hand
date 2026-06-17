@@ -124,7 +124,15 @@ pub fn use_agent_socket(session_id: Signal<Option<String>>) -> AgentSocket {
                         outbound = rx.next().fuse() => match outbound {
                             Some(payload) => {
                                 if let CommandPayload::Subscribe { session_id: sid, from_event_id } = &payload {
-                                    subscribed.insert(sid.clone(), from_event_id.unwrap_or(0));
+                                    // Issue #22: keep the HIGHEST watermark per
+                                    // session. An app-initiated `Subscribe{from:0}`
+                                    // (initial load) must not lower a watermark already
+                                    // advanced by received events, or a later reconnect
+                                    // would replay the whole history from 0 instead of
+                                    // resuming from the last seen id.
+                                    let from = from_event_id.unwrap_or(0);
+                                    let cur = subscribed.get(sid).copied().unwrap_or(0);
+                                    subscribed.insert(sid.clone(), cur.max(from));
                                 }
                                 next_id += 1;
                                 let cmd_id = format!("c{next_id}");

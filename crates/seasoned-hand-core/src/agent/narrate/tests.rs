@@ -311,3 +311,53 @@ async fn unknown_tool_falls_through_to_templated_generic() {
         vec!["Invoking experimental_brand_new_tool".to_string()]
     );
 }
+
+#[tokio::test]
+async fn build_messages_anchors_seed_brief_and_keeps_recent_window() {
+    // Issue #22: on a long task the per-iteration context must keep the most
+    // RECENT events (what the agent just did) and still anchor the original brief,
+    // while events in the middle fall out of the bounded window.
+    let f = fixture().await;
+    let push = |content: String| {
+        let events = f.events.clone();
+        async move {
+            events
+                .append(crate::events::NewEvent {
+                    session_id: SESSION.into(),
+                    event_type: EventType::Message,
+                    source: "user".into(),
+                    data: json!({"role": "user", "content": content}),
+                })
+                .await
+                .unwrap();
+        }
+    };
+    push("ORIGINAL_BRIEFING".into()).await; // event 1 (the seed)
+    push("EARLY_FILLER".into()).await; // event 2 (early, non-seed)
+    for i in 0..130 {
+        push(format!("FILLER_{i}")).await;
+    }
+    push("MOST_RECENT".into()).await; // the tail
+
+    let messages = crate::agent::build_messages(&f.events, &f.plan_manager, SESSION)
+        .await
+        .expect("build_messages");
+    let blob = messages
+        .iter()
+        .filter_map(|m| m.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        blob.contains("ORIGINAL_BRIEFING"),
+        "the seed brief must be anchored even past the window"
+    );
+    assert!(
+        blob.contains("MOST_RECENT"),
+        "the most recent activity must be in the window"
+    );
+    assert!(
+        !blob.contains("EARLY_FILLER"),
+        "an early non-seed event must fall out of the bounded window"
+    );
+}

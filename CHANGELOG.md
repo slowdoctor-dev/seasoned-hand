@@ -153,6 +153,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     string literal and inject script.
 
 ### Fixed
+- **Agent context window + UI reconnect — issue #22 batch F (part 1):**
+  - **Per-iteration context now replays the RECENT window + anchors the seed
+    brief** (`agent/prompt.rs`). `build_messages` previously replayed the *oldest*
+    100 events (`EventStore::query` is `ORDER BY id ASC LIMIT N`), so on a 50+
+    tool-call task the agent stopped seeing its own recent activity. It now fetches
+    the most-recent N (`SqliteEventStore::recent_events`) and anchors the session's
+    first event (the original brief) so the goal never falls out of the window;
+    `pair_messages` folds any window-boundary orphan to plain text (no provider 400).
+  - **Dioxus reconnect no longer replays history from 0** (`ui/src/ws.rs`). The
+    per-session resume watermark is now kept at its highest value, so an
+    app-initiated `Subscribe{from:0}` (initial load) can't lower a watermark already
+    advanced by received events — a reconnect resumes from the last seen id.
 - **Cost & curator correctness — issue #22 batch C:**
   - **Final-step cost is now recorded** (`agent/mod.rs`) — `record_step_cost` moved
     above the verifier-completion and breaker early-returns, so a task can no longer

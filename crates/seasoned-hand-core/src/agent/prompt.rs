@@ -11,20 +11,41 @@ use crate::plan::{PlanManager, render::sticky_render};
 const SYSTEM_PROMPT: &str = "You are Seasoned Hand. Use exactly one tool call per iteration. \
 Return a tool call every turn; call idle when the task is complete.";
 
+/// Per-iteration context window: the most recent N events the agent replays each
+/// step (issue #22). The original briefing is anchored separately so it never
+/// falls out of this window on long (50+ tool-call) tasks.
+const RECENT_EVENT_WINDOW: usize = 100;
+
 pub(crate) async fn build_messages(
     events: &SqliteEventStore,
     plan_manager: &PlanManager,
     session_id: &str,
 ) -> Result<Vec<Message>, AgentError> {
-    let all_events = events
+    // Issue #22: replay the most RECENT window (not the oldest 100, which
+    // `EventStore::query` returns) so the agent sees what it just did, and anchor
+    // the session's first event (the original user brief) so the goal context
+    // never falls out of the window. `pair_messages` folds any tool result whose
+    // Action fell outside the window to plain text, so truncation never orphans a
+    // `role:"tool"` message (no provider 400).
+    let recent = events
+        .recent_events(session_id, RECENT_EVENT_WINDOW)
+        .await?;
+    let seed = events
         .query(
             session_id,
             EventQuery {
-                limit: Some(100),
+                limit: Some(1),
                 ..Default::default()
             },
         )
         .await?;
+    let mut all_events: Vec<Event> = Vec::with_capacity(recent.len() + 1);
+    if let Some(first) = seed.into_iter().next()
+        && !recent.iter().any(|e| e.id == first.id)
+    {
+        all_events.push(first);
+    }
+    all_events.extend(recent);
     let mut messages = vec![Message {
         role: Role::System,
         content: Some(SYSTEM_PROMPT.into()),
