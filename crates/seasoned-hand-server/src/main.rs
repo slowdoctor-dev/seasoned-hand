@@ -11,11 +11,11 @@ use seasoned_hand_core::curator::retention::{
     CuratorRetentionJob, DEFAULT_RETENTION_INTERVAL_SECS, RetentionConfig, RetentionScheduler,
 };
 use seasoned_hand_core::curator::{
-    CuratorConfig, CuratorRuntimeDeps, EmbeddingBudget, LlmSemanticAdjudicator,
-    ProductionCuratorCycleExecutor, ProductionCuratorWorker, ProductionEmbeddingReranker,
-    SqliteBacklogProbe, SqliteCandidateBuilder, SqliteConflictDetector, SqliteConsolidationEngine,
-    SqliteKnowledgeDatasourceWriter, SqliteOperatorReviewQueue, SqliteRetrospectiveGenerator,
-    SqliteWorkPatternExtractor,
+    CuratorConfig, CuratorRuntimeDeps, DEFAULT_REVIEW_SAMPLE_RATE, EmbeddingBudget,
+    LlmSemanticAdjudicator, ProductionCuratorCycleExecutor, ProductionCuratorWorker,
+    ProductionEmbeddingReranker, SqliteBacklogProbe, SqliteCandidateBuilder,
+    SqliteConflictDetector, SqliteConsolidationEngine, SqliteKnowledgeDatasourceWriter,
+    SqliteOperatorReviewQueue, SqliteRetrospectiveGenerator, SqliteWorkPatternExtractor,
 };
 use seasoned_hand_core::llm::LlmClient;
 use seasoned_hand_core::router::{SlotName, SlotRouter};
@@ -63,6 +63,16 @@ where
             "SH_CURATOR_EMBEDDING_HARD_BREAKER_PCT ({hard}) must be >= SH_CURATOR_EMBEDDING_SOFT_CAP_PCT ({soft})"
         ));
     }
+    let review_sample_rate = env_f32_or_default(
+        lookup,
+        "SH_CURATOR_REVIEW_SAMPLE_RATE",
+        DEFAULT_REVIEW_SAMPLE_RATE,
+    )?;
+    if !(0.0..=1.0).contains(&review_sample_rate) {
+        return Err(format!(
+            "SH_CURATOR_REVIEW_SAMPLE_RATE out of range {review_sample_rate} (expected 0.0..=1.0)"
+        ));
+    }
 
     Ok(Some(CuratorConfig {
         enabled: true,
@@ -97,6 +107,7 @@ where
             "SH_CURATOR_ARCHIVE_APPLY_MIN_CONFIDENCE",
             0.55,
         )?,
+        review_sample_rate,
         project_id: lookup("SH_CURATOR_PROJECT_ID").unwrap_or_else(|| "default".to_string()),
         org_aggregation_enabled: env_bool_or_default(lookup, "SH_CURATOR_ORG_AGGREGATION", false)?,
     }))
@@ -554,11 +565,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::sync::Arc::new(SqliteCandidateBuilder::new(state.db.clone()))
         };
         let consolidation_engine = std::sync::Arc::new(
-            SqliteConsolidationEngine::new(state.db.clone()).with_archive_policy(
-                config.auto_archive_enabled,
-                config.archive_recommend_min_confidence,
-                config.archive_apply_min_confidence,
-            ),
+            SqliteConsolidationEngine::new(state.db.clone())
+                .with_archive_policy(
+                    config.auto_archive_enabled,
+                    config.archive_recommend_min_confidence,
+                    config.archive_apply_min_confidence,
+                )
+                .with_review_sample_rate(config.review_sample_rate),
         );
         let conflict_slot = state.router.resolve(SlotName::SessionSearch);
         let conflict_llm = LlmClient::new(
@@ -992,6 +1005,7 @@ mod tests {
             ("SH_CURATOR_AUTO_ARCHIVE_ENABLED", "1"),
             ("SH_CURATOR_ARCHIVE_RECOMMEND_MIN_CONFIDENCE", "0.45"),
             ("SH_CURATOR_ARCHIVE_APPLY_MIN_CONFIDENCE", "0.60"),
+            ("SH_CURATOR_REVIEW_SAMPLE_RATE", "0.25"),
             ("SH_CURATOR_PROJECT_ID", "proj-x"),
         ]));
         let cfg = load_curator_config_from_lookup(&lookup)
@@ -1004,6 +1018,7 @@ mod tests {
         assert_eq!(cfg.embedding_budget_soft_cap_pct, 0.05);
         assert_eq!(cfg.embedding_budget_hard_breaker_pct, 0.10);
         assert!(cfg.auto_archive_enabled);
+        assert_eq!(cfg.review_sample_rate, 0.25);
         assert_eq!(cfg.project_id, "proj-x");
     }
 
@@ -1024,6 +1039,16 @@ mod tests {
         let error = load_curator_config_from_lookup(&lookup).expect_err("should reject");
         assert!(error.contains("HARD_BREAKER"));
         assert!(error.contains("SOFT_CAP"));
+    }
+
+    #[test]
+    fn curator_config_strict_parsing_rejects_invalid_review_sample_rate() {
+        let lookup = lookup_from(HashMap::from([
+            ("SH_CURATOR_ENABLED", "1"),
+            ("SH_CURATOR_REVIEW_SAMPLE_RATE", "1.2"),
+        ]));
+        let error = load_curator_config_from_lookup(&lookup).expect_err("should reject");
+        assert!(error.contains("SH_CURATOR_REVIEW_SAMPLE_RATE"));
     }
 
     #[test]

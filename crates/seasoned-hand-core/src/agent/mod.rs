@@ -438,6 +438,15 @@ impl AgentRunner {
                 }
                 None => dispatch_call.await,
             };
+            // Issue #22: poll + record this step's cost BEFORE any breaker /
+            // verifier-completion early-return below. Previously `record_step_cost`
+            // ran after those returns, so a task could blow `cost_cap_cents` on its
+            // final (completion) step — or on a breaker-tripping step — without the
+            // spend ever being recorded. Recording here keeps billing accurate for
+            // every step regardless of how the iteration exits.
+            let current_cost = self
+                .record_step_cost(&req.session_id, &mut cost_baseline)
+                .await;
             if let Some(kind) = breaker.note_observation_and_check(output.ok).await {
                 self.emit_breaker_trigger(&req.session_id, kind).await?;
                 self.finalize(&req.session_id).await;
@@ -458,10 +467,6 @@ impl AgentRunner {
                     steps: step + 1,
                 });
             }
-
-            let current_cost = self
-                .record_step_cost(&req.session_id, &mut cost_baseline)
-                .await;
             if let Some(cap) = req.cost_cap_cents
                 && current_cost >= i64::from(cap)
             {

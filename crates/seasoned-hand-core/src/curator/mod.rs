@@ -6,7 +6,7 @@ pub mod retention;
 #[cfg(test)]
 mod tenant_boundaries_tests;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,6 +26,8 @@ use crate::llm::{
     types::{ChatCompletionRequest, EmbeddingRequest, Message, Role},
 };
 
+pub const DEFAULT_REVIEW_SAMPLE_RATE: f32 = 0.30;
+
 #[derive(Debug, Clone)]
 pub struct CuratorConfig {
     pub enabled: bool,
@@ -39,6 +41,9 @@ pub struct CuratorConfig {
     pub auto_archive_enabled: bool,
     pub archive_recommend_min_confidence: f32,
     pub archive_apply_min_confidence: f32,
+    /// Fraction of medium-confidence, non-high-impact decisions that receive
+    /// operator review. Default preserves the former deterministic 3/10 sample.
+    pub review_sample_rate: f32,
     pub project_id: String,
     /// Story 5.18 / arch OQ #12 Option B: when true, the curator's
     /// `CandidateBuilder` pulls revisions from every project within the
@@ -62,6 +67,7 @@ impl Default for CuratorConfig {
             auto_archive_enabled: false,
             archive_recommend_min_confidence: 0.40,
             archive_apply_min_confidence: 0.55,
+            review_sample_rate: DEFAULT_REVIEW_SAMPLE_RATE,
             project_id: "default".to_string(),
             org_aggregation_enabled: false,
         }
@@ -316,10 +322,10 @@ impl ConsolidationDecisionKind {
         match self {
             ConsolidationDecisionKind::Merge => "merge",
             ConsolidationDecisionKind::Keep => "keep",
-            ConsolidationDecisionKind::ArchiveRecommend => "archive",
-            ConsolidationDecisionKind::ArchiveApply => "archive",
+            ConsolidationDecisionKind::ArchiveRecommend => "archive_recommend",
+            ConsolidationDecisionKind::ArchiveApply => "archive_apply",
             ConsolidationDecisionKind::Restore => "restore",
-            ConsolidationDecisionKind::Quarantine => "keep",
+            ConsolidationDecisionKind::Quarantine => "quarantine",
         }
     }
 
@@ -591,6 +597,7 @@ pub struct SqliteConsolidationEngine {
     auto_archive_enabled: bool,
     archive_recommend_min_confidence: f32,
     archive_apply_min_confidence: f32,
+    review_sample_rate: f32,
 }
 
 #[derive(Clone)]
@@ -1362,6 +1369,7 @@ impl SqliteConsolidationEngine {
             auto_archive_enabled: false,
             archive_recommend_min_confidence: 0.40,
             archive_apply_min_confidence: 0.55,
+            review_sample_rate: DEFAULT_REVIEW_SAMPLE_RATE,
         }
     }
 
@@ -1376,6 +1384,11 @@ impl SqliteConsolidationEngine {
         self.auto_archive_enabled = auto_archive_enabled;
         self.archive_recommend_min_confidence = recommend;
         self.archive_apply_min_confidence = apply;
+        self
+    }
+
+    pub fn with_review_sample_rate(mut self, review_sample_rate: f32) -> Self {
+        self.review_sample_rate = review_sample_rate.clamp(0.0, 1.0);
         self
     }
 }
@@ -1409,6 +1422,7 @@ impl ConsolidationEngine for SqliteConsolidationEngine {
                 confidence,
                 &candidate.left_revision_id,
                 &candidate.right_revision_id,
+                self.review_sample_rate,
             );
             out.push(ConsolidationDecision {
                 decision_id: format!("cd-{}", uuid::Uuid::new_v4()),
@@ -1662,8 +1676,15 @@ impl EmbeddingBudget {
 #[derive(Clone)]
 struct SimpleLru<K, V> {
     cap: usize,
-    order: Vec<K>,
-    map: HashMap<K, V>,
+    next_generation: u64,
+    order: VecDeque<(K, u64)>,
+    map: HashMap<K, CacheEntry<V>>,
+}
+
+#[derive(Clone)]
+struct CacheEntry<V> {
+    value: V,
+    generation: u64,
 }
 
 impl<K, V> SimpleLru<K, V>
@@ -1673,41 +1694,78 @@ where
     fn new(cap: usize) -> Self {
         Self {
             cap: cap.max(1),
-            order: Vec::new(),
+            next_generation: 0,
+            order: VecDeque::new(),
             map: HashMap::new(),
         }
     }
 
     fn get(&mut self, key: &K) -> Option<&V> {
-        if self.map.contains_key(key) {
-            self.touch(key);
+        if !self.map.contains_key(key) {
+            return None;
         }
-        self.map.get(key)
+        self.touch(key);
+        self.map.get(key).map(|entry| &entry.value)
     }
 
     fn put(&mut self, key: K, value: V) {
-        if self.map.contains_key(&key) {
-            self.map.insert(key.clone(), value);
-            self.touch(&key);
-            return;
+        let generation = self.next_generation();
+        self.order.push_back((key.clone(), generation));
+        self.map.insert(key, CacheEntry { value, generation });
+        while self.map.len() > self.cap {
+            self.evict_one();
         }
-        self.order.push(key.clone());
-        self.map.insert(key, value);
-        while self.order.len() > self.cap {
-            if let Some(evicted) = self.order.first().cloned() {
-                self.order.remove(0);
-                self.map.remove(&evicted);
-            } else {
+        self.compact_if_needed();
+    }
+
+    fn touch(&mut self, key: &K) {
+        let generation = self.next_generation();
+        if let Some(entry) = self.map.get_mut(key) {
+            entry.generation = generation;
+            self.order.push_back((key.clone(), generation));
+        }
+        self.compact_if_needed();
+    }
+
+    fn next_generation(&mut self) -> u64 {
+        let generation = self.next_generation;
+        self.next_generation = self.next_generation.wrapping_add(1);
+        generation
+    }
+
+    fn evict_one(&mut self) {
+        while let Some((candidate, generation)) = self.order.pop_front() {
+            let is_current = self
+                .map
+                .get(&candidate)
+                .is_some_and(|entry| entry.generation == generation);
+            if is_current {
+                self.map.remove(&candidate);
                 break;
             }
         }
     }
 
-    fn touch(&mut self, key: &K) {
-        if let Some(pos) = self.order.iter().position(|k| k == key) {
-            let k = self.order.remove(pos);
-            self.order.push(k);
+    fn compact_if_needed(&mut self) {
+        if self.order.len() <= self.cap.saturating_mul(4) {
+            return;
         }
+        let mut seen = HashSet::new();
+        let mut compacted = Vec::with_capacity(self.map.len());
+        for (key, generation) in self.order.iter().rev() {
+            let is_current = self
+                .map
+                .get(key)
+                .is_some_and(|entry| entry.generation == *generation);
+            if is_current && seen.insert(key.clone()) {
+                compacted.push((key.clone(), *generation));
+                if seen.len() == self.map.len() {
+                    break;
+                }
+            }
+        }
+        compacted.reverse();
+        self.order = compacted.into_iter().collect();
     }
 }
 
@@ -1759,6 +1817,12 @@ impl ProductionEmbeddingReranker {
             .saturating_add(u64::from(response.usage.total_tokens));
         Ok(Some(first.embedding.clone()))
     }
+
+    async fn breaker_open_now(&self) -> bool {
+        let (embedding_tokens_used, total_tokens_used) = *self.usage.lock().await;
+        self.budget
+            .breaker_open(embedding_tokens_used, total_tokens_used)
+    }
 }
 
 #[async_trait]
@@ -1769,10 +1833,10 @@ impl EmbeddingReranker for ProductionEmbeddingReranker {
         candidates: Vec<DuplicateCandidate>,
     ) -> Result<Vec<RerankedCandidate>, CuratorWorkerError> {
         let (embedding_tokens_used, total_tokens_used) = *self.usage.lock().await;
-        let breaker_open = self
+        let breaker_open_at_start = self
             .budget
             .breaker_open(embedding_tokens_used, total_tokens_used);
-        if breaker_open {
+        if breaker_open_at_start {
             tracing::warn!(project_id, "curator_budget_circuit_open");
         } else if self
             .budget
@@ -1786,15 +1850,22 @@ impl EmbeddingReranker for ProductionEmbeddingReranker {
             let fts_norm = candidate.fts_score.clamp(0.0, 1.0);
             let structural_overlap = candidate.lexical_overlap.clamp(0.0, 1.0);
 
-            let (embedding_cosine, embedding_used) = if breaker_open {
+            let (embedding_cosine, embedding_used) = if self.breaker_open_now().await {
+                tracing::warn!(project_id, "curator_budget_circuit_open");
                 (0.0, false)
             } else {
-                match (
-                    self.embedding_for(&candidate.left_text).await,
-                    self.embedding_for(&candidate.right_text).await,
-                ) {
-                    (Ok(Some(left)), Ok(Some(right))) => {
-                        (cosine_similarity(&left, &right).clamp(-1.0, 1.0), true)
+                match self.embedding_for(&candidate.left_text).await {
+                    Ok(Some(left)) if !self.breaker_open_now().await => {
+                        match self.embedding_for(&candidate.right_text).await {
+                            Ok(Some(right)) => {
+                                (cosine_similarity(&left, &right).clamp(-1.0, 1.0), true)
+                            }
+                            _ => (0.0, false),
+                        }
+                    }
+                    Ok(Some(_left)) => {
+                        tracing::warn!(project_id, "curator_budget_circuit_open_mid_candidate");
+                        (0.0, false)
                     }
                     _ => (0.0, false),
                 }
@@ -2509,6 +2580,7 @@ fn review_required(
     confidence: f32,
     left_revision_id: &str,
     right_revision_id: &str,
+    sample_rate: f32,
 ) -> bool {
     if confidence < 0.55 {
         return true;
@@ -2516,7 +2588,8 @@ fn review_required(
     if kind.high_impact() {
         return true;
     }
-    if confidence <= 0.75 {
+    let sample_rate = sample_rate.clamp(0.0, 1.0);
+    if confidence <= 0.75 && sample_rate > 0.0 {
         let mut h: u64 = 1469598103934665603;
         for b in left_revision_id
             .as_bytes()
@@ -2526,7 +2599,8 @@ fn review_required(
             h ^= u64::from(*b);
             h = h.wrapping_mul(1099511628211);
         }
-        return h % 10 < 3;
+        let bucket = (h % 10_000) as f32 / 10_000.0;
+        return bucket < sample_rate;
     }
     false
 }

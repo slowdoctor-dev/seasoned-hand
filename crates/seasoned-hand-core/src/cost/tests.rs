@@ -42,3 +42,30 @@ async fn cost_poll_failure_returns_err_caller_tolerates() {
 
     assert!(matches!(error, CostError::Status { code: 503, body: _ }));
 }
+
+fn snap(total_cents: i64) -> CostSnapshot {
+    CostSnapshot {
+        total_cents,
+        currency: "USD".into(),
+        ts: 0,
+    }
+}
+
+#[test]
+fn delta_between_normal_increase() {
+    assert_eq!(delta_between(&snap(100), &snap(175)), 75);
+    assert_eq!(delta_between(&snap(0), &snap(0)), 0);
+}
+
+#[test]
+fn delta_between_rebaselines_on_counter_reset() {
+    // Issue #22: when the Bifrost counter resets (current < baseline) the post-reset
+    // value is the spend since the reset — bill it, don't mask it as 0.
+    assert_eq!(
+        delta_between(&snap(100), &snap(7)),
+        7,
+        "a reset to 7 must bill 7 cents, not 0"
+    );
+    // A reset to exactly 0 yields 0 (nothing spent yet post-reset).
+    assert_eq!(delta_between(&snap(100), &snap(0)), 0);
+}

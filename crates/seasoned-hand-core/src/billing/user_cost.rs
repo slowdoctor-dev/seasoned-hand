@@ -142,6 +142,11 @@ impl NearlineWriter {
                        b.month_yyyymm,
                        COUNT(*) AS session_count,
                        COALESCE(SUM(b.tool_calls), 0) AS tool_calls,
+                       -- Issue #22: an i64 SUM overflow here is fail-loud — SQLite
+                       -- raises 'integer overflow' rather than silently wrapping, so
+                       -- it surfaces as a reconciliation error for an operator (the
+                       -- safe direction). Reaching it needs ~9.2e18 cents, which is
+                       -- not physically possible; left as SUM to keep integer cents.
                        COALESCE(SUM(b.cost_cents), 0) AS cost_cents
                      FROM session_buckets b
                      LEFT JOIN organization_memberships m
@@ -509,7 +514,10 @@ fn delta_pct(expected: i64, observed: i64) -> f64 {
     if expected == 0 {
         if observed == 0 { 0.0 } else { 1.0 }
     } else {
-        ((expected - observed).abs() as f64) / (expected as f64)
+        // Issue #22: `(expected - observed).abs()` could overflow/panic on extreme
+        // inputs (and `i64::MIN.abs()` panics). `abs_diff` returns the magnitude as
+        // a u64 with no overflow, which is exactly what the ratio needs.
+        (expected.abs_diff(observed) as f64) / (expected as f64)
     }
 }
 
