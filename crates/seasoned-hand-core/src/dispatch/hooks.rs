@@ -80,6 +80,18 @@ impl InvalidationHook {
         }
     }
 
+    pub fn with_detector(
+        events: Arc<SqliteEventStore>,
+        redis: Option<Arc<RedisPool>>,
+        detector: Arc<InvalidationDetector>,
+    ) -> Self {
+        Self {
+            events,
+            detector,
+            redis,
+        }
+    }
+
     #[cfg(test)]
     pub fn with_capacity_for_test(
         events: Arc<SqliteEventStore>,

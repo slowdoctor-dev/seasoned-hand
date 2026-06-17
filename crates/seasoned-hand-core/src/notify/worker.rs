@@ -86,6 +86,12 @@ pub struct NotifyRequest {
     /// `None`, the worker calls
     /// [`NotifyWorker::resolve_target`] which reads operator-side
     /// config (`config/notify.toml [channel.<name>].default_target`).
+    ///
+    /// Security posture: per-message override URLs are user/request scoped and
+    /// must resolve to publicly routable addresses. Operator-configured channel
+    /// defaults still use the channel's own policy (for webhook, its configured
+    /// allow-list); `WEBHOOK_DELIVERY_ALLOWLIST` does not bypass override
+    /// validation here.
     /// Phase 2 keeps the lookup minimal — see
     /// [`crate::notify::config`] for the per-channel default shape.
     #[serde(default)]

@@ -67,6 +67,7 @@ use seasoned_hand_core::sharing::sop::{SopPermission, SopShareError, SopShareSer
 use seasoned_hand_core::tools::builtin::all_with_task_deliver;
 use seasoned_hand_core::verifier::{
     VerificationStore,
+    invalidation::{DEFAULT_MAX_PATHS, InvalidationDetector},
     routes::{ListQuery as VerifyListQuery, get_verification, list_verifications},
 };
 use serde::{Deserialize, Serialize};
@@ -416,13 +417,15 @@ impl AppState {
             },
         };
 
+        let invalidation_detector = Arc::new(InvalidationDetector::new(DEFAULT_MAX_PATHS));
         let dispatcher = Arc::new(
             ToolDispatcher::new(all_with_task_deliver(task_deliver_deps))
                 .with_hook(narrator.clone())
                 .with_hook(Arc::new(EventEmittingHook::new(events.clone())))
-                .with_hook(Arc::new(InvalidationHook::new(
+                .with_hook(Arc::new(InvalidationHook::with_detector(
                     events.clone(),
                     Some(redis_arc.clone()),
+                    invalidation_detector.clone(),
                 )))
                 .with_hook(Arc::new(PostBrowserActionHook::new(events.clone()))),
         );
@@ -458,6 +461,7 @@ impl AppState {
             redis: redis_arc.clone(),
             breakers: breakers.clone(),
             cancel_tokens: cancel_tokens.clone(),
+            invalidation_detector: Some(invalidation_detector),
         }));
         // Story 2.9: ChatChannel wraps the existing WS as both an
         // IntakeProvider (no-op `run`; the WS server pushes IntakeEvents

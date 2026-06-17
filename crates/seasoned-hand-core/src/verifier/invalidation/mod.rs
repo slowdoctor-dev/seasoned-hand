@@ -113,6 +113,11 @@ impl InvalidationDetector {
     }
 
     #[cfg(test)]
+    pub fn has_session_for_test(&self, session_id: &str) -> bool {
+        self.sessions.contains_key(session_id)
+    }
+
+    #[cfg(test)]
     async fn has_path(&self, session_id: &str, path: &Path) -> bool {
         let Some(entry) = self.sessions.get(session_id) else {
             return false;
