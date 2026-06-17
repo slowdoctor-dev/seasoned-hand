@@ -164,6 +164,8 @@ impl VerifierGate {
                     self.run_sync_extraction(session_id).await;
                     if let Err(e) = self.set_state(session_id, "FINISHED").await {
                         tracing::warn!(%session_id, error = ?e, "verifier gate failed to set FINISHED state");
+                    } else {
+                        self.runner.finalize_session(session_id).await;
                     }
                     if let Err(e) = self
                         .events
@@ -272,6 +274,8 @@ impl VerifierGate {
                     } else if kind == "Stuck" || kind == "ErrorRate" {
                         if let Err(e) = self.set_state(session_id, "ERROR").await {
                             tracing::warn!(%session_id, error = ?e, "verifier gate failed to set ERROR state (breaker fail)");
+                        } else {
+                            self.runner.finalize_session(session_id).await;
                         }
                     } else if (kind == "Cost" || kind == "MaxSteps")
                         && let Err(e) = self.set_state(session_id, "SUSPENDED").await
@@ -503,6 +507,7 @@ mod tests {
     use crate::sandbox::SandboxClient;
     use crate::search::{SearchClient, SearchProvider};
     use crate::tools::register_builtin_tools;
+    use crate::verifier::invalidation::{DEFAULT_MAX_PATHS, InvalidationDetector};
 
     #[derive(Default, Clone)]
     struct OkExtraction;
@@ -533,6 +538,17 @@ mod tests {
     }
 
     async fn fixture() -> (VerifierGate, Arc<SqliteEventStore>, DbPool, String) {
+        let (gate, events, db, session_id, _) = fixture_with_detector().await;
+        (gate, events, db, session_id)
+    }
+
+    async fn fixture_with_detector() -> (
+        VerifierGate,
+        Arc<SqliteEventStore>,
+        DbPool,
+        String,
+        Arc<InvalidationDetector>,
+    ) {
         let db = db::open(":memory:").await.unwrap();
         let session_id = "s1".to_string();
         let sid = session_id.clone();
@@ -549,6 +565,7 @@ mod tests {
         let plan_manager = Arc::new(PlanManager::new(db.clone(), events.clone()));
         let dispatcher = Arc::new(ToolDispatcher::new(register_builtin_tools()));
         let router = Arc::new(SlotRouter::default_for_bifrost());
+        let invalidation_detector = Arc::new(InvalidationDetector::new(DEFAULT_MAX_PATHS));
         let sandbox = Arc::new(
             SandboxClient::new(
                 "ghcr.io/agent-infra/sandbox:1.0.0.152",
@@ -574,10 +591,11 @@ mod tests {
             redis: Arc::new(redis.clone()),
             breakers: Arc::new(BreakerRegistry::new()),
             cancel_tokens: Arc::new(dashmap::DashMap::new()),
+            invalidation_detector: Some(invalidation_detector.clone()),
         }));
 
         let gate = VerifierGate::new(db.clone(), events.clone(), runner);
-        (gate, events, db, session_id)
+        (gate, events, db, session_id, invalidation_detector)
     }
 
     async fn set_tool_calls(db: &DbPool, session_id: &str, count: i64) {
@@ -656,6 +674,29 @@ mod tests {
         assert!(rows.iter().any(
             |e| e.data.get("kind").and_then(serde_json::Value::as_str) == Some("task_complete")
         ));
+    }
+
+    #[tokio::test]
+    async fn terminal_verdict_evicts_invalidation_session_hashes() {
+        let (gate, events, db, session_id, detector) = fixture_with_detector().await;
+        let _ = detector
+            .observe(
+                &session_id,
+                "file_read",
+                std::path::PathBuf::from("/workspace/a.txt"),
+                b"v1",
+            )
+            .await;
+        assert!(detector.has_session_for_test(&session_id));
+
+        insert_verdict_event(&events, &session_id, "TaskComplete", "pass", None).await;
+        let _ = gate.poll_once(0).await.unwrap();
+
+        assert_eq!(state(&db, &session_id).await, "FINISHED");
+        assert!(
+            !detector.has_session_for_test(&session_id),
+            "terminal session cleanup must evict invalidation hashes"
+        );
     }
 
     #[tokio::test]

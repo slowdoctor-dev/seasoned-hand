@@ -108,6 +108,15 @@ impl InvalidationDetector {
         }
     }
 
+    pub fn evict_session(&self, session_id: &str) {
+        self.sessions.remove(session_id);
+    }
+
+    #[cfg(test)]
+    pub fn has_session_for_test(&self, session_id: &str) -> bool {
+        self.sessions.contains_key(session_id)
+    }
+
     #[cfg(test)]
     async fn has_path(&self, session_id: &str, path: &Path) -> bool {
         let Some(entry) = self.sessions.get(session_id) else {
@@ -173,5 +182,19 @@ mod tests {
         assert!(!d.has_path("s1", &p1).await);
         assert!(d.has_path("s1", &p2).await);
         assert!(d.has_path("s1", &p3).await);
+    }
+
+    #[tokio::test]
+    async fn evict_session_drops_all_hashes_for_session() {
+        let d = InvalidationDetector::new(DEFAULT_MAX_PATHS);
+        let p1 = PathBuf::from("/workspace/1.txt");
+        let p2 = PathBuf::from("/workspace/2.txt");
+        let _ = d.observe("s1", "file_read", p1.clone(), b"1").await;
+        let _ = d.observe("s2", "file_read", p2.clone(), b"2").await;
+
+        d.evict_session("s1");
+
+        assert!(!d.has_path("s1", &p1).await);
+        assert!(d.has_path("s2", &p2).await);
     }
 }

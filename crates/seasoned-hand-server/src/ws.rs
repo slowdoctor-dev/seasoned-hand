@@ -771,7 +771,7 @@ pub(crate) async fn handle_task_cancel(state: &AppState, session_id: &str) -> Re
         tracing::warn!(%session_id, %error, "ws: sandbox destroy failed during task_cancel");
     }
     set_session_state(state, session_id, "FINISHED").await?;
-    state.cancel_tokens.remove(session_id);
+    state.runner.finalize_session(session_id).await;
     Ok(())
 }
 

@@ -166,6 +166,7 @@ slots:
         redis: Arc::new(redis.clone()),
         breakers: Arc::new(BreakerRegistry::new()),
         cancel_tokens: cancel_tokens.clone(),
+        invalidation_detector: None,
     });
 
     Harness {
@@ -789,6 +790,7 @@ slots:
         redis: Arc::new(redis),
         breakers: Arc::new(BreakerRegistry::new()),
         cancel_tokens: cancel_tokens.clone(),
+        invalidation_detector: None,
     });
 
     let req = RunRequest {

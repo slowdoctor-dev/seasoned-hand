@@ -25,11 +25,12 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::store::{NewNotificationSent, NotificationsSentStore, NotifyStoreError};
-use crate::channel::{ChannelError, ChannelRegistry, NotifyEvent, NotifyTarget};
+use crate::channel::{ChannelError, ChannelRegistry, NotifyEvent, NotifyTarget, webhook::ssrf};
 use crate::pubsub::RedisPool;
 use crate::time::now_micros;
 
@@ -53,6 +54,11 @@ const DEFAULT_COUNT: usize = 16;
 /// Sleep window between failed XREADGROUP attempts (Redis briefly
 /// unreachable, etc). Keeps the loop responsive to shutdown.
 const READ_ERROR_BACKOFF: Duration = Duration::from_millis(500);
+
+/// Max concurrently processed Redis notify entries per worker process.
+/// Keeps a large stream read from spawning one unbounded Tokio task per
+/// entry while still allowing normal outbound fan-out parallelism.
+const DEFAULT_MAX_IN_FLIGHT: usize = 16;
 
 /// Webhook-only retry delay. Architecture §2.9: "1 retry after 30 s
 /// (transient case); then mark failed". Tests override via
@@ -80,6 +86,12 @@ pub struct NotifyRequest {
     /// `None`, the worker calls
     /// [`NotifyWorker::resolve_target`] which reads operator-side
     /// config (`config/notify.toml [channel.<name>].default_target`).
+    ///
+    /// Security posture: per-message override URLs are user/request scoped and
+    /// must resolve to publicly routable addresses. Operator-configured channel
+    /// defaults still use the channel's own policy (for webhook, its configured
+    /// allow-list); `WEBHOOK_DELIVERY_ALLOWLIST` does not bypass override
+    /// validation here.
     /// Phase 2 keeps the lookup minimal — see
     /// [`crate::notify::config`] for the per-channel default shape.
     #[serde(default)]
@@ -254,7 +266,7 @@ impl NotifyWorker {
                 "channel_not_registered: {channel_name}"
             ))));
         };
-        let target = self.resolve_target(channel_name, req)?;
+        let target = self.resolve_target(channel_name, req).await?;
         let event = NotifyEvent {
             trigger_kind: req.trigger_kind.clone(),
             task_id: req.task_id.clone(),
@@ -293,12 +305,13 @@ impl NotifyWorker {
         Ok(())
     }
 
-    fn resolve_target(
+    async fn resolve_target(
         &self,
         channel: &str,
         req: &NotifyRequest,
     ) -> Result<NotifyTarget, WorkerError> {
         if let Some(t) = req.target_override.clone() {
+            validate_target_override(&t).await?;
             return Ok(t);
         }
         self.inner.resolver.resolve(channel).ok_or_else(|| {
@@ -354,6 +367,7 @@ impl NotifyWorker {
 
         let mut group_ready = false;
         let mut in_flight: Vec<JoinHandle<()>> = Vec::new();
+        let permits = Arc::new(Semaphore::new(DEFAULT_MAX_IN_FLIGHT));
 
         while !shutdown.is_cancelled() {
             if !group_ready {
@@ -406,10 +420,19 @@ impl NotifyWorker {
 
             in_flight.retain(|h| !h.is_finished());
             for (msg_id, payload) in entries {
+                let permit = tokio::select! {
+                    _ = shutdown.cancelled() => break,
+                    permit = permits.clone().acquire_owned() => permit,
+                };
+                let Ok(permit) = permit else {
+                    tracing::warn!("notify worker: semaphore closed");
+                    break;
+                };
                 let worker = self.clone();
                 let redis_c = redis.clone();
                 let cfg_c = cfg.clone();
                 in_flight.push(tokio::spawn(async move {
+                    let _permit = permit;
                     process_entry(worker, redis_c, cfg_c, msg_id, payload).await;
                 }));
             }
@@ -482,6 +505,42 @@ fn is_webhook_5xx(channel: &str, error: &ChannelError) -> bool {
         return false;
     }
     matches!(error, ChannelError::RemoteRejected { status, .. } if (500..600).contains(status))
+}
+
+async fn validate_target_override(target: &NotifyTarget) -> Result<(), WorkerError> {
+    let target_ref = target.target_ref.trim();
+    let maybe_url = target_ref
+        .strip_prefix("url:")
+        .map(str::trim)
+        .unwrap_or(target_ref);
+    if !(maybe_url.starts_with("http://") || maybe_url.starts_with("https://")) {
+        return Ok(());
+    }
+    let url = reqwest::Url::parse(maybe_url).map_err(|error| {
+        WorkerError::Channel(ChannelError::RemoteRejected {
+            status: 400,
+            message: format!("invalid url: {error}"),
+        })
+    })?;
+    ssrf::assert_public_address(&url, &[])
+        .await
+        .map_err(map_ssrf_error)?;
+    Ok(())
+}
+
+fn map_ssrf_error(error: ssrf::AssertError) -> WorkerError {
+    let channel = match error {
+        ssrf::AssertError::Rejected(_) => ChannelError::RemoteRejected {
+            status: 400,
+            message: "private_address_rejected".into(),
+        },
+        ssrf::AssertError::HostMissing => ChannelError::RemoteRejected {
+            status: 400,
+            message: "host_missing".into(),
+        },
+        ssrf::AssertError::Resolve(message) => ChannelError::Transport(message),
+    };
+    WorkerError::Channel(channel)
 }
 
 #[cfg(test)]
@@ -612,5 +671,43 @@ mod tests {
             0,
             "no dispatch attempted on unknown channel"
         );
+    }
+
+    #[tokio::test]
+    async fn target_override_rejects_private_url_before_sink_dispatch() {
+        let sink = Arc::new(StubNotifySink::new("webhook", true));
+        let worker = worker_with_stubs(sink.clone(), "webhook").await;
+        let mut req = request_for("webhook");
+        req.target_override = Some(NotifyTarget {
+            channel: "webhook".into(),
+            target_ref: "url:http://127.0.0.1/internal".into(),
+            metadata: json!({}),
+        });
+
+        let ok = worker.handle_request(&req).await;
+
+        assert_eq!(ok, 0);
+        assert_eq!(
+            sink.call_count(),
+            0,
+            "SSRF-rejected target_override must not reach the sink"
+        );
+    }
+
+    #[tokio::test]
+    async fn target_override_allows_non_url_targets_for_non_webhook_channels() {
+        let sink = Arc::new(StubNotifySink::new("ntfy", true));
+        let worker = worker_with_stubs(sink.clone(), "ntfy").await;
+        let mut req = request_for("ntfy");
+        req.target_override = Some(NotifyTarget {
+            channel: "ntfy".into(),
+            target_ref: "seasoned-hand-alerts".into(),
+            metadata: json!({}),
+        });
+
+        let ok = worker.handle_request(&req).await;
+
+        assert_eq!(ok, 1);
+        assert_eq!(sink.call_count(), 1);
     }
 }

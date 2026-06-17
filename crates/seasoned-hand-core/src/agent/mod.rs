@@ -24,6 +24,7 @@ use crate::router::{SlotName, SlotRouter};
 use crate::sandbox::SandboxClient;
 use crate::search::SearchClient;
 use crate::tools::ToolContext;
+use crate::verifier::invalidation::InvalidationDetector;
 
 pub mod breaker;
 pub mod diversity;
@@ -105,6 +106,7 @@ pub struct AgentRunner {
     diversity: Arc<DiversityInjector>,
     run_config: Arc<tokio::sync::Mutex<HashMap<String, RunRequest>>>,
     cancel_tokens: Arc<DashMap<String, CancellationToken>>,
+    invalidation_detector: Option<Arc<InvalidationDetector>>,
 }
 
 /// Builder bag for [`AgentRunner::new`]. Lets `AppState` (production)
@@ -126,6 +128,7 @@ pub struct AgentRunnerDeps {
     pub redis: Arc<RedisPool>,
     pub breakers: Arc<BreakerRegistry>,
     pub cancel_tokens: Arc<DashMap<String, CancellationToken>>,
+    pub invalidation_detector: Option<Arc<InvalidationDetector>>,
 }
 
 impl AgentRunner {
@@ -148,6 +151,7 @@ impl AgentRunner {
             diversity: Arc::new(DiversityInjector::new()),
             run_config: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             cancel_tokens: deps.cancel_tokens,
+            invalidation_detector: deps.invalidation_detector,
         }
     }
 
@@ -313,7 +317,7 @@ impl AgentRunner {
                     .await?;
                     if status_errors >= 4 {
                         self.set_session_state(&req.session_id, "ERROR").await?;
-                        self.finalize(&req.session_id).await;
+                        self.finalize_session(&req.session_id).await;
                         return Err(AgentError::Llm(error));
                     }
                     continue;
@@ -365,7 +369,7 @@ impl AgentRunner {
                     if let Some(kind) = breaker.note_stuck_and_check(count).await {
                         self.emit_breaker_trigger(&req.session_id, kind).await?;
                     }
-                    self.finalize(&req.session_id).await;
+                    self.finalize_session(&req.session_id).await;
                     return Ok(RunResult {
                         session_id: req.session_id,
                         completed: false,
@@ -464,7 +468,7 @@ impl AgentRunner {
                 if let Some(kind) = breaker.note_cost_and_check(current_cost as u32, cap).await {
                     self.emit_breaker_trigger(&req.session_id, kind).await?;
                 }
-                self.finalize(&req.session_id).await;
+                self.finalize_session(&req.session_id).await;
                 return Ok(RunResult {
                     session_id: req.session_id,
                     completed: false,
@@ -474,7 +478,7 @@ impl AgentRunner {
             }
             if let Some(kind) = breaker.note_observation_and_check(output.ok).await {
                 self.emit_breaker_trigger(&req.session_id, kind).await?;
-                self.finalize(&req.session_id).await;
+                self.finalize_session(&req.session_id).await;
                 return Ok(RunResult {
                     session_id: req.session_id,
                     completed: false,
@@ -495,7 +499,7 @@ impl AgentRunner {
 
             if call.function.name == "idle" && output.ok {
                 self.set_session_state(&req.session_id, "FINISHED").await?;
-                self.finalize(&req.session_id).await;
+                self.finalize_session(&req.session_id).await;
                 return Ok(RunResult {
                     session_id: req.session_id,
                     completed: true,
@@ -530,7 +534,7 @@ impl AgentRunner {
             }
         }
         // Terminal exit (max steps reached, or stopped early on no-tool-call).
-        self.finalize(&req.session_id).await;
+        self.finalize_session(&req.session_id).await;
         Ok(RunResult {
             session_id: req.session_id,
             completed: false,
@@ -663,9 +667,12 @@ impl AgentRunner {
     /// over the process lifetime. Deliberately NOT called on resumable exits
     /// (SUSPENDED / VERIFYING): those must keep their entries so `resume_session`
     /// can re-establish the run.
-    async fn finalize(&self, session_id: &str) {
+    pub async fn finalize_session(&self, session_id: &str) {
         self.cancel_tokens.remove(session_id);
         self.run_config.lock().await.remove(session_id);
+        if let Some(detector) = &self.invalidation_detector {
+            detector.evict_session(session_id);
+        }
     }
 
     async fn mark_task_complete(&self, session_id: &str, call_id: &str) -> Result<(), AgentError> {
@@ -696,7 +703,7 @@ impl AgentRunner {
             // terminal ERROR and clean up rather than warn and strand it.
             tracing::error!(%error, %session_id, "verify_request enqueue failed; failing session to ERROR");
             self.set_session_state(session_id, "ERROR").await?;
-            self.finalize(session_id).await;
+            self.finalize_session(session_id).await;
             return Err(AgentError::Internal(format!(
                 "failed to enqueue verify_request: {error}"
             )));
