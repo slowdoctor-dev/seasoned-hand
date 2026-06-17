@@ -18,7 +18,8 @@
 
 pub mod ledger;
 pub use ledger::{
-    AuditAction, AuditLogger, AuditQuery, AuditQueryError, AuditRecord, AuditRow, AuditWriteError,
+    AuditAction, AuditChainError, AuditChainRow, AuditLogger, AuditQuery, AuditQueryError,
+    AuditRecord, AuditRow, AuditWriteError,
 };
 
 #[cfg(test)]

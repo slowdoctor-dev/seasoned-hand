@@ -12,7 +12,7 @@ use rusqlite::params;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::auth::Role;
+use crate::auth::{Action, AuthContext, AuthError, AuthResource, Role, authorize};
 use crate::db::DbPool;
 use crate::time::now_micros;
 
@@ -26,6 +26,10 @@ pub enum OrgStoreError {
     InvalidRole(String),
     #[error("invalid status: {0}")]
     InvalidStatus(String),
+    // Issue #22: store-layer authorization failures (privilege escalation /
+    // cross-tenant). Lifts `AuthError` so handlers can map it to 403/404.
+    #[error("{0}")]
+    Auth(#[from] AuthError),
 }
 
 fn role_to_db(role: Role) -> &'static str {
@@ -102,15 +106,19 @@ impl OrganizationStore {
         Ok(id)
     }
 
-    pub async fn get(&self, id: &str) -> Result<Organization, OrgStoreError> {
+    /// Issue #22: tenant-scoped by-id fetch. The `tenant_id` (caller's
+    /// `AuthContext.tenant_id`) is required so a PK alone can't read another
+    /// tenant's org (IDOR); a cross-tenant id reads as `NotFound`.
+    pub async fn get(&self, id: &str, tenant_id: &str) -> Result<Organization, OrgStoreError> {
         let id = id.to_string();
+        let tenant_id = tenant_id.to_string();
         let id_for_err = id.clone();
         self.pool
             .with_conn(move |conn| {
                 conn.query_row(
                     "SELECT id, tenant_id, slug, display_name, status, created_at, updated_at
-                     FROM organizations WHERE id = ?",
-                    params![id],
+                     FROM organizations WHERE id = ? AND tenant_id = ?",
+                    params![id, tenant_id],
                     |r| {
                         Ok(Organization {
                             id: r.get(0)?,
@@ -216,15 +224,17 @@ impl UserStore {
         Ok(id)
     }
 
-    pub async fn get(&self, id: &str) -> Result<User, OrgStoreError> {
+    /// Issue #22: tenant-scoped by-id fetch (see [`OrganizationStore::get`]).
+    pub async fn get(&self, id: &str, tenant_id: &str) -> Result<User, OrgStoreError> {
         let id = id.to_string();
+        let tenant_id = tenant_id.to_string();
         let id_for_err = id.clone();
         self.pool
             .with_conn(move |conn| {
                 conn.query_row(
                     "SELECT id, tenant_id, email, display_name, status, created_at, updated_at
-                     FROM users WHERE id = ?",
-                    params![id],
+                     FROM users WHERE id = ? AND tenant_id = ?",
+                    params![id, tenant_id],
                     |r| {
                         Ok(User {
                             id: r.get(0)?,
@@ -245,14 +255,20 @@ impl UserStore {
             .await
     }
 
-    pub async fn soft_deactivate(&self, id: &str) -> Result<(), OrgStoreError> {
+    /// Issue #22: deactivating a user is a privileged, cross-tenant-sensitive
+    /// mutation. Require `MembershipManage` (admin-only) and scope the UPDATE to
+    /// the caller's tenant so a PK alone can't deactivate a foreign tenant's user.
+    pub async fn soft_deactivate(&self, id: &str, auth: &AuthContext) -> Result<(), OrgStoreError> {
+        authorize(Action::MembershipManage, &AuthResource::default(), auth)?;
         let id = id.to_string();
+        let tenant_id = auth.tenant_id.clone();
         let now = now_micros();
         self.pool
             .with_conn(move |conn| {
                 let n = conn.execute(
-                    "UPDATE users SET status = 'deactivated', updated_at = ? WHERE id = ?",
-                    params![now, id.clone()],
+                    "UPDATE users SET status = 'deactivated', updated_at = ? \
+                     WHERE id = ? AND tenant_id = ?",
+                    params![now, id.clone(), tenant_id],
                 )?;
                 if n == 0 {
                     Err(OrgStoreError::NotFound(id))
@@ -382,12 +398,19 @@ impl MembershipStore {
             .await
     }
 
+    /// Issue #22: `update_role` is a direct privilege-escalation primitive.
+    /// Require `MembershipManage` (admin-only) and scope the UPDATE to the
+    /// caller's tenant, so a non-admin can't promote anyone and an admin can't
+    /// reach across tenants by membership id alone.
     pub async fn update_role(
         &self,
         membership_id: &str,
         new_role: Role,
+        auth: &AuthContext,
     ) -> Result<(), OrgStoreError> {
+        authorize(Action::MembershipManage, &AuthResource::default(), auth)?;
         let membership_id = membership_id.to_string();
+        let tenant_id = auth.tenant_id.clone();
         let now = now_micros();
         let role_str = role_to_db(new_role);
         self.pool
@@ -395,8 +418,8 @@ impl MembershipStore {
                 let n = conn.execute(
                     "UPDATE organization_memberships
                      SET role = ?, updated_at = ?
-                     WHERE id = ?",
-                    params![role_str, now, membership_id.clone()],
+                     WHERE id = ? AND tenant_id = ?",
+                    params![role_str, now, membership_id.clone(), tenant_id],
                 )?;
                 if n == 0 {
                     Err(OrgStoreError::NotFound(membership_id))
@@ -468,20 +491,25 @@ impl ProjectRoleOverrideStore {
         Ok(id)
     }
 
+    /// Issue #22: tenant-scoped lookup. Without the `tenant_id` predicate a
+    /// `(user_id, project_id)` pair could read a role override from another
+    /// tenant's project. `tenant_id` is the caller's `AuthContext.tenant_id`.
     pub async fn for_user_project(
         &self,
         user_id: &str,
         project_id: &str,
+        tenant_id: &str,
     ) -> Result<Option<Role>, OrgStoreError> {
         let user_id = user_id.to_string();
         let project_id = project_id.to_string();
+        let tenant_id = tenant_id.to_string();
         let row: Option<String> = self
             .pool
             .with_conn(move |conn| {
                 conn.query_row(
                     "SELECT role FROM project_role_overrides
-                     WHERE user_id = ? AND project_id = ?",
-                    params![user_id, project_id],
+                     WHERE user_id = ? AND project_id = ? AND tenant_id = ?",
+                    params![user_id, project_id, tenant_id],
                     |r| r.get::<_, String>(0),
                 )
                 .map(Some)
