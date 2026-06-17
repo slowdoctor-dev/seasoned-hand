@@ -53,7 +53,7 @@ SELECT id, tenant_id, decision_id, project_id, queue_reason, severity, state,
        reviewer, reviewer_note, resolved_at, created_at
 FROM curator_review_queue_old;
 DROP TABLE curator_review_queue_old;
-CREATE INDEX idx_curator_review_queue_state ON curator_review_queue(state, created_at);
+CREATE INDEX idx_curator_review_pending ON curator_review_queue(project_id, state, created_at DESC);
 
 PRAGMA foreign_key_check;
 PRAGMA foreign_keys=ON;

@@ -447,26 +447,11 @@ impl AgentRunner {
             let current_cost = self
                 .record_step_cost(&req.session_id, &mut cost_baseline)
                 .await;
-            if let Some(kind) = breaker.note_observation_and_check(output.ok).await {
-                self.emit_breaker_trigger(&req.session_id, kind).await?;
-                self.finalize(&req.session_id).await;
-                return Ok(RunResult {
-                    session_id: req.session_id,
-                    completed: false,
-                    last_message,
-                    steps: step + 1,
-                });
-            }
-            let final_idle = call.function.name == "idle";
-            if output.ok && (final_idle || final_notify) && verifier_active {
-                self.mark_task_complete(&req.session_id, &call.id).await?;
-                return Ok(RunResult {
-                    session_id: req.session_id,
-                    completed: false,
-                    last_message,
-                    steps: step + 1,
-                });
-            }
+            // Issue #22 (review): enforce the cost cap BEFORE the breaker and
+            // verifier-completion terminal returns. A budget violation is a hard
+            // stop — a final idle/notify step that tips over the cap must still emit
+            // `cost_cap`, note the breaker, and finalize, rather than slipping
+            // through to verification unflagged.
             if let Some(cap) = req.cost_cap_cents
                 && current_cost >= i64::from(cap)
             {
@@ -480,6 +465,26 @@ impl AgentRunner {
                     self.emit_breaker_trigger(&req.session_id, kind).await?;
                 }
                 self.finalize(&req.session_id).await;
+                return Ok(RunResult {
+                    session_id: req.session_id,
+                    completed: false,
+                    last_message,
+                    steps: step + 1,
+                });
+            }
+            if let Some(kind) = breaker.note_observation_and_check(output.ok).await {
+                self.emit_breaker_trigger(&req.session_id, kind).await?;
+                self.finalize(&req.session_id).await;
+                return Ok(RunResult {
+                    session_id: req.session_id,
+                    completed: false,
+                    last_message,
+                    steps: step + 1,
+                });
+            }
+            let final_idle = call.function.name == "idle";
+            if output.ok && (final_idle || final_notify) && verifier_active {
+                self.mark_task_complete(&req.session_id, &call.id).await?;
                 return Ok(RunResult {
                     session_id: req.session_id,
                     completed: false,
