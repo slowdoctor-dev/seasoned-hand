@@ -1623,7 +1623,10 @@ fn tool_err(kind: &str, output: Value) -> ToolOutput {
 /// strings; this guard stops a tampered/corrupted row from injecting
 /// shell metacharacters via `git -C /workspace revert --no-commit {sha}`.
 fn is_valid_git_sha(sha: &str) -> bool {
-    matches!(sha.len(), 40 | 64)
+    // Issue #23: accept abbreviated SHAs (git `--short`), not just full SHA-1 (40)
+    // / SHA-256 (64). 7 is git's common default abbreviation length; cap at 64.
+    // The hex + lowercase guard still blocks shell-metacharacter injection.
+    (7..=64).contains(&sha.len())
         && sha
             .chars()
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
@@ -1672,4 +1675,27 @@ fn parse_phases(args: &Value) -> Result<Vec<Phase>, ToolError> {
         });
     }
     Ok(phases)
+}
+
+#[cfg(test)]
+mod git_sha_tests {
+    use super::is_valid_git_sha;
+
+    #[test]
+    fn accepts_full_and_abbreviated_lowercase_hex() {
+        assert!(is_valid_git_sha(&"a".repeat(40))); // SHA-1
+        assert!(is_valid_git_sha(&"a".repeat(64))); // SHA-256
+        assert!(is_valid_git_sha("abc1234")); // 7-char abbreviation (issue #23)
+        assert!(is_valid_git_sha("deadbeef"));
+    }
+
+    #[test]
+    fn rejects_too_short_uppercase_and_non_hex() {
+        assert!(!is_valid_git_sha("abc123")); // 6 chars — below the 7 floor
+        assert!(!is_valid_git_sha("")); // empty
+        assert!(!is_valid_git_sha("ABC1234")); // uppercase (metachar-injection guard)
+        assert!(!is_valid_git_sha("abc123g")); // non-hex
+        assert!(!is_valid_git_sha(&"a".repeat(65))); // over 64
+        assert!(!is_valid_git_sha("abc 123; rm -rf")); // shell metacharacters
+    }
 }

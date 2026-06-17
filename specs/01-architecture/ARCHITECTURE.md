@@ -26,6 +26,14 @@
 > `tenant_id` from nullable to NOT NULL with deterministic backfill and validation. §2.1
 > notes Phase 5 multi-user/audit event kinds.
 >
+> **v1.4.1 migration-ledger note**: the explicit V001–V013 version pinning above
+> continues. **V014–V020** perform the Phase 5 `tenant_id` nullable→NOT NULL flip
+> across the Phase 2–4 mutable tables (table rebuilds + backfill) plus the
+> user-invitation surface (V020). **V021–V026** carry post-Phase-5 hardening:
+> V021 (task parent-FK + indexes), V023 (session-search FTS tokenizer), V024 (SOP
+> tenant scope), V025 (curator decision_type split), V026 (audit_log hash-chain +
+> append-only triggers) — see CHANGELOG / the `spec-check.sh` regression guards.
+>
 > **v1.5 amendments (ADR-016, 2026-06-05)**: §1.1 Frontend layer changed from
 > Next.js + React + TypeScript to a **unified-Rust Dioxus** frontend
 > (`crates/seasoned-hand-ui`) targeting Web (WASM) / Desktop / Mobile from one
@@ -57,7 +65,7 @@ After direct validation with Manus, the OS analogy maps as follows:
 |---|---|
 | Kernel | LLM (reasoning, via 12-slot router) |
 | Scheduler | Agent runtime (Rust + Rig + Tokio) |
-| Syscalls | 32+ tools |
+| Syscalls | 38 tools |
 | Drivers | Tool backends (sandbox, browser, search, deploy) |
 | Hardware | Sandbox (AIO Sandbox Docker per session) |
 | **Process** | One task (session) |
@@ -110,7 +118,7 @@ tracks "where we are in the task" and prevents goal drift. See ADR-010.
 │  └──────────────────────────────────────────────┘    │
 │  ┌──────────────────────────────────────────────┐    │
 │  │ Tool Dispatcher                               │    │
-│  │ 32+ tools → 5 backends (sandbox, frontend,    │    │
+│  │ 38 tools → 5 backends (sandbox, frontend,     │    │
 │  │ search, deploy, internal)                     │    │
 │  └──────────────────────────────────────────────┘    │
 │  ┌──────────────────────────────────────────────┐    │

@@ -62,9 +62,10 @@ Owner: BMAD Analyst pass
   anywhere, not only on auth flags.
 
 - `NFR-5.8` **Zero-downtime migration posture**  
-  V013 tenant-tightening migration (nullable -> NOT NULL defaults + org/user/RBAC surfaces) must be
-  forward-appliable on a live Phase 4 database with deterministic backfill and no destructive data
-  loss.  
+  The Phase 5 tenant tightening (V013 adds the org/user/RBAC/audit surfaces and the
+  nullable `tenant_id` columns; V014–V020 flip those columns to `NOT NULL` with
+  deterministic backfill) must be forward-appliable on a live Phase 4 database with
+  no destructive data loss.  
   Why this matters: the tenant flip is the phase headline and cannot require reset/reseed.
 
 ## 3. Functional requirements
