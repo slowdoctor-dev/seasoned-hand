@@ -961,6 +961,22 @@ async fn require_project_tenant(
     Ok(())
 }
 
+/// Canonical "session `s` belongs to the bound tenant" predicate (issue #22
+/// batch B review). **Fail-closed**: every present *direct* parent (project via
+/// `s.project_id`, task via `s.task_id`) must match the tenant, and orphan
+/// sessions with no parent are excluded. A row whose project and task resolve to
+/// *different* tenants therefore belongs to **neither** — it is corrupt and
+/// invisible to all, instead of leaking to whichever parent a tenant happens to
+/// share (a plain `COALESCE(p, t)` trusted one parent and ignored a conflicting
+/// other). Requires `LEFT JOIN projects p ON p.id = s.project_id` and
+/// `LEFT JOIN tasks t ON t.id = s.task_id`, and binds the tenant parameter
+/// **twice** (in this clause's order). FK enforcement means a non-null
+/// `project_id`/`task_id` with a NULL joined `tenant_id` can only be a dangling
+/// reference, which this clause also rejects.
+const SESSION_TENANT_PREDICATE: &str = "(s.project_id IS NULL OR p.tenant_id = ?) \
+     AND (s.task_id IS NULL OR t.tenant_id = ?) \
+     AND (s.project_id IS NOT NULL OR s.task_id IS NOT NULL)";
+
 async fn require_session_tenant(
     state: &AppState,
     session_id: &str,
@@ -972,13 +988,14 @@ async fn require_session_tenant(
         .db
         .with_conn(move |conn| {
             conn.query_row::<i64, _, _>(
-                "SELECT 1
-                   FROM sessions s
-                   LEFT JOIN projects p ON p.id = s.project_id
-                   LEFT JOIN tasks t ON t.id = s.task_id
-                  WHERE s.id = ?
-                    AND COALESCE(p.tenant_id, t.tenant_id) = ?",
-                rusqlite::params![sid, tenant],
+                &format!(
+                    "SELECT 1
+                       FROM sessions s
+                       LEFT JOIN projects p ON p.id = s.project_id
+                       LEFT JOIN tasks t ON t.id = s.task_id
+                      WHERE s.id = ? AND {SESSION_TENANT_PREDICATE}"
+                ),
+                rusqlite::params![sid, tenant, tenant],
                 |row| row.get(0),
             )
             .is_ok()
@@ -1001,14 +1018,15 @@ async fn require_verification_tenant(
         .db
         .with_conn(move |conn| {
             conn.query_row::<i64, _, _>(
-                "SELECT 1
-                   FROM verifications v
-                   JOIN sessions s ON s.id = v.session_id
-              LEFT JOIN projects p ON p.id = s.project_id
-              LEFT JOIN tasks t ON t.id = s.task_id
-                  WHERE v.id = ?
-                    AND COALESCE(p.tenant_id, t.tenant_id) = ?",
-                rusqlite::params![verification_id, tenant_id],
+                &format!(
+                    "SELECT 1
+                       FROM verifications v
+                       JOIN sessions s ON s.id = v.session_id
+                  LEFT JOIN projects p ON p.id = s.project_id
+                  LEFT JOIN tasks t ON t.id = s.task_id
+                      WHERE v.id = ? AND {SESSION_TENANT_PREDICATE}"
+                ),
+                rusqlite::params![verification_id, tenant_id, tenant_id],
                 |row| row.get(0),
             )
             .is_ok()
@@ -1051,27 +1069,13 @@ async fn list_events(
         limit: params.limit,
     };
 
-    let session_exists = state
-        .db
-        .with_conn({
-            let session_id = session_id.clone();
-            let tenant_id = auth_ctx.tenant_id.clone();
-            move |conn| {
-                conn.query_row::<i64, _, _>(
-                    "SELECT 1
-                       FROM sessions s
-                       JOIN projects p ON p.id = s.project_id
-                      WHERE s.id = ? AND p.tenant_id = ?",
-                    rusqlite::params![session_id, tenant_id],
-                    |row| row.get(0),
-                )
-                .is_ok()
-            }
-        })
-        .await;
-    if !session_exists {
-        return Err(api_err(StatusCode::NOT_FOUND, "session_not_found".into()));
-    }
+    // Issue #22: route through the canonical tenant guard instead of an inline
+    // `JOIN projects ... p.tenant_id = ?`. The inner join excluded chat-spawned
+    // sessions (project_id NULL, tenancy from task_id); `require_session_tenant`
+    // applies the shared fail-closed `SESSION_TENANT_PREDICATE`, so the legitimate
+    // owner of a task-spawned session no longer gets a spurious 404 (and a
+    // mismatched-parent session stays invisible to every tenant).
+    require_session_tenant(&state, &session_id, &auth_ctx).await?;
 
     match state.events.query(&session_id, filter).await {
         Ok(events) => Ok(Json(events)),
@@ -1197,15 +1201,22 @@ async fn list_sessions(
     let sessions = state
         .db
         .with_conn(move |conn| -> rusqlite::Result<Vec<SessionSummary>> {
-            let mut stmt = conn.prepare(
-                "SELECT id, created_at, updated_at, state, title, cost_cents, tool_calls \
-                 FROM sessions
-                 WHERE project_id IN (
-                    SELECT id FROM tasks WHERE tenant_id = ?
-                 )
-                 ORDER BY updated_at DESC LIMIT ?",
-            )?;
-            let rows = stmt.query_map(rusqlite::params![tenant_id, limit], |row| {
+            // Issue #22: the previous filter matched `sessions.project_id IN
+            // (SELECT id FROM tasks ...)` — overloading a project id against task
+            // ids, so it returned the wrong set (and dropped chat-spawned sessions
+            // whose tenancy comes from `task_id`). Use the canonical fail-closed
+            // tenancy predicate shared with `require_session_tenant` (issue #22
+            // review): every present parent must match, mismatched/orphan rows are
+            // excluded. Binds the tenant TWICE (per `SESSION_TENANT_PREDICATE`).
+            let mut stmt = conn.prepare(&format!(
+                "SELECT s.id, s.created_at, s.updated_at, s.state, s.title, s.cost_cents, s.tool_calls \
+                 FROM sessions s \
+                 LEFT JOIN projects p ON p.id = s.project_id \
+                 LEFT JOIN tasks t ON t.id = s.task_id \
+                 WHERE {SESSION_TENANT_PREDICATE} \
+                 ORDER BY s.updated_at DESC LIMIT ?"
+            ))?;
+            let rows = stmt.query_map(rusqlite::params![tenant_id, tenant_id, limit], |row| {
                 let state_str: String = row.get(3)?;
                 Ok(SessionSummary {
                     id: row.get(0)?,

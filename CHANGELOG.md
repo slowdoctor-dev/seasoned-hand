@@ -116,6 +116,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     string literal and inject script.
 
 ### Fixed
+- **Tenant-isolation correctness — issue #22 batch B:**
+  - **`list_events` now routes through the canonical `require_session_tenant`
+    guard** (`server/src/lib.rs`) instead of an inline `JOIN projects … p.tenant_id`.
+    The old inner join excluded chat-spawned sessions (project_id NULL, tenancy
+    from `task_id`), so their legitimate owner got a spurious 404.
+  - **`list_sessions` tenant filter fixed.** It previously matched
+    `sessions.project_id IN (SELECT id FROM tasks …)` — overloading a project id
+    against task ids, returning the wrong set and dropping task-spawned sessions.
+  - **Fail-closed session-tenancy predicate** (review hardening): the shared
+    `SESSION_TENANT_PREDICATE` now requires *every* present direct parent (project
+    via `project_id`, task via `task_id`) to match the tenant and excludes orphans,
+    so a corrupt row whose project and task resolve to *different* tenants belongs
+    to **neither** — closing a `COALESCE(p, t)` vs task-first-projection disagreement
+    that could have let one tenant read a mismatched session's raw events. Applied
+    uniformly to `require_session_tenant`, `list_sessions`, and
+    `require_verification_tenant`.
+  - **Added a cross-tenant regression test for the redacted feed**
+    (`GET /v1/events/:session_id`): a tenant-A caller reads none of a tenant-B
+    session's rows; the tenant-B caller sees its own. Plus task-spawned
+    reachability + isolation tests for `list_events`/`list_sessions`.
+  - **Documented the accepted residual risk** that `events` has no `tenant_id`
+    column (tenancy derived via the session→task→project chain, sentinel fallback);
+    `tenant_event_view.tenant_id` is materialized at write time so reads are stable
+    (`events/visibility.rs`).
 - **Medium-severity correctness — issue #22 batch A:**
   - **Cost client now has a 15s HTTP timeout** (`cost/mod.rs`) — a hung Bifrost
     can no longer stall cost snapshots (and the cost-cap polling that depends on
