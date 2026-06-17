@@ -1,7 +1,9 @@
 //! Sender allow-list for [`super::EmailChannel`].
 //!
 //! `INTAKE_EMAIL_ALLOWED_SENDERS` env is a comma-separated list of
-//! regex patterns; each is anchored with `(?i)\A...\z` so callers don't
+//! sender patterns. Entries are treated as literal addresses by
+//! default; prefix an entry with `re:` to opt into a raw regex. Each
+//! compiled pattern is anchored with `(?i)\A...\z` so callers don't
 //! have to remember to do it themselves. An empty allow-list rejects
 //! every sender (default-deny per architecture §9 / phase-2/DEBT.md #4).
 //!
@@ -28,10 +30,15 @@ impl AllowList {
             if entry.is_empty() {
                 continue;
             }
-            // Anchor + case-insensitive so `me@example.com` literally
-            // matches the whole address. Operators wanting partial /
-            // wildcard matches use `.*` explicitly inside the entry.
-            let anchored = format!("(?i)\\A{entry}\\z");
+            let pattern = if let Some(raw) = entry.strip_prefix("re:") {
+                raw.to_string()
+            } else {
+                regex::escape(entry)
+            };
+            // Anchor + case-insensitive so a literal `me@example.com`
+            // matches the whole address. Operators wanting regex
+            // semantics opt in explicitly with `re:`.
+            let anchored = format!("(?i)\\A{pattern}\\z");
             let re = Regex::new(&anchored).map_err(|err| {
                 ChannelError::Internal(format!(
                     "email: invalid allow-list pattern {entry:?}: {err}"
@@ -67,18 +74,18 @@ mod tests {
 
     #[test]
     fn literal_address_matches_case_insensitively() {
-        let al = AllowList::parse("me@example.com").unwrap();
-        assert!(al.allows("me@example.com"));
-        assert!(al.allows("ME@Example.COM"));
+        let al = AllowList::parse("me.last+tag@example.com").unwrap();
+        assert!(al.allows("me.last+tag@example.com"));
+        assert!(al.allows("ME.LAST+TAG@Example.COM"));
         assert!(!al.allows("other@example.com"));
         // Substring must NOT match (anchored).
-        assert!(!al.allows("not-me@example.com"));
-        assert!(!al.allows("me@example.com.evil.test"));
+        assert!(!al.allows("not-me.last+tag@example.com"));
+        assert!(!al.allows("me.last+tag@example.com.evil.test"));
     }
 
     #[test]
-    fn wildcard_pattern_works() {
-        let al = AllowList::parse(r".*@example\.com").unwrap();
+    fn regex_pattern_works_with_prefix() {
+        let al = AllowList::parse(r"re:.*@example\.com").unwrap();
         assert!(al.allows("a@example.com"));
         assert!(al.allows("b@example.com"));
         assert!(!al.allows("a@other.com"));
@@ -86,7 +93,7 @@ mod tests {
 
     #[test]
     fn invalid_regex_is_rejected() {
-        let err = AllowList::parse("[unclosed").expect_err("must reject");
+        let err = AllowList::parse("re:[unclosed").expect_err("must reject");
         match err {
             ChannelError::Internal(msg) => assert!(msg.contains("invalid allow-list pattern")),
             other => panic!("unexpected variant: {other:?}"),

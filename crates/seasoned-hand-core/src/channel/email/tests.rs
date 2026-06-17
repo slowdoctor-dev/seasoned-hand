@@ -113,6 +113,28 @@ fn email_untrusted_header_tokens_are_sanitized() {
 }
 
 #[tokio::test]
+async fn email_parse_error_does_not_mark_seen() {
+    let mailbox = Arc::new(MockMailbox::new());
+    mailbox
+        .enqueue(RawMessage {
+            uid: 13,
+            bytes: vec![b'\r'],
+        })
+        .await;
+    let transport = Arc::new(RecordingTransport::new());
+    let channel = channel_with(mailbox.clone(), transport, allow_operator());
+
+    let (tx, mut rx) = mpsc::channel::<IntakeEvent>(8);
+    let emitted = channel.poll_once(&tx).await.expect("poll ok");
+    assert_eq!(emitted, 0);
+    assert!(rx.try_recv().is_err(), "malformed mail must not emit");
+    assert!(
+        mailbox.seen_snapshot().await.is_empty(),
+        "parse errors must remain unseen for operator inspection"
+    );
+}
+
+#[tokio::test]
 async fn email_imap_intake_creates_event_from_test_message() {
     let mailbox = Arc::new(MockMailbox::new());
     mailbox

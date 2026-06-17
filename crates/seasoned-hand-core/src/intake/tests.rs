@@ -74,13 +74,11 @@ async fn intake_event_unique_channel_intake_id() {
     store.insert(&evt).await.expect("first insert");
 
     let err = store.insert(&evt).await.expect_err("duplicate must fail");
-    // refinery + rusqlite surface UNIQUE violation as Sqlite error;
-    // exact variant depends on rusqlite version. Match by name.
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("UNIQUE") || msg.contains("unique"),
-        "expected UNIQUE constraint error, got: {msg}"
-    );
+    assert!(matches!(
+        err,
+        IntakeStoreError::Sqlite(rusqlite::Error::SqliteFailure(ref sqlite_err, _))
+            if sqlite_err.extended_code == 2067
+    ));
 }
 
 #[tokio::test]
