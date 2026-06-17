@@ -258,8 +258,12 @@ impl SandboxClient {
         let host_config = HostConfig {
             binds: Some(vec![format!("{workspace_str}:/workspace:rw")]),
             port_bindings: Some(port_bindings),
+            // Trust boundary: the sandbox only publishes loopback ports back
+            // to the host, and `host-gateway` is required so the browser
+            // inside the container can reach the local control plane / dev
+            // services. `seccomp=unconfined` is the browser compatibility
+            // carve-out documented in the release notes.
             extra_hosts: Some(vec!["host.docker.internal:host-gateway".into()]),
-            // Browser inside the sandbox needs unconfined seccomp (upstream README).
             security_opt: Some(vec!["seccomp=unconfined".into()]),
             ..Default::default()
         };

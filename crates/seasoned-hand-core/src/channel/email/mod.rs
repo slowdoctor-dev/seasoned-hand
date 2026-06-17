@@ -112,29 +112,33 @@ impl EmailChannel {
     }
 
     /// One poll cycle: fetch UNSEEN, gate each message, push surviving
-    /// IntakeEvents into `sink`, mark seen. Exposed (`pub`) so unit
-    /// tests can drive a single cycle without spinning the
-    /// poll-with-backoff loop.
+    /// IntakeEvents into `sink`, and mark seen only after a message is
+    /// successfully parsed. Exposed (`pub`) so unit tests can drive a
+    /// single cycle without spinning the poll-with-backoff loop.
     pub async fn poll_once(&self, sink: &mpsc::Sender<IntakeEvent>) -> Result<usize, ChannelError> {
         let messages = self.fetcher.fetch_unseen().await?;
         let mut emitted = 0usize;
         for raw in messages {
             match self.process_message(&raw, sink).await {
-                Ok(true) => emitted += 1,
-                Ok(false) => {}
+                Ok(true) => {
+                    emitted += 1;
+                    if let Err(err) = self.fetcher.mark_seen(raw.uid).await {
+                        tracing::warn!(uid = raw.uid, error = %err, "email: mark_seen failed");
+                    }
+                }
+                Ok(false) => {
+                    if let Err(err) = self.fetcher.mark_seen(raw.uid).await {
+                        tracing::warn!(uid = raw.uid, error = %err, "email: mark_seen failed");
+                    }
+                }
                 Err(err) => {
                     // Per-message failure is logged but does not abort
                     // the cycle — one malformed mail must not poison
-                    // the whole inbox.
+                    // the whole inbox. We also leave it UNSEEN so the
+                    // operator can inspect the broken message instead
+                    // of silently suppressing it.
                     tracing::warn!(uid = raw.uid, error = %err, "email: process_message failed");
                 }
-            }
-            // Mark seen regardless of accept/reject — re-emitting a
-            // rejected mail on every cycle would spam the operator.
-            // The allow-list/subject-prefix gate is deterministic so
-            // once-rejected stays rejected.
-            if let Err(err) = self.fetcher.mark_seen(raw.uid).await {
-                tracing::warn!(uid = raw.uid, error = %err, "email: mark_seen failed");
             }
         }
         Ok(emitted)

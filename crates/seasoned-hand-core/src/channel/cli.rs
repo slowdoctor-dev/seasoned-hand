@@ -110,15 +110,26 @@ impl CliChannel {
         Some(PathBuf::from(home).join(".seasoned-hand/deliverables"))
     }
 
-    async fn write_fallback_file(&self, deliverable: &Deliverable) -> Option<PathBuf> {
-        let dir = self.resolve_fallback_dir()?;
+    async fn write_fallback_file(
+        &self,
+        deliverable: &Deliverable,
+    ) -> Result<Option<PathBuf>, ChannelError> {
+        let Some(dir) = self.resolve_fallback_dir() else {
+            return Ok(None);
+        };
         if let Err(error) = tokio::fs::create_dir_all(&dir).await {
             tracing::warn!(
                 %error,
                 path = %dir.display(),
                 "cli_channel: failed to ensure fallback dir; deliverable lost"
             );
-            return None;
+            return Ok(None);
+        }
+        if !is_safe_file_stem(&deliverable.id) {
+            return Err(ChannelError::Internal(format!(
+                "cli_channel: unsafe deliverable id rejected: {:?}",
+                deliverable.id
+            )));
         }
         let ext = format_extension(&deliverable.format);
         let path = dir.join(format!("{}.{}", deliverable.id, ext));
@@ -129,7 +140,7 @@ impl CliChannel {
                     %error,
                     "cli_channel: serialize deliverable manifest failed; skipping fallback"
                 );
-                return None;
+                return Ok(None);
             }
         };
         if let Err(error) = tokio::fs::write(&path, &manifest).await {
@@ -138,9 +149,9 @@ impl CliChannel {
                 path = %path.display(),
                 "cli_channel: write fallback failed"
             );
-            return None;
+            return Ok(None);
         }
-        Some(path)
+        Ok(Some(path))
     }
 }
 
@@ -225,7 +236,7 @@ impl DeliverySink for CliChannel {
         // Fallback: write to ~/.seasoned-hand/deliverables/<id>.<ext>.
         // Detached CLI invocations land here from the first deliver
         // (no pending sender was ever registered).
-        let path = self.write_fallback_file(deliverable).await;
+        let path = self.write_fallback_file(deliverable).await?;
         Ok(DeliveryReceipt {
             channel: CHANNEL_NAME.into(),
             external_id: match &path {
@@ -258,6 +269,10 @@ fn format_extension(format: &str) -> &'static str {
         "json" | "code" | "url" => "json",
         _ => "json",
     }
+}
+
+fn is_safe_file_stem(stem: &str) -> bool {
+    !stem.is_empty() && stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 #[cfg(test)]
@@ -359,6 +374,28 @@ mod tests {
         assert!(
             tmp.path().join("d-orphan.docx").exists(),
             "fallback file written with format-derived ext"
+        );
+    }
+
+    #[tokio::test]
+    async fn cli_channel_rejects_unsafe_deliverable_id_on_fallback() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let channel = CliChannel::new().with_fallback_dir(tmp.path().into());
+
+        let err = channel
+            .deliver(
+                &target_for("cli:unsafe"),
+                &fake_deliverable("../evil", "md"),
+            )
+            .await
+            .expect_err("unsafe id must fail");
+        match err {
+            ChannelError::Internal(msg) => assert!(msg.contains("unsafe deliverable id")),
+            other => panic!("expected Internal, got {other:?}"),
+        }
+        assert!(
+            !tmp.path().join("../evil.md").exists(),
+            "unsafe fallback path must never be created"
         );
     }
 

@@ -100,6 +100,8 @@ fn gate_match(
     }
     let fixture_key = format!("fixture:{fixture_id}");
     let brief_key = format!("brief:{}", normalized_brief);
+    let fixture_key = escape_like_literal(&fixture_key);
+    let brief_key = escape_like_literal(&brief_key);
 
     // Phase 5 story 5.8 / F-5.7: filter by share visibility. A playbook is
     // matchable iff (a) no `playbook_shares` row exists for it (Phase 4
@@ -112,8 +114,8 @@ fn gate_match(
          JOIN tasks src ON src.id = p.source_task_id
          WHERE src.project_id = ?
            AND p.status = 'active'
-           AND lower(p.trigger_keywords) LIKE '%' || lower(?) || '%'
-           AND lower(p.trigger_keywords) LIKE '%' || lower(?) || '%'
+           AND lower(p.trigger_keywords) LIKE '%' || lower(?) || '%' ESCAPE '\\'
+           AND lower(p.trigger_keywords) LIKE '%' || lower(?) || '%' ESCAPE '\\'
            AND (NOT EXISTS (SELECT 1 FROM playbook_shares ps WHERE ps.playbook_id = p.id)
                 OR EXISTS (SELECT 1 FROM playbook_shares ps WHERE ps.playbook_id = p.id AND ps.visibility_state = 'shared'))",
     )?;
@@ -273,6 +275,20 @@ fn recency_boost(now_micros: i64, created_at: i64) -> f64 {
     (0.5_f64 - (age_days / 60.0)).max(0.0)
 }
 
+fn escape_like_literal(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '\\' | '%' | '_' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 fn age_days(now_micros: i64, created_at: i64) -> f64 {
     if created_at <= 0 || now_micros <= created_at {
         return 0.0;
@@ -290,6 +306,11 @@ mod tests {
     fn normalization() {
         let input = "  Café\t\n  PLAN  ";
         assert_eq!(normalize_brief(input), "café plan");
+    }
+
+    #[test]
+    fn like_literal_escapes_special_chars() {
+        assert_eq!(escape_like_literal(r"50%_off\today"), r"50\%\_off\\today");
     }
 
     #[tokio::test]

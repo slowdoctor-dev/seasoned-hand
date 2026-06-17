@@ -298,12 +298,15 @@ impl IntakeRouter {
 }
 
 /// rusqlite reports UNIQUE constraint violations as
-/// `Error::SqliteFailure { extended_code: 2067, .. }` or by message —
-/// we match on the message to stay version-agnostic, mirroring how the
-/// V008 store-level test already pins this shape.
+/// `Error::SqliteFailure { extended_code: 2067, .. }`. Match the
+/// extended code directly so we do not misclassify unrelated errors
+/// whose text merely happens to mention "unique".
 fn is_unique_violation(err: &IntakeStoreError) -> bool {
-    let msg = err.to_string();
-    msg.contains("UNIQUE") || msg.contains("unique")
+    matches!(
+        err,
+        IntakeStoreError::Sqlite(rusqlite::Error::SqliteFailure(error, _))
+            if error.extended_code == 2067
+    )
 }
 
 /// Accept a `session_id_hint` only if it matches the same strict
