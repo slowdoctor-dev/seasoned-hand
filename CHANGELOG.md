@@ -116,6 +116,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     string literal and inject script.
 
 ### Fixed
+- **Cost & curator correctness — issue #22 batch C:**
+  - **Final-step cost is now recorded** (`agent/mod.rs`) — `record_step_cost` moved
+    above the verifier-completion and breaker early-returns, so a task can no longer
+    blow `cost_cap_cents` on its last step without the spend being accounted for.
+  - **Cost delta re-baselines on a Bifrost counter reset** (`cost/mod.rs`) — a
+    `current < baseline` snapshot (gateway counter restarted at 0) now bills the
+    post-reset value instead of `.max(0)`-masking it as a 0 delta (silent
+    under-billing); `saturating_sub` guards the subtraction. Drift `delta_pct` uses
+    `abs_diff` (no overflow/`i64::MIN.abs()` panic); the per-user `SUM(cost_cents)`
+    is documented fail-loud (SQLite raises on i64 overflow).
+  - **Curator `Quarantine` now maps to its own `decision_type = "quarantine"`**
+    (was `"keep"`), so it no longer pollutes the `WorkPatternExtractor`
+    self-improvement stats; migration **V025** expands the `decision_type` CHECK
+    (also splitting archive-recommend/apply/restore). *(Codex)*
+  - **Embedding-budget breaker re-checked inside the candidate loop** — one cycle
+    can no longer issue ~100 embedding calls after the budget tripped mid-cycle.
+    *(Codex)*
+  - **Curator LRU is now O(1)-ish** (`HashMap` + `VecDeque`) instead of
+    `Vec::remove(0)` + linear scan (quadratic per cycle). *(Codex)*
+  - **`review_required` sampling is now an explicit policy field** — the
+    undocumented revision-id-hash-mod-10 (~30%) is replaced by a configurable
+    `CuratorConfig.review_sample_rate` (env-wired, default 0.30). *(Codex)*
 - **Tenant-isolation correctness — issue #22 batch B:**
   - **`list_events` now routes through the canonical `require_session_tenant`
     guard** (`server/src/lib.rs`) instead of an inline `JOIN projects … p.tenant_id`.

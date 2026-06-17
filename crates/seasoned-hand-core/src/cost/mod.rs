@@ -86,7 +86,20 @@ impl CostClient {
 }
 
 pub fn delta_between(baseline: &CostSnapshot, current: &CostSnapshot) -> i64 {
-    (current.total_cents - baseline.total_cents).max(0)
+    // Issue #22: a plain `(current - baseline).max(0)` masked a Bifrost counter
+    // RESET as a 0 delta — under-billing the spend accumulated since the reset.
+    // When the counter goes backwards (current < baseline) the gateway restarted
+    // its counter at 0, so the post-reset value IS the spend since the reset; bill
+    // that (the caller re-baselines to `current` next, so subsequent deltas stay
+    // correct). `saturating_sub` also guards the (already non-negative) subtraction
+    // against i64 overflow.
+    let current_total = current.total_cents.max(0);
+    let baseline_total = baseline.total_cents.max(0);
+    if current_total >= baseline_total {
+        current_total.saturating_sub(baseline_total)
+    } else {
+        current_total
+    }
 }
 
 fn total_cents(value: &Value) -> i64 {

@@ -77,6 +77,7 @@ async fn run_once_emits_cycle_start_and_complete_events() {
             auto_archive_enabled: false,
             archive_recommend_min_confidence: 0.40,
             archive_apply_min_confidence: 0.55,
+            review_sample_rate: DEFAULT_REVIEW_SAMPLE_RATE,
             project_id: "proj-1".to_string(),
             org_aggregation_enabled: false,
         },
@@ -138,7 +139,7 @@ async fn embedding_enabled_and_fallback_paths_are_exercised() {
         EmbeddingBudget {
             monthly_embedding_tokens: 50_000,
             soft_cap_pct: 0.08,
-            hard_breaker_pct: 0.12,
+            hard_breaker_pct: 1.10,
         },
     );
     let reranked = embedding_reranker
@@ -167,6 +168,125 @@ async fn embedding_enabled_and_fallback_paths_are_exercised() {
         .await
         .expect("rerank fallback");
     assert!(reranked_fallback.iter().all(|r| !r.embedding_used));
+}
+
+#[test]
+fn consolidation_decision_types_are_distinct_for_stats() {
+    assert_eq!(ConsolidationDecisionKind::Keep.as_str(), "keep");
+    assert_eq!(
+        ConsolidationDecisionKind::ArchiveRecommend.as_str(),
+        "archive_recommend"
+    );
+    assert_eq!(
+        ConsolidationDecisionKind::ArchiveApply.as_str(),
+        "archive_apply"
+    );
+    assert_eq!(ConsolidationDecisionKind::Quarantine.as_str(), "quarantine");
+}
+
+#[test]
+fn review_sampling_rate_is_explicit_policy() {
+    assert!(!review_required(
+        ConsolidationDecisionKind::Keep,
+        0.70,
+        "rev-left",
+        "rev-right",
+        0.0,
+    ));
+    assert!(review_required(
+        ConsolidationDecisionKind::Keep,
+        0.70,
+        "rev-left",
+        "rev-right",
+        1.0,
+    ));
+    assert!(review_required(
+        ConsolidationDecisionKind::Keep,
+        0.54,
+        "rev-left",
+        "rev-right",
+        0.0,
+    ));
+    assert!(review_required(
+        ConsolidationDecisionKind::ArchiveApply,
+        0.95,
+        "rev-left",
+        "rev-right",
+        0.0,
+    ));
+}
+
+#[test]
+fn simple_lru_keeps_live_entries_after_repeated_touches() {
+    let mut lru = SimpleLru::new(2);
+    lru.put("a".to_string(), 1);
+    for _ in 0..20 {
+        assert_eq!(lru.get(&"a".to_string()), Some(&1));
+    }
+    lru.put("b".to_string(), 2);
+    assert_eq!(lru.get(&"a".to_string()), Some(&1));
+    assert_eq!(lru.get(&"b".to_string()), Some(&2));
+    lru.put("c".to_string(), 3);
+    assert_eq!(lru.get(&"a".to_string()), None);
+    assert_eq!(lru.get(&"b".to_string()), Some(&2));
+    assert_eq!(lru.get(&"c".to_string()), Some(&3));
+}
+
+#[tokio::test]
+async fn embedding_breaker_rechecks_inside_candidate_loop() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object":"list",
+            "data":[{"index":0,"embedding":[1.0,0.0,0.0]}],
+            "model":"text-embedding-3-small",
+            "usage":{"prompt_tokens":7,"total_tokens":7}
+        })))
+        .mount(&server)
+        .await;
+
+    let reranker = ProductionEmbeddingReranker::new(
+        LlmClient::new(format!("{}/v1", server.uri()), None),
+        "text-embedding-3-small".to_string(),
+        EmbeddingBudget {
+            monthly_embedding_tokens: 50_000,
+            soft_cap_pct: 0.08,
+            hard_breaker_pct: 0.50,
+        },
+    );
+    let candidates = vec![
+        DuplicateCandidate {
+            left_revision_id: "rev-l-1".into(),
+            right_revision_id: "rev-r-1".into(),
+            left_text: "left one".into(),
+            right_text: "right one".into(),
+            fts_score: 0.8,
+            lexical_overlap: 0.4,
+            recency_delta_days: 0,
+        },
+        DuplicateCandidate {
+            left_revision_id: "rev-l-2".into(),
+            right_revision_id: "rev-r-2".into(),
+            left_text: "left two".into(),
+            right_text: "right two".into(),
+            fts_score: 0.7,
+            lexical_overlap: 0.3,
+            recency_delta_days: 0,
+        },
+    ];
+
+    let reranked = reranker
+        .rerank("proj-breaker", candidates)
+        .await
+        .expect("rerank");
+    assert!(reranked.iter().all(|r| !r.embedding_used));
+    let requests = server.received_requests().await.expect("requests");
+    assert_eq!(
+        requests.len(),
+        1,
+        "breaker should stop additional embedding calls after the first usage update"
+    );
 }
 
 #[tokio::test]
@@ -220,6 +340,7 @@ async fn e2e_cycle_covers_merge_and_keep_branches_with_stubbed_rerank() {
             auto_archive_enabled: false,
             archive_recommend_min_confidence: 0.40,
             archive_apply_min_confidence: 0.55,
+            review_sample_rate: DEFAULT_REVIEW_SAMPLE_RATE,
             project_id: "proj-consolidate".to_string(),
             org_aggregation_enabled: false,
         },
@@ -785,6 +906,7 @@ async fn e2e_cycle_conflict_detector_covers_conflict_and_non_conflict_paths() {
             auto_archive_enabled: false,
             archive_recommend_min_confidence: 0.40,
             archive_apply_min_confidence: 0.55,
+            review_sample_rate: DEFAULT_REVIEW_SAMPLE_RATE,
             project_id: "proj-conflict".to_string(),
             org_aggregation_enabled: false,
         },
@@ -865,6 +987,7 @@ async fn e2e_cycle_conflict_detector_covers_conflict_and_non_conflict_paths() {
             auto_archive_enabled: false,
             archive_recommend_min_confidence: 0.40,
             archive_apply_min_confidence: 0.55,
+            review_sample_rate: DEFAULT_REVIEW_SAMPLE_RATE,
             project_id: "proj-no-conflict".to_string(),
             org_aggregation_enabled: false,
         },
@@ -972,6 +1095,7 @@ async fn e2e_cycle_retrospective_success_refusal_and_retry_paths() {
                 auto_archive_enabled: false,
                 archive_recommend_min_confidence: 0.40,
                 archive_apply_min_confidence: 0.55,
+                review_sample_rate: DEFAULT_REVIEW_SAMPLE_RATE,
                 project_id: project_id.to_string(),
                 org_aggregation_enabled: false,
             },
@@ -1008,6 +1132,7 @@ async fn e2e_cycle_retrospective_success_refusal_and_retry_paths() {
             auto_archive_enabled: false,
             archive_recommend_min_confidence: 0.40,
             archive_apply_min_confidence: 0.55,
+            review_sample_rate: DEFAULT_REVIEW_SAMPLE_RATE,
             project_id: "proj-retro".to_string(),
             org_aggregation_enabled: false,
         },
@@ -1128,6 +1253,7 @@ async fn e2e_cycle_pattern_extractor_emits_deterministic_recommendations() {
             auto_archive_enabled: false,
             archive_recommend_min_confidence: 0.40,
             archive_apply_min_confidence: 0.55,
+            review_sample_rate: DEFAULT_REVIEW_SAMPLE_RATE,
             project_id: "proj-pattern".to_string(),
             org_aggregation_enabled: false,
         },
@@ -1244,6 +1370,7 @@ async fn e2e_cycle_knowledge_datasource_emit_and_l2_promotion_paths() {
             auto_archive_enabled: false,
             archive_recommend_min_confidence: 0.40,
             archive_apply_min_confidence: 0.55,
+            review_sample_rate: DEFAULT_REVIEW_SAMPLE_RATE,
             project_id: "proj-kd".to_string(),
             org_aggregation_enabled: false,
         },
@@ -1334,6 +1461,7 @@ async fn e2e_operator_review_queue_transitions_after_cycle() {
             auto_archive_enabled: false,
             archive_recommend_min_confidence: 0.40,
             archive_apply_min_confidence: 0.55,
+            review_sample_rate: DEFAULT_REVIEW_SAMPLE_RATE,
             project_id: "proj-review".to_string(),
             org_aggregation_enabled: false,
         },
@@ -1479,6 +1607,7 @@ async fn run_once_emits_quarantine_events_for_all_failure_categories() {
             auto_archive_enabled: false,
             archive_recommend_min_confidence: 0.40,
             archive_apply_min_confidence: 0.55,
+            review_sample_rate: DEFAULT_REVIEW_SAMPLE_RATE,
             project_id: "proj-quarantine".to_string(),
             org_aggregation_enabled: false,
         },
@@ -1575,6 +1704,7 @@ async fn emits_curation_decision_skill_and_curator_misc_taxonomy_events() {
             auto_archive_enabled: false,
             archive_recommend_min_confidence: 0.40,
             archive_apply_min_confidence: 0.55,
+            review_sample_rate: DEFAULT_REVIEW_SAMPLE_RATE,
             project_id: "proj-taxonomy".to_string(),
             org_aggregation_enabled: false,
         },
