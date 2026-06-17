@@ -190,10 +190,17 @@ impl SlotRouter {
     /// Minimal default: `main` slot pointing at Bifrost's `agent-primary`
     /// alias. Used when no config file is present (Phase 0 ergonomics).
     pub fn default_for_bifrost() -> Self {
+        // Issue #6: honor `BIFROST_BASE_URL` so a containerized control plane can
+        // point at the in-compose gateway (`http://bifrost:8080/v1`) instead of the
+        // `localhost:4000` default. Unset/empty → the local-dev default.
+        let base_url = std::env::var("BIFROST_BASE_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_BIFROST_BASE_URL.to_string());
         let main = ResolvedSlot {
             provider: "bifrost".into(),
             model: "agent-primary".into(),
-            base_url: DEFAULT_BIFROST_BASE_URL.into(),
+            base_url,
             api_key: None,
         };
         let mut resolved = HashMap::new();

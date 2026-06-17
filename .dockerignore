@@ -1,0 +1,19 @@
+# Keep the Docker build context small + reproducible.
+target/
+**/target/
+.git/
+.github/
+data/
+bifrost/data/
+*.db
+*.db-*
+node_modules/
+crates/seasoned-hand-ui/assets/tailwind.css
+crates/seasoned-hand-ui/dist/
+.env
+.env.*
+!.env.example
+.claude/
+.codex/
+*.log
+.DS_Store
