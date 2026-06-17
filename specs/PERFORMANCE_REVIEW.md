@@ -141,3 +141,33 @@ track is **still unsealed** — now **4 fixes landed (P1–P4)**. Sealing requir
 an **iter-4** bilateral round where *both* halves sweep and *neither* finds a
 new hot-path issue. Next session: run iter-4 (Claude sweep + Codex confirm) over
 the same hot paths plus the now-simplified append/index path.
+
+### iter-4 (Claude + Codex) — clean bilateral round → **TRACK SEALED**
+
+Both halves swept independently after P4 landed; neither found a new actionable
+hot-path inefficiency.
+
+- **Claude half — clean.** Append path is optimal post-P4 (the redundant
+  per-event re-`SELECT` is gone; remaining per-event work is single indexed
+  statements). `build_messages` (`agent/prompt.rs`) is bounded `LIMIT 100` on
+  the indexed `(session_id, id)` path. Per-request auth `verify`
+  (`auth/session.rs:157`) is a single indexed 4-table join on `s.token_hash` —
+  a deliberate live-identity re-resolution (ADR-018), no N+1. The per-event
+  `resolve_tenant_id` join (`events/visibility.rs`) repeats a cheap indexed
+  sessions→tasks→projects lookup whose result is invariant per session, but
+  caching it would add session-scoped state + invalidation risk for an indexed
+  PK join — judged NOT actionable per the bar.
+- **Codex half — clean (confirm).** Independent sweep (incl. re-reading the
+  search-index path and the `sessions`/`tenant_id`/`session_search_index`
+  migrations). Explicitly concurred on `resolve_tenant_id` ("a deliberate
+  derived-tenant cost, not a clear net-positive cache win") and dismissed the
+  remaining request-side param-bind boxing as "too small relative to the DB/FTS
+  work to justify a finding." Verdict: **confirm clean (seal).**
+
+**PERFORMANCE TRACK SEALED** — 4 fixes total (P1 planner-prompt LazyLock, P2
+hoisted masked tool specs, P3 stack `rusqlite::params!` on the event read, P4
+projection-value reuse on the append/search-index hook). Saturation reached: a
+bilateral round (iter-4) with zero new findings. Remaining test-gate caveat:
+the Docker-socket-dependent suites still need one `cargo test --workspace` run
+on a real Docker host to seal the *test* gate (orthogonal to this perf seal;
+tracked in issue #6's release checklist).
