@@ -61,6 +61,9 @@ pub(crate) fn require_loopback(remote: SocketAddr) -> ApiResult<()> {
     if remote.ip().is_loopback() {
         Ok(())
     } else {
-        Err(api_err(StatusCode::FORBIDDEN, "forbidden_non_loopback".into()))
+        Err(api_err(
+            StatusCode::FORBIDDEN,
+            "forbidden_non_loopback".into(),
+        ))
     }
 }
