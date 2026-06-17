@@ -46,12 +46,26 @@ pub const DEFAULT_VISIBILITY: &str = "user";
 /// whose source starts with this prefix to avoid infinite recursion.
 pub const PROJECTION_INTERNAL_SOURCE: &str = "tenant_event_projection";
 
+/// The projection values `apply` materialized for an event, carried out
+/// on [`ProjectionOutcome::Inserted`] so the search-index hook can reuse
+/// them instead of re-`SELECT`ing them back from `tenant_event_view` on
+/// the per-event append hot path (perf review iter-3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchProjection {
+    pub tenant_id: String,
+    pub visibility_level: &'static str,
+    /// The redacted, search-indexable text (same value written to
+    /// `tenant_event_view.searchable_text`).
+    pub searchable_text: String,
+}
+
 /// Outcome of one projection attempt — surfaced from `apply` so the
 /// caller can decide whether to queue a quarantine Misc event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectionOutcome {
-    /// Row inserted into tenant_event_view.
-    Inserted,
+    /// Row inserted into tenant_event_view; carries the materialized
+    /// projection so the caller can index it for search without a re-read.
+    Inserted(SearchProjection),
     /// Projection intentionally skipped (e.g. an event synthesized by
     /// the projection hook itself — see [`PROJECTION_INTERNAL_SOURCE`]).
     /// Not an error condition.
@@ -107,7 +121,14 @@ pub fn apply(conn: &Connection, event: &Event) -> ProjectionOutcome {
         ],
     );
     match insert {
-        Ok(_) => ProjectionOutcome::Inserted,
+        // `params!` only borrows the values above, so they are still owned
+        // here — hand them to the caller for the search index hook instead of
+        // forcing a second read of the row we just wrote.
+        Ok(_) => ProjectionOutcome::Inserted(SearchProjection {
+            tenant_id,
+            visibility_level,
+            searchable_text,
+        }),
         Err(e) => ProjectionOutcome::Failed {
             reason: format!("insert: {e}"),
         },

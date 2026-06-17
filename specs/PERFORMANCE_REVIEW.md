@@ -104,3 +104,40 @@ of iter-3 is **clean — no new hot-path issue**. Per the saturation rule, the
 performance track seals once the **Codex** confirm half of iter-3 also comes
 back clean (a bilateral round with zero new findings). Until then: **3 fixes
 landed, Claude-confirmed, awaiting Codex confirm to seal.**
+
+### iter-3 (Codex) — confirm sweep, ONE new issue (P4)
+
+Codex's confirm half did **not** come back clean: it drilled into the
+write-time hooks the Claude half had waved past (the iter-3 Claude note marked
+`SqliteEventStore::append` "FINE" but only examined the FK guard + INSERT, not
+the projection/search hooks chained after it). Genuine per-event hot-path find:
+
+- **P4 (Codex):** on every successful `append`, `visibility::apply` computes the
+  projection `(tenant_id, visibility_level, searchable_text)` and INSERTs the
+  `tenant_event_view` row — then `session_search::index_event_for_search`
+  immediately ran a **second** `SELECT tenant_id, visibility_level,
+  searchable_text FROM tenant_event_view WHERE event_id = ?` to read those exact
+  values back before inserting the search-index row. A redundant per-event query
+  + row decode on the append path, with the values already in hand.
+
+  **Fix:** `ProjectionOutcome::Inserted` now carries a `SearchProjection
+  { tenant_id, visibility_level, searchable_text }` payload (the values
+  `apply` already materialized — `params!` only borrowed them, so they're moved
+  out after the INSERT at no extra cost). `index_event_for_search` takes those
+  values as args and drops the `SELECT`. Behaviour-preserving: the threaded
+  values are byte-identical to what the view stored (same `visibility_for`,
+  same `resolve_tenant_id`, same post-`redact_pii` `searchable_text`); search
+  indexing still happens only on `Inserted` (Story 5.15 invariant now upheld by
+  the caller's `if let Inserted`, not a defensive re-read). Touches
+  `events/visibility.rs`, `events/session_search.rs`, `events/sqlite.rs`.
+
+Gates: `clippy -p seasoned-hand-core --all-targets -D warnings` ✓, `fmt --check`
+✓, `cargo test -p seasoned-hand-core --lib` **599 passed / 0 failed / 13
+ignored** (the ignored are the Docker-socket suites). Claude verified the diff
+is behaviour-preserving.
+
+**Seal status:** iter-3 was NOT a clean bilateral round (Codex found P4), so the
+track is **still unsealed** — now **4 fixes landed (P1–P4)**. Sealing requires
+an **iter-4** bilateral round where *both* halves sweep and *neither* finds a
+new hot-path issue. Next session: run iter-4 (Claude sweep + Codex confirm) over
+the same hot paths plus the now-simplified append/index path.

@@ -140,8 +140,16 @@ impl EventStore for SqliteEventStore {
                     // for `Failed` outcomes happens post-commit (below) since
                     // it requires a fresh `append` call.
                     let projection_outcome = visibility::apply(conn, &event);
-                    if matches!(projection_outcome, ProjectionOutcome::Inserted) {
-                        session_search::index_event_for_search(conn, &event)?;
+                    if let ProjectionOutcome::Inserted(projection) = &projection_outcome {
+                        // Reuse the values the projection just materialized — no
+                        // re-read of tenant_event_view on the append hot path.
+                        session_search::index_event_for_search(
+                            conn,
+                            &event,
+                            &projection.tenant_id,
+                            projection.visibility_level,
+                            &projection.searchable_text,
+                        )?;
                     }
                     Ok((event, projection_outcome))
                 },

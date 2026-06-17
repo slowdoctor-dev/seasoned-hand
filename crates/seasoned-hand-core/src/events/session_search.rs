@@ -41,27 +41,25 @@ pub struct SearchSummary {
     pub degraded: bool,
 }
 
-pub fn index_event_for_search(conn: &rusqlite::Connection, event: &Event) -> rusqlite::Result<()> {
-    let projection = conn
-        .query_row(
-            "SELECT tenant_id, visibility_level, searchable_text
-             FROM tenant_event_view
-             WHERE event_id = ?",
-            params![event.id],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            },
-        )
-        .ok();
-    let Some((tenant_id, visibility_level, searchable_text)) = projection else {
-        // Story 5.15: projection-skipped events must also skip search indexing
-        // so session_search_index never references a missing tenant projection.
-        return Ok(());
-    };
+/// Index an event for search using the projection values `visibility::apply`
+/// already materialized for it.
+///
+/// Story 5.15 invariant: only events that actually projected into
+/// `tenant_event_view` get a search row, so `session_search_index` never
+/// references a missing tenant projection. That invariant is now upheld by the
+/// caller — this is only called on [`ProjectionOutcome::Inserted`], whose
+/// payload carries the same `(tenant_id, visibility_level, searchable_text)`
+/// the projection wrote. Reusing those values avoids a per-event re-`SELECT`
+/// from `tenant_event_view` on the append hot path (perf review iter-3).
+///
+/// [`ProjectionOutcome::Inserted`]: crate::events::visibility::ProjectionOutcome::Inserted
+pub fn index_event_for_search(
+    conn: &rusqlite::Connection,
+    event: &Event,
+    tenant_id: &str,
+    visibility_level: &str,
+    searchable_text: &str,
+) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO session_search_index
            (event_id, session_id, timestamp, event_type, source, searchable_text, tenant_id, visibility_level)
