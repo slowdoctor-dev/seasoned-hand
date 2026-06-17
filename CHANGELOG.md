@@ -96,6 +96,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Historical content remains in git history.)
 
 ### Security
+- **Request hardening — issue #22 batch D:**
+  - **Explicit request body cap** (`DefaultBodyLimit::max(1 MiB)`, server `app()`)
+    replacing axum's silent 2 MB default, applied to every route incl. the
+    internet-facing intake handlers; `serde_json`'s own recursion limit bounds
+    nesting depth, so size was the remaining vector.
+  - **Global request timeout** (`TimeoutLayer`, 60s → `408`) so a hung sandbox/DB
+    handler can't hold a connection open forever. The long-lived `/ws` and the
+    `/v1/intake/cli` long-poll are registered after the layer and excluded.
+  - **Notify `target_override` now SSRF-validated** (`notify/worker.rs`) — an
+    operator-supplied override URL is checked against the same
+    `ssrf::assert_public_address` guard the webhook channel uses (was returned
+    verbatim), and the per-stream-entry fan-out is bounded by a `Semaphore`
+    (`DEFAULT_MAX_IN_FLIGHT = 16`) instead of spawning one unbounded task each.
+    *(Codex)*
+  - **Verifier per-session maps now evict on session end** — the worker's session
+    locks (`verifier/worker.rs`, race-safe `remove_if`) and the invalidation
+    `sessions` map (`evict_session`) no longer grow unbounded. *(Codex)*
 - **Medium-severity hardening — issue #22 batch A** (latent findings from the
   2026-06-14 repo review):
   - **No more plaintext credentials in `Debug`.** `ImapConfig`/`SmtpConfig`

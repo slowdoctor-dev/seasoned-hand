@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use axum::{
     Extension, Json, Router,
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, StatusCode},
     middleware,
     response::IntoResponse,
@@ -16,6 +16,7 @@ use axum::{
 };
 use dashmap::DashMap;
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::timeout::TimeoutLayer;
 
 use seasoned_hand_core::agent::breaker::BreakerRegistry;
 use seasoned_hand_core::agent::init::briefing::UserResponse;
@@ -1535,6 +1536,15 @@ async fn get_progress(
     Ok(progress::tail_lines(&text, q.lines.unwrap_or(200)))
 }
 
+/// Issue #22: per-request timeout for normal routes (excludes `/ws` + the CLI
+/// long-poll). Generous enough for legitimate sandbox/DB work, but bounds a hung
+/// handler from holding a connection indefinitely.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Issue #22: explicit request body cap (vs axum's silent 2 MB default). Intake
+/// payloads are small JSON; 1 MiB is generous while bounding abuse.
+const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+
 pub fn app(state: AppState) -> Router {
     // Issue #33: when SH_UI_DIST is configured, the built Dioxus bundle is served
     // as the router fallback. Cloned out before `with_state` consumes `state`.
@@ -1551,7 +1561,8 @@ pub fn app(state: AppState) -> Router {
             "/v1/auth/dev-login",
             self_gated(axum::routing::post(post_auth_dev_login_handler)),
         )
-        .route("/ws", with_auth(get(ws::ws_upgrade), Action::TaskRead))
+        // `/ws` is registered AFTER the TimeoutLayer below (issue #22) so the
+        // long-lived WebSocket is excluded from the per-request timeout.
         .route("/v1/cost", self_gated(get(cost_snapshot)))
         .route(
             "/v1/sessions",
@@ -1762,10 +1773,9 @@ pub fn app(state: AppState) -> Router {
         )
         // Story 2.21b: CLI intake / inbox / briefing-confirm surface
         // (loopback-only, same posture as the 2.21a routes above).
-        .route(
-            "/v1/intake/cli",
-            self_gated(axum::routing::post(post_intake_cli_handler)),
-        )
+        // NOTE: `/v1/intake/cli` is registered AFTER the TimeoutLayer below
+        // (issue #22) — its `task new --blocking` long-poll holds the request open
+        // for up to CLI_INTAKE_DEFAULT_MAX_WAIT_SECS, so it must skip the timeout.
         .route(
             "/v1/inbox",
             with_auth(get(get_inbox_handler), Action::TaskRead),
@@ -1777,13 +1787,32 @@ pub fn app(state: AppState) -> Router {
                 Action::TaskWrite,
             ),
         )
+        // Issue #22: bound every *normal* request so a hung sandbox/DB handler
+        // can't hold a connection open forever. Applies only to the routes
+        // registered ABOVE this layer (axum layers wrap previously-added routes);
+        // the long-lived `/ws` and the `/v1/intake/cli` long-poll are registered
+        // BELOW so they keep their own (much longer / unbounded) lifetimes.
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            REQUEST_TIMEOUT,
+        ))
+        .route("/ws", with_auth(get(ws::ws_upgrade), Action::TaskRead))
+        .route(
+            "/v1/intake/cli",
+            self_gated(axum::routing::post(post_intake_cli_handler)),
+        )
         // Issue #7 / ADR-018: make the verified-session store + insecure-headers
         // flag reachable by the per-route auth middleware (which runs as a
         // stateless `from_fn`) without threading state through every `with_auth`.
         .layer(Extension(auth::middleware::AuthDeps {
             sessions: state.auth_sessions.clone(),
             allow_insecure_headers: state.allow_insecure_headers,
-        }));
+        }))
+        // Issue #22: cap request body size for EVERY route (placed last so it
+        // wraps all routes incl. the intake handlers). axum's silent 2 MB default
+        // is replaced by an explicit, smaller limit; `serde_json`'s own recursion
+        // limit already bounds nesting depth, so size is the remaining vector.
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES));
 
     // Issue #33: serve the built UI bundle as the fallback. Named API routes
     // (`/v1/*`, `/ws`, `/healthz`) always win — the fallback only

@@ -155,7 +155,8 @@ tracks "where we are in the task" and prevents goal drift. See ADR-010.
 > `/healthz`) always take precedence; the fallback only serves the
 > shell + assets and resolves unknown paths to `index.html` (SPA). Static serve is
 > public (the shell calls the auth-gated API itself). Net-new dep (per §9):
-> `tower-http 0.6` (`fs` feature — `ServeDir`/`ServeFile`), server crate only.
+> `tower-http 0.6` (`fs` feature — `ServeDir`/`ServeFile`; `timeout` feature —
+> the global request `TimeoutLayer`, issue #22), server crate only.
 >
 > **Phase 2 channel-framework addendum** (per AGENTS.md §9 — net-new
 > Rust deps trigger a one-line note):

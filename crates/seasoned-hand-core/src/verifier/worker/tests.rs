@@ -1,8 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use dashmap::DashMap;
 use serde_json::{Value, json};
 use tempfile::tempdir;
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -854,6 +856,28 @@ async fn worker_xreadgroup_global_semaphore_caps_concurrency() {
         .await
         .expect("xpending");
     assert_eq!(pending, 0, "PEL must be empty after XACK");
+}
+
+#[test]
+fn session_lock_eviction_only_removes_idle_lock() {
+    let locks: DashMap<String, Arc<Mutex<()>>> = DashMap::new();
+    let session_id = "session-lock-evict";
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(session_id.to_string(), lock.clone());
+    let queued_holder = lock.clone();
+
+    evict_idle_session_lock(&locks, session_id, &lock);
+    assert!(
+        locks.contains_key(session_id),
+        "queued/active same-session holders must keep the FIFO lock installed"
+    );
+
+    drop(queued_holder);
+    evict_idle_session_lock(&locks, session_id, &lock);
+    assert!(
+        !locks.contains_key(session_id),
+        "idle per-session locks should be evicted so the map cannot grow forever"
+    );
 }
 
 #[tokio::test]

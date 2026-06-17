@@ -627,6 +627,19 @@ async fn process_entry(
             "verifier worker: XACK failed; message will stay in PEL until next consumer",
         );
     }
+    drop(_permit);
+    drop(_guard);
+    evict_idle_session_lock(&session_locks, &req.session_id, &lock);
+}
+
+fn evict_idle_session_lock(
+    session_locks: &DashMap<String, Arc<Mutex<()>>>,
+    session_id: &str,
+    lock: &Arc<Mutex<()>>,
+) {
+    session_locks.remove_if(session_id, |_session_id, current| {
+        Arc::ptr_eq(current, lock) && Arc::strong_count(lock) <= 2
+    });
 }
 
 fn make_consumer_id(prefix: &str) -> String {
