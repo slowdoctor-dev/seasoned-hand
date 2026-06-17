@@ -139,6 +139,9 @@ questions were answered during Phase 5; the two infra questions are explicitly
 - [ ] **Opt-in telemetry** — DEFERRED post-v1. v1 collects **no telemetry**
   (privacy-by-default); any opt-in scheme is designed after release with an
   explicit format/scope/privacy policy.
+- [ ] **Community channel** (Discord vs GitHub Discussions) — DEFERRED post-v1.
+  v1 ships **issues-only**; a dedicated channel is a post-release decision so it
+  doesn't gate the tag (issue #6).
 - [ ] GitHub repo: stay personal vs move to org (later, non-blocking).
 
 ## 9. Repository Map

@@ -197,7 +197,7 @@ Check status: `just status` (or `git log --oneline` + `CHANGELOG.md`)
 - `/CLAUDE.md` — Claude-specific additions
 - `/specs/00-philosophy/` — VISION, PRINCIPLES, NON_GOALS
 - `/specs/01-architecture/ARCHITECTURE.md` — immutable system architecture (v1.5)
-- `/specs/01-architecture/decisions/` — ADR-001 to ADR-017
+- `/specs/01-architecture/decisions/` — ADR-001 to ADR-018
 - `/specs/06-roadmap/ROADMAP.md` — 6-phase plan
 - `/specs/REVIEW.md` — pre-Phase-3 cross-phase hardening review
 - `/docs/methodology.md` — full methodology
