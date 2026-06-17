@@ -185,6 +185,12 @@ impl AgentRunner {
             .await
             .get(session_id)
             .cloned()
+            // Issue #23 (known limitation): `run_config` is in-memory only, so after
+            // a PROCESS RESTART it's empty and this fabricates a default request
+            // (no briefing, max_steps=24). A restarted task therefore resumes
+            // without its original input/caps. The real fix is to persist run
+            // config across restarts (overlaps the #H2 durable-state work); until
+            // then this fallback keeps in-process pause/resume working.
             .unwrap_or(RunRequest {
                 session_id: session_id.to_string(),
                 input: String::new(),
@@ -239,6 +245,26 @@ impl AgentRunner {
             apply_mask(&mut tools, &*self.mask_policy, AgentMode::Worker);
             tools
         };
+
+        // Issue #23: a resume that lands at/after the step ceiling has no steps
+        // left to run. Return a distinct terminal outcome instead of falling
+        // through the (zero-iteration) loop and then emitting a spurious
+        // `max_steps_reached` event for a run that did no work.
+        if start_step >= req.max_steps {
+            self.emit_misc(
+                &req.session_id,
+                "resume_at_step_ceiling",
+                json!({"start_step": start_step, "max_steps": req.max_steps}),
+            )
+            .await?;
+            self.finalize_session(&req.session_id).await;
+            return Ok(RunResult {
+                session_id: req.session_id,
+                completed: false,
+                last_message,
+                steps: start_step,
+            });
+        }
 
         for step in start_step..req.max_steps {
             steps_run = step + 1;
@@ -405,6 +431,16 @@ impl AgentRunner {
             }
 
             let args = parse_args(&call.function.arguments);
+            // Issue #23: `parse_args` folds unparseable JSON to `Null`, after which
+            // the tool reports a misleading "missing field" rather than "bad JSON".
+            // Surface the real cause for operators; the tool still emits its own
+            // validation Observation that the model reacts to.
+            if args.is_null() && !call.function.arguments.trim().is_empty() {
+                tracing::warn!(
+                    tool = %call.function.name,
+                    "tool arguments were non-empty but not valid JSON; dispatching with null args"
+                );
+            }
             let ctx = ToolContext {
                 session_id: req.session_id.clone(),
                 mask_mode: AgentMode::Worker,
@@ -487,6 +523,14 @@ impl AgentRunner {
                 });
             }
             let final_idle = call.function.name == "idle";
+            // Issue #23 (completion-signal asymmetry, documented): `final_notify`
+            // (`message_notify_user{final:true}`) only routes to verification when a
+            // verifier slot is active. `idle` ALWAYS terminates (below, regardless
+            // of the verifier). So with NO verifier configured, a "send a final
+            // message" does not by itself end the run — the agent must still call
+            // `idle`. This is intentional (notify is a delivery action; idle is the
+            // canonical terminator), but the two signals are deliberately not
+            // unified here.
             if output.ok && (final_idle || final_notify) && verifier_active {
                 self.mark_task_complete(&req.session_id, &call.id).await?;
                 return Ok(RunResult {

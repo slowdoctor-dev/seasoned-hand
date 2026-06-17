@@ -1,5 +1,5 @@
-//! Tool catalog. Phase 0 ships 5 of the 32 tools defined in
-//! architecture §4.3 + §7; the rest land in stories 0.7+.
+//! Tool catalog. Phase 0 shipped 5 of the (now 38) tools defined in
+//! architecture §4.3 + §7; the rest landed across stories 0.7+ / Phases 1–2.
 //!
 //! refs: /specs/phase-0/architecture.md §4.3, §7
 

@@ -87,6 +87,12 @@ impl CircuitBreaker {
         None
     }
 
+    // Issue #23: breakers are **one-shot per session** — the agent loop trips a
+    // breaker and finalizes the session; it never re-arms a tripped breaker
+    // mid-run. These reset helpers are intentionally not wired into the loop;
+    // they exist for explicit operator/test-driven recovery and for a future
+    // resumable-breaker policy. Kept (rather than removed) as the deliberate
+    // state-transition surface for that policy.
     pub async fn rearm(&self) {
         let mut s = self.state.lock().await;
         s.armed = true;

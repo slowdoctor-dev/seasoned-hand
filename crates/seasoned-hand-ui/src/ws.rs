@@ -181,7 +181,12 @@ async fn send_cmd(write: &mut Sink, id: &str, payload: CommandPayload) -> bool {
     let cmd = ClientCommand::new(id.to_string(), 0, payload);
     match serde_json::to_string(&cmd) {
         Ok(text) => write.send(Message::Text(text)).await.is_ok(),
-        Err(_) => true, // skip a malformed command, keep the socket
+        Err(e) => {
+            // Issue #23: a serialization failure shouldn't drop the socket (return
+            // true = "keep going"), but it was silent — surface it.
+            log::error!("ws: failed to serialize command {id}: {e}");
+            true
+        }
     }
 }
 
