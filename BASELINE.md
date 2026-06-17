@@ -171,10 +171,10 @@ questions were answered during Phase 5; the two infra questions are explicitly
     manus-direct-qa.md
     manus-plan-tool-spec.md
     manus-map-tool-spec.md
-  /phase-0/            ← current phase
+  /phase-0/            ← first phase (foundation)
     requirements.md
     /stories/          ← story-0.1.md to story-0.27.md
-  /phase-N/            ← future phases added here
+  /phase-N/            ← phases 1-6 (phase-6 current — see ROADMAP.md)
 
 /docs/
   manifesto.md, brand.md, methodology.md,
