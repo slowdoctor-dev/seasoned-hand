@@ -1,0 +1,35 @@
+name: Docker image
+
+# Verify the single-image build (issue #6). The full multi-stage build (dx +
+# cargo --release) is slow, so it runs only when the Docker/compose config changes
+# or on demand — normal code PRs are covered by the `CI` workflow.
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - docker-compose.yml
+      - .github/workflows/docker.yml
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build control-plane image (no push)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: seasoned-hand:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke — binary + UI bundle are present in the image
+        run: |
+          docker run --rm --entrypoint sh seasoned-hand:ci -c \
+            'command -v seasoned-hand-server && test -f /app/ui/index.html && echo "image OK"'

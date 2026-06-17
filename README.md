@@ -48,16 +48,21 @@ Think of it as an operating system. The **kernel** is a Manus-style agent runtim
 git clone https://github.com/slowdoctor-dev/seasoned-hand
 cd seasoned-hand
 cp .env.example .env  # fill in API keys
-docker compose up -d
+docker compose up -d  # first run builds the control-plane image (compiles Rust + the UI)
 open http://localhost:3000
 ```
+
+`docker compose up -d` brings up Bifrost + Redis + the control plane, which
+**self-serves the Dioxus UI** (no separate frontend service). The first build
+compiles the Rust binary and the wasm bundle, so it takes a few minutes; later
+starts are instant.
 
 **Serving the UI.** The Dioxus UI is a static wasm bundle. For development run it
 on its own port with `just dev-ui`. To self-host the whole app as a single binary,
 build the bundle and let the control plane serve it:
 
 ```bash
-just build-ui                 # produces a static bundle under target/dx/
+just build-ui                 # bundle: crates/seasoned-hand-ui/target/dx/seasoned-hand-ui/release/web/public
 SH_UI_DIST=<bundle-dir> cargo run -p seasoned-hand-server   # serves /v1 + /ws + UI
 ```
 

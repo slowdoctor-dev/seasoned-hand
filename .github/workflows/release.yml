@@ -1,0 +1,92 @@
+name: Release
+
+# Auto-release on a version tag (issue #6 / Phase 6.7): build + test the backend,
+# build the Dioxus wasm bundle, publish a GitHub Release with artifacts, and push
+# the single control-plane image to GHCR.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to (re)build artifacts for, e.g. v0.6.0"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  IMAGE: ghcr.io/${{ github.repository }}
+
+permissions:
+  contents: write # create the GitHub Release
+  packages: write # push to GHCR
+
+jobs:
+  artifacts:
+    name: Backend binary + UI bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # On manual re-run, build the exact requested tag (not the default ref).
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: extractions/setup-just@v3
+
+      - name: Test backend
+        run: cargo test --workspace
+
+      - name: Build release binary
+        run: cargo build --release -p seasoned-hand-server
+
+      - name: Build the Dioxus web bundle (Tailwind + dx)
+        run: |
+          cargo install dioxus-cli --version 0.6.3 --locked
+          just build-ui
+
+      - name: Package artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          tar -C target/release -czf "dist/seasoned-hand-server-linux-x64.tar.gz" seasoned-hand-server
+          tar -C crates/seasoned-hand-ui/target/dx/seasoned-hand-ui/release/web -czf "dist/seasoned-hand-ui-web.tar.gz" public
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/seasoned-hand-server-linux-x64.tar.gz
+            dist/seasoned-hand-ui-web.tar.gz
+
+  image:
+    name: Push control-plane image to GHCR
+    runs-on: ubuntu-latest
+    # Don't publish an image unless the backend build + tests passed, and build the
+    # same ref the artifacts job did.
+    needs: artifacts
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build + push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.event.inputs.tag || github.ref_name }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

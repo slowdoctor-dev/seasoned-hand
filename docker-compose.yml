@@ -42,32 +42,41 @@ services:
       - ./data/redis:/data
     command: redis-server --appendonly yes
 
-  # ===== Control plane (Rust) =====
-  # Built in Phase 0, story 0.2+
-  # Uncomment when /src/Dockerfile exists
-  # control-plane:
-  #   build: .
-  #   container_name: seasoned-hand-control-plane
-  #   restart: unless-stopped
-  #   ports:
-  #     - "3000:3000"
-  #   env_file: .env
-  #   depends_on:
-  #     - bifrost
-  #     - redis
-  #   volumes:
-  #     - ./data/db:/app/data
-  #     - ./data/workspaces:/workspaces
-
-  # ===== Frontend (Dioxus, ADR-016) =====
-  # The UI is a unified Rust/Dioxus wasm bundle (crates/seasoned-hand-ui), not a
-  # separate service. Build it with `just build-ui`, then have the control plane
-  # self-host it (single binary) by setting SH_UI_DIST to the bundle dir — see
-  # the commented control-plane service above and .env.example (issue #33). For
-  # local UI dev with hot reload, run `just dev-ui` instead.
+  # ===== Control plane (Rust) — serves /v1 + /ws + the Dioxus UI =====
+  # One image (see ./Dockerfile): the Rust binary self-serves the built Dioxus
+  # bundle via SH_UI_DIST (issue #33), so `docker compose up -d` brings up the
+  # whole stack and the UI is at http://localhost:3000 (issue #6).
+  control-plane:
+    build: .
+    container_name: seasoned-hand-control-plane
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    # The image ships safe defaults (HOST=0.0.0.0, SH_UI_DIST, REDIS_URL=redis://redis:6379);
+    # .env supplies provider keys + any overrides. `env_file` is optional — compose
+    # warns but starts if it's missing, so copy .env.example to .env first.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Point the control plane at the in-compose Bifrost gateway (internal port).
+      - BIFROST_BASE_URL=http://bifrost:8080/v1
+    depends_on:
+      - bifrost
+      - redis
+    volumes:
+      # Persist the SQLite DB + per-session workspaces.
+      - ./data/control-plane:/app/data
+      # slots.yaml (model routing) is read at /app/config/slots.yaml if present.
+      - ./config:/app/config:ro
+      # Sandbox spawning (bollard) talks to the host Docker daemon. This grants the
+      # control plane control of the host's Docker — see sandbox/mod.rs + SECURITY.md
+      # for the trust boundary. Required only to EXECUTE tasks (sandbox per session);
+      # the API/UI boot fine without it (SandboxClient connects lazily).
+      - /var/run/docker.sock:/var/run/docker.sock
 
   # ===== AIO Sandbox (per-session) =====
-  # Created dynamically by control plane via bollard.
+  # Created dynamically by the control plane via bollard (host Docker socket above).
   # Not defined as a long-running service.
 
 networks:

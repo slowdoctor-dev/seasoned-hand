@@ -12,3 +12,10 @@ watch_path = ["src", "index.html", "input.css"]
 [web.resource]
 style = ["assets/tailwind.css"]
 script = []
+
+# dioxus-cli 0.6.x requires the `dev`-only resource subtable to be present even
+# when empty (the field is non-optional in WebResourceConfig). These are the
+# extra stylesheets/scripts injected only under `dx serve` (dev), not `dx build`.
+[web.resource.dev]
+style = []
+script = []
