@@ -68,6 +68,12 @@ check-ui:
     cargo fmt --manifest-path crates/seasoned-hand-ui/Cargo.toml -- --check
     cargo clippy --manifest-path crates/seasoned-hand-ui/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
     cargo check --manifest-path crates/seasoned-hand-ui/Cargo.toml --target wasm32-unknown-unknown
+    # Release check too: `dx build --release` turns off `debug_assertions`, which
+    # disables rsx hot-reload and changes capture semantics (a value used in
+    # `key: "{x}"` and also moved into an onclick closure compiles in debug but is
+    # an E0382 in release). The debug check above cannot see that class of bug, so
+    # the deploy image build was the only thing catching it (issue #6).
+    cargo check --manifest-path crates/seasoned-hand-ui/Cargo.toml --target wasm32-unknown-unknown --release
 
 _tailwind-cli:
     #!/usr/bin/env bash

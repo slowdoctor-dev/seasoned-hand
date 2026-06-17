@@ -301,7 +301,7 @@ fn FileNode(session_id: String, path: String, name: String, is_dir: bool, depth:
                                 FileNode {
                                     key: "{child_path}",
                                     session_id: session_id.clone(),
-                                    path: child_path,
+                                    path: child_path.clone(),
                                     name: e.name.clone(),
                                     is_dir: e.kind == "dir",
                                     depth: depth + 1,

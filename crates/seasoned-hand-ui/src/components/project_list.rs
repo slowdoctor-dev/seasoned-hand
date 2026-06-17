@@ -33,9 +33,12 @@ pub fn ProjectList() -> Element {
                             li { key: "{pid}",
                                 button {
                                     class: "{cls}",
-                                    onclick: move |_| {
-                                        active_project.set(Some(pid.clone()));
-                                        active_task.set(None);
+                                    onclick: {
+                                        let pid = pid.clone();
+                                        move |_| {
+                                            active_project.set(Some(pid.clone()));
+                                            active_task.set(None);
+                                        }
                                     },
                                     "{title}"
                                 }

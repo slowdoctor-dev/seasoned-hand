@@ -61,6 +61,13 @@ jobs:
         run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
       - name: Compile-check the Dioxus UI for wasm
         run: cargo check --target wasm32-unknown-unknown
+      # `dx build --release` (the deploy image) turns off `debug_assertions`,
+      # which disables rsx hot-reload and changes capture semantics — a class of
+      # error (E0382: value moved into a closure but also borrowed by `key`) the
+      # debug check above cannot see. Run the release check here so UI-only PRs
+      # (which don't trigger the Docker image build) still catch it (issue #6).
+      - name: Compile-check the Dioxus UI for wasm (release)
+        run: cargo check --target wasm32-unknown-unknown --release
 
   ui-bundle:
     name: UI bundle smoke (workflow_dispatch only)

@@ -51,7 +51,10 @@ pub fn TaskList() -> Element {
                             li { key: "{tid}",
                                 button {
                                     class: "{cls}",
-                                    onclick: move |_| active_task.set(Some(tid.clone())),
+                                    onclick: {
+                                        let tid = tid.clone();
+                                        move |_| active_task.set(Some(tid.clone()))
+                                    },
                                     div { class: "truncate", "{title}" }
                                     div { class: "text-xs text-neutral-500", "{status}" }
                                 }
