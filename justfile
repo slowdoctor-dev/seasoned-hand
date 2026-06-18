@@ -133,6 +133,13 @@ test: test-backend
 test-backend:
     cargo test --workspace
 
+# Run the Docker/Redis-dependent test tiers CI skips by default (the #[ignore]'d
+# sandbox + Redis suites) — the "cargo test --workspace on a Docker host" release
+# gate (#6). Needs a running Docker daemon. Pass --no-sandbox to skip the ~1GB
+# AIO image pull. Does NOT run the live LLM/SMTP smokes (those need provider keys).
+test-docker-host *ARGS:
+    ./scripts/test-docker-host.sh {{ARGS}}
+
 # Verify code matches /specs
 spec-check:
     ./scripts/spec-check.sh
