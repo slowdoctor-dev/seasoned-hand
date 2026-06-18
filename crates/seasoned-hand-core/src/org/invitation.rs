@@ -170,9 +170,10 @@ impl InvitationService {
                 let token_plain = generate_login_token();
                 let token_hash = sha256_hex(token_plain.as_bytes());
                 tx.execute(
-                    "INSERT INTO user_invitation_tokens (token_hash, user_id, created_at, consumed_at)
-                     VALUES (?1, ?2, ?3, NULL)",
-                    params![token_hash, user_id, now],
+                    "INSERT INTO user_invitation_tokens \
+                     (token_hash, user_id, organization_id, created_at, consumed_at)
+                     VALUES (?1, ?2, ?3, ?4, NULL)",
+                    params![token_hash, user_id, organization_id, now],
                 )?;
 
                 tx.commit()?;
@@ -207,52 +208,16 @@ impl InvitationService {
         })
     }
 
-    /// Issue #22: verify a plaintext invitation login token and atomically
-    /// **consume** it (single-use). The token was previously minted, hashed, and
-    /// stored by `invite_user` but never verified or consumed — dead weight that
-    /// would become replayable / non-expiring the moment a login route reads it.
-    ///
-    /// Returns the `user_id` the token grants. Fails closed: unknown, expired, or
-    /// already-consumed tokens are rejected, and the consume is a conditional
-    /// UPDATE (`consumed_at IS NULL`) so two concurrent logins can't both succeed.
-    pub async fn verify_and_consume_login_token(
-        &self,
-        token_plain: &str,
-    ) -> Result<String, InvitationError> {
-        let token_hash = sha256_hex(token_plain.as_bytes());
-        let now = now_micros();
-        self.db
-            .with_conn(move |conn| {
-                let row: Option<(String, i64, Option<i64>)> = conn
-                    .query_row(
-                        "SELECT user_id, created_at, consumed_at \
-                         FROM user_invitation_tokens WHERE token_hash = ?",
-                        params![token_hash],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                    )
-                    .optional()?;
-                let Some((user_id, created_at, consumed_at)) = row else {
-                    return Err(InvitationError::InvalidToken);
-                };
-                if consumed_at.is_some() {
-                    return Err(InvitationError::TokenAlreadyConsumed);
-                }
-                if now.saturating_sub(created_at) > LOGIN_TOKEN_TTL_MICROS {
-                    return Err(InvitationError::TokenExpired);
-                }
-                // Atomic single-use: only the first concurrent consumer wins.
-                let n = conn.execute(
-                    "UPDATE user_invitation_tokens SET consumed_at = ? \
-                     WHERE token_hash = ? AND consumed_at IS NULL",
-                    params![now, token_hash],
-                )?;
-                if n == 0 {
-                    return Err(InvitationError::TokenAlreadyConsumed);
-                }
-                Ok(user_id)
-            })
-            .await
-    }
+    // NOTE: the single-use / TTL / consume logic for invitation login tokens
+    // lives in `auth::AuthSessionStore::login` (issue #6 review). That path
+    // resolves the membership the token was *minted for* and inserts the session
+    // in the SAME transaction as the consume — so it cannot be factored into a
+    // standalone "verify token" helper without losing that atomicity. An earlier
+    // standalone `verify_and_consume_login_token` here returned only the
+    // `user_id` and was never wired to a route; it was removed because a second,
+    // org-blind consume path is exactly what let the wrong-org session bug slip
+    // through. The `InvitationError::{InvalidToken,TokenExpired,
+    // TokenAlreadyConsumed}` variants are retained for the API error mapping.
 
     pub async fn list_org_users(
         &self,
