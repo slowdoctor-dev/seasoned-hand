@@ -25,6 +25,10 @@ Pick a story from the current phase that's not yet `Status: in-progress` or `don
 4. **Start a fresh AI session** (Claude Code or Codex) with `/prompts/gsd-execute-story.md`.
 5. **Discuss → Plan → Execute → Verify** (see workflow in prompt).
 6. **Verify all gates pass**: `just verify`.
+   - The default gates skip the `#[ignore]`'d sandbox + Redis suites (no daemon
+     in plain CI). On a machine with a **Docker daemon**, run
+     `just test-docker-host` to exercise those tiers too (it spins up Redis,
+     pulls the pinned AIO sandbox image, and runs the live Docker/Redis tests).
 7. **Open PR** with the commit message from the story file.
 8. **Wait for review**. Reviewer checks spec compliance, not just code.
 9. **After merge**: update story status to `done`.
