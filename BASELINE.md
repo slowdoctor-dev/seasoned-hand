@@ -15,7 +15,7 @@
 | **Repo** | `github.com/slowdoctor-dev/seasoned-hand` (Public) |
 | **License** | Apache-2.0 |
 | **Tagline** | Every task makes the hand wiser. |
-| **Status** | Phase 5 complete → **Phase 6 in progress** (open-source release; Dioxus cutover done — Next.js removed in #5, ADR-016) |
+| **Status** | **v1 shipped — `v0.6.0` (2026-06-18); all 6 phases complete.** Open-source release + Dioxus cutover (Next.js removed in #5, ADR-016) done; one-command Docker deploy + CI/CD auto-release live |
 | **Domain** | General-purpose autonomous AI agent platform (no domain assumptions) |
 | **Audience** | Developers + business users (balanced) |
 | **Philosophy** | Digital Employee (not assistant) |
@@ -96,7 +96,7 @@ Full methodology: `/docs/methodology.md`
 | 3 | 4 | 4-layer learning system | **starts** |
 | 4 | 3 | Curator + self-improvement | (matures) |
 | 5 | 3 | Multi-user + organization | (scales) |
-| 6 | 2 | **Open source release + Dioxus migration (CURRENT, ADR-016)** — release-readiness checklist (perf seal, Docker-host tests, doc reconciliation) runs in parallel and gates the release tag | (ships) |
+| 6 | 2 | **Open source release + Dioxus migration — ✅ shipped `v0.6.0` 2026-06-18 (ADR-016)**; release-readiness checklist (perf seal, doc reconciliation, hardening) all green | (ships) |
 
 Total: **22 weeks ≈ 5 months** (planned). Phase 0/1/2 actuals to date:
 3 days + ~2 days + 3 days under Claude + Codex parallel-mode.
