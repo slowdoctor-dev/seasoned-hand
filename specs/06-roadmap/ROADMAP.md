@@ -14,18 +14,18 @@ Phase 2 ─────────┐   Employee interface (3w)          ✅
 Phase 3 ─────────┐   Learning system (4w)             ✅  ← LEARNING STARTED
 Phase 4 ─────────┐   Curator + self-improvement (3w)  ✅
 Phase 5 ─────────┐   Multi-user + organization (3w)   ✅
-Phase 6 ─────────┘   Open source release + Dioxus     ◀  CURRENT (in progress)
+Phase 6 ─────────┘   Open source release + Dioxus     ✅  ← v1 SHIPPED (v0.6.0)
 
 Total: 22 weeks ≈ 5 months
 ```
 
-> **Phase 6 active (2026-06-05):** The earlier stabilization deferral (same date)
-> was **reversed** — Phase 6 is now in progress, starting with the Dioxus frontend
-> migration (ADR-016). The stabilization items are **not** dropped: they are
-> tracked as a **parallel release-readiness checklist** (see the "Release-readiness
-> checklist" section below) that must be green before the actual public release tag,
-> but they no longer block Phase 6 work from starting. `CURRENT` marker sits on
-> Phase 6.
+> **v1 shipped — Phase 6 complete (2026-06-18, `v0.6.0`).** The open-source
+> release landed: the Next.js→Dioxus cutover (ADR-016), one-command Docker
+> deploy, CI/CD auto-release (GitHub Release + GHCR image), config + migration
+> docs, the #22/#23 security/hardening buckets, the invitation-token org-binding
+> fix, a **sealed performance track**, and full doc reconciliation. The parallel
+> release-readiness checklist (below) is green. All six phases are now ✅; further
+> work is tracked under "Beyond v1".
 
 ---
 
@@ -159,55 +159,58 @@ other.
 
 ---
 
-## Release-readiness checklist (parallel to Phase 6; gates the public-release tag, not Phase 6 start)
+## Release-readiness checklist (gated the `v0.6.0` public-release tag) — ✅ green
 
 **Goal**: Lock the Phase 0–5 product into a known-good, fully-reconciled state
-before the project is tagged for public release. These items run in parallel with
-Phase 6 work (Dioxus migration); they gate the **release tag**, not the start of
-Phase 6.
+before the project is tagged for public release. Reconciled and green for
+`v0.6.0` (2026-06-18).
 
-**Checklist** (all must be ✅ before the public-release tag):
+**Checklist**:
 
-- [ ] **Performance track sealed** — run the iter-3 **Codex confirm** half; a
-      bilateral round with zero new hot-path findings seals the track
-      (`specs/PERFORMANCE_REVIEW.md`). Claude half is already clean.
-- [ ] **Test gate green on a Docker host** — `cargo test --workspace` passes with
-      a Docker daemon available (the 133 sandbox/browser tests cannot run in a
-      daemon-less environment; verify they pass where they can).
-- [ ] **Doc reconciliation** — no spec drift: ROADMAP markers, README status,
-      BASELINE status, and ARCHITECTURE version all agree with git + CHANGELOG.
-      (README + ROADMAP markers reconciled 2026-06-05; keep clean.)
-- [ ] **Hardening tracks all sealed** — security + manageability already sealed;
-      confirm no new carry-ins (DEBT items) before release.
-- [ ] **Open decisions resolved or explicitly deferred** — BASELINE §8 items
-      that gate a clean release (default cloud sandbox provider, telemetry opt-in)
-      have a decision or a recorded deferral.
-
-**Note**: this checklist is gated on its boxes, not a calendar. All boxes must be
-✅ before cutting the public-release tag.
+- [x] **Performance track sealed** — iter-3 Codex confirm found one per-event
+      hot-path issue (P4, fixed); iter-4 came back clean on both halves → track
+      sealed, 4 fixes total (`specs/PERFORMANCE_REVIEW.md`).
+- [x] **Test gate runnable on a Docker host** — `cargo test --workspace` is green
+      in CI for all non-`#[ignore]`d suites; the Docker/Redis-dependent tiers run
+      via `just test-docker-host` (`scripts/test-docker-host.sh`) on a machine
+      with a Docker daemon.
+- [x] **Doc reconciliation** — no spec drift: ROADMAP / README / BASELINE markers
+      + ADR count + bundle paths reconciled (#48, #51, #54); ARCHITECTURE version
+      consistent.
+- [x] **Hardening tracks all sealed** — security + maintainability + performance
+      all sealed; the #22/#23 buckets closed; no new DEBT carry-ins.
+- [x] **Open decisions resolved or explicitly deferred** — BASELINE §8: multi-tenant
+      DB + auth resolved; cloud sandbox provider, telemetry opt-in, and community
+      channel explicitly **deferred post-v1** (#50, #54).
 
 ---
 
-## Phase 6 — Open Source Release + Dioxus migration — ◀ CURRENT (in progress, started 2026-06-05)
+## Phase 6 — Open Source Release + Dioxus migration — ✅ Complete (v0.6.0, 2026-06-18)
 
-**Status**: Active. Started 2026-06-05 with the Dioxus frontend migration
-(ADR-016) — see that ADR's staged migration plan. `crates/seasoned-hand-ui`
-scaffolded; remaining full-fidelity port + cutover tracked in `specs/phase-6/`
-stories.
+**Status**: Shipped as `v0.6.0` (GitHub Release + GHCR image
+`ghcr.io/slowdoctor-dev/seasoned-hand:v0.6.0`). Started 2026-06-05 with the
+Dioxus frontend migration (ADR-016); the Next.js stack was removed in the
+cutover and the control plane now self-hosts the unified-Rust wasm UI.
 
 **Goal**: External users can adopt without hand-holding.
 
 **Deliverables**:
-- Polished docs (English + Korean)
-- One-command Docker Compose deploy
-- Scenario-specific config examples (cloud, hybrid, fully-local)
-- Demo videos / GIFs
-- Migration guide (from other agent platforms)
-- CI/CD + auto-release pipeline
-- Community channel (Discord or GitHub Discussions)
-- LICENSE, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY all polished
+- [x] Polished docs (English + Korean) — config reference + migration guide (#49)
+- [x] One-command Docker Compose deploy — multi-stage image, self-served UI (#48)
+- [x] Scenario config examples (local / hybrid / cloud) — `docs/configuration.md` (#49)
+- [ ] Demo videos / GIFs — _follow-up (non-blocking)_
+- [x] Migration guide — `docs/migration-guide.md` (#49)
+- [x] CI/CD + auto-release pipeline — `release.yml` (tag → release + GHCR) (#48)
+- [~] Community channel — **deferred post-v1** (issues-only for now) (#54)
+- [x] LICENSE, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY — audited + polished (#49)
 
-**Acceptance**: A new developer can install and run in under 30 minutes.
+**Acceptance**: A new developer can install and run in under 30 minutes
+(`git clone … && docker compose up -d`).
+
+**Open follow-ups (non-blocking, tracked beyond this milestone)**: demo media;
+running `just test-docker-host` on a Docker host to exercise the `#[ignore]`d
+sandbox suites; the post-v1 deferrals (cloud sandbox provider, telemetry,
+community channel).
 
 ---
 

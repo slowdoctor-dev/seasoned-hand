@@ -21,17 +21,19 @@ It's a hand that gets seasoned by the work you give it.
 
 ## Status
 
-**Phase 5 complete → Phase 6 in progress.** Foundation (Phase 0), Manus 5-layer
-deep execution (Phase 1), the employee interface (Phase 2 — briefing gate,
-deliverables, provenance, channel framework, durable pause/resume), the 4-layer
-learning system (Phase 3), the curator + self-improvement loop (Phase 4), and
-multi-user + organization (Phase 5 — RBAC, tenant isolation, audit log, per-user
-cost ledger, SOP/playbook sharing) have shipped. **Phase 6 (open-source release)
-is underway; the Dioxus frontend cutover is complete** (the Next.js app was
-removed in #5 — the UI is now a unified-Rust Dioxus crate for web/desktop/mobile,
-per ADR-016). A release-readiness checklist (perf seal,
-Docker-host tests, doc reconciliation) runs in parallel and gates the public
-release tag — see [`/specs/06-roadmap/ROADMAP.md`](specs/06-roadmap/ROADMAP.md).
+**v1 shipped — `v0.6.0` (2026-06-18). All six phases complete.** Foundation
+(Phase 0), Manus 5-layer deep execution (Phase 1), the employee interface
+(Phase 2 — briefing gate, deliverables, provenance, channel framework, durable
+pause/resume), the 4-layer learning system (Phase 3), the curator +
+self-improvement loop (Phase 4), multi-user + organization (Phase 5 — RBAC,
+tenant isolation, audit log, per-user cost ledger, SOP/playbook sharing), and
+the **open-source release (Phase 6)** have all shipped. The Dioxus frontend
+cutover is complete (the Next.js app was removed in #5 — the UI is now a
+unified-Rust Dioxus crate for web/desktop/mobile, per ADR-016), with one-command
+Docker deploy and CI/CD auto-release. Grab the release: [GitHub
+Releases](https://github.com/slowdoctor-dev/seasoned-hand/releases/tag/v0.6.0) or
+`ghcr.io/slowdoctor-dev/seasoned-hand:v0.6.0`. Roadmap:
+[`/specs/06-roadmap/ROADMAP.md`](specs/06-roadmap/ROADMAP.md).
 
 See [`CHANGELOG.md`](CHANGELOG.md) for what each phase shipped,
 [`BASELINE.md`](BASELINE.md) §6 for the 6-phase roadmap, and
