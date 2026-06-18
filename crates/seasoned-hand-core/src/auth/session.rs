@@ -97,9 +97,12 @@ impl AuthSessionStore {
                     // Issue #6 review: bind to the token's `organization_id` so a
                     // user with multiple memberships gets a session for the org
                     // the invite was issued for, NOT whichever happens to be
-                    // primary. Legacy (NULL-org) tokens fall back to primary
-                    // resolution; they are single-use and short-TTL, so they
-                    // expire rather than need a backfill.
+                    // primary. A NULL org means a genuine pre-V027 legacy token
+                    // (V027's FK is ON DELETE CASCADE, so org deletion removes the
+                    // token rather than nulling it — NULL can't be a post-deletion
+                    // artifact). Legacy NULL-org tokens fall back to primary
+                    // resolution; single-use + short-TTL, so they expire rather
+                    // than need a backfill.
                     let membership: Option<(String, String, String)> = match &invite_org_id {
                         Some(org_id) => tx
                             .query_row(
@@ -511,6 +514,26 @@ mod tests {
         let store = AuthSessionStore::new(pool);
         assert!(matches!(
             store.login("invite-old").await,
+            Err(AuthLoginError::InvalidInvitation)
+        ));
+    }
+
+    #[tokio::test]
+    async fn deleting_bound_org_invalidates_token_without_primary_fallback() {
+        // Issue #6 review (Codex): with ON DELETE CASCADE, hard-deleting the
+        // invitation's org removes the token (FKs are ON per db::open). Login
+        // must fail closed — NOT silently rebind to the user's primary
+        // membership, which an ON DELETE SET NULL + legacy fallback would do.
+        let pool = open(":memory:").await.unwrap();
+        seed_multi_membership_invite(&pool, "u1", "invite-o2", "o2").await;
+        pool.with_conn(|conn| {
+            conn.execute("DELETE FROM organizations WHERE id = 'o2'", [])
+                .unwrap();
+        })
+        .await;
+        let store = AuthSessionStore::new(pool);
+        assert!(matches!(
+            store.login("invite-o2").await,
             Err(AuthLoginError::InvalidInvitation)
         ));
     }

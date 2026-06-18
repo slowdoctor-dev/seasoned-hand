@@ -12,13 +12,18 @@
 -- a backfill; login falls back to primary-membership resolution only for a NULL
 -- organization_id (documented legacy path).
 --
--- ON DELETE SET NULL: if the org row is later removed, the token simply reverts
--- to the legacy (primary) resolution rather than dangling a stale FK.
+-- ON DELETE CASCADE (matching organization_memberships' FK to organizations): if
+-- the bound org is hard-deleted, its pending invitation tokens are removed too —
+-- an invite to a deleted org is void. Crucially this is NOT `SET NULL`: SET NULL
+-- would silently rebind a still-valid token to the user's *primary* membership
+-- via the NULL legacy path (re-introducing the wrong-org bug this migration
+-- fixes). With CASCADE, a NULL organization_id can only mean a genuine pre-V027
+-- legacy row, never a post-deletion artifact.
 
 PRAGMA foreign_keys = OFF;
 
 ALTER TABLE user_invitation_tokens
-    ADD COLUMN organization_id TEXT REFERENCES organizations(id) ON DELETE SET NULL;
+    ADD COLUMN organization_id TEXT REFERENCES organizations(id) ON DELETE CASCADE;
 
 PRAGMA foreign_keys = ON;
 PRAGMA foreign_key_check;
