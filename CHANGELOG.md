@@ -104,6 +104,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Historical content remains in git history.)
 
 ### Security
+- **Invitation-token login: org-binding + TTL enforcement (issue #6 post-hoc
+  review of batch E #41).** The live login path
+  (`auth::AuthSessionStore::login`) resolved identity from the user's **primary**
+  membership and never enforced the invitation TTL — so (a) redeeming an
+  invitation could mint a session scoped to the wrong organization/tenant for a
+  user with multiple memberships (a stale primary would yield a cross-tenant
+  session, since `organizations.tenant_id` is 1:1), and (b) an unconsumed
+  invitation token never expired. Fixes: migration **V027** adds
+  `organization_id` to `user_invitation_tokens`; `invite_user` persists it at
+  mint; `login` now resolves the membership the token was minted for (fail-closed
+  `NoMembership` if absent) and rejects tokens past `LOGIN_TOKEN_TTL_MICROS`
+  (legacy NULL-org tokens fall back to primary resolution; they are single-use
+  and short-TTL). Removed the never-wired, org-blind
+  `InvitationService::verify_and_consume_login_token` (the divergent second
+  consume path that masked the gap); its single-use/TTL coverage moved onto the
+  live `login` path. *(Codex-found, Claude-fixed)*
 - **Audit integrity, store-layer access control, invitation tokens — issue #22
   batch E:**
   - **Audit log is now tamper-evident + append-only at the DB layer**

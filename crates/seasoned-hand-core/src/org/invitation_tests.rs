@@ -150,89 +150,9 @@ async fn cross_tenant_invite_denied() {
     assert!(err.to_string().contains("cross-tenant"));
 }
 
-// --- Issue #22: login-token verify / consume / expiry ------------------------
-
-use super::invitation::{InvitationError, LOGIN_TOKEN_TTL_MICROS};
-
-async fn invite_and_token(pool: &crate::db::DbPool) -> (InvitationService, String, String) {
-    seed(pool).await;
-    let events = Arc::new(SqliteEventStore::new(pool.clone()));
-    let audit = AuditLogger::new(pool.clone(), events);
-    let service = InvitationService::new(pool.clone(), audit);
-    let out = service
-        .invite_user(
-            &admin_ctx("tenant-a", "org-a"),
-            "acme",
-            "new@acme.com",
-            "viewer",
-        )
-        .await
-        .expect("invite");
-    (service, out.user_id, out.login_token)
-}
-
-#[tokio::test]
-async fn login_token_verifies_then_is_single_use() {
-    let pool = db::open(":memory:").await.unwrap();
-    let (service, user_id, token) = invite_and_token(&pool).await;
-
-    // First use: verifies and returns the granted user_id.
-    let resolved = service
-        .verify_and_consume_login_token(&token)
-        .await
-        .expect("first verify");
-    assert_eq!(resolved, user_id);
-
-    // The row is now marked consumed.
-    pool.with_conn(|conn| {
-        let consumed: Option<i64> = conn
-            .query_row(
-                "SELECT consumed_at FROM user_invitation_tokens WHERE user_id = ?1",
-                [user_id.clone()],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(consumed.is_some(), "token must be marked consumed");
-    })
-    .await;
-
-    // Second use: rejected (single-use).
-    assert!(matches!(
-        service.verify_and_consume_login_token(&token).await,
-        Err(InvitationError::TokenAlreadyConsumed)
-    ));
-}
-
-#[tokio::test]
-async fn unknown_login_token_is_rejected() {
-    let pool = db::open(":memory:").await.unwrap();
-    let (service, _user, _token) = invite_and_token(&pool).await;
-    assert!(matches!(
-        service
-            .verify_and_consume_login_token("not-a-real-token")
-            .await,
-        Err(InvitationError::InvalidToken)
-    ));
-}
-
-#[tokio::test]
-async fn expired_login_token_is_rejected() {
-    let pool = db::open(":memory:").await.unwrap();
-    let (service, user_id, token) = invite_and_token(&pool).await;
-
-    // Age the token past the TTL by back-dating created_at.
-    let stale = -(LOGIN_TOKEN_TTL_MICROS + 1);
-    pool.with_conn(move |conn| {
-        conn.execute(
-            "UPDATE user_invitation_tokens SET created_at = ?1 WHERE user_id = ?2",
-            rusqlite::params![stale, user_id],
-        )
-        .unwrap();
-    })
-    .await;
-
-    assert!(matches!(
-        service.verify_and_consume_login_token(&token).await,
-        Err(InvitationError::TokenExpired)
-    ));
-}
+// NOTE: invitation login-token verify / consume / expiry is now exercised
+// against the live path (`auth::AuthSessionStore::login`) in
+// `auth/session.rs` tests — including the issue #6 org-binding + TTL coverage.
+// The standalone `InvitationService::verify_and_consume_login_token` helper
+// these tests used was removed (it was never wired to a route and resolved no
+// org); see the note in `invitation.rs`.

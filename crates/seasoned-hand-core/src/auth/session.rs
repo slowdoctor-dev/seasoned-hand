@@ -13,6 +13,7 @@
 use crate::auth::{AuthContext, Role};
 use crate::db::DbPool;
 use crate::hash::sha256_hex;
+use crate::org::invitation::LOGIN_TOKEN_TTL_MICROS;
 use crate::time::now_micros;
 use rusqlite::OptionalExtension;
 use uuid::Uuid;
@@ -50,9 +51,9 @@ impl AuthSessionStore {
     }
 
     /// Exchange a single-use invitation token for a session token. Validates the
-    /// invitation (must exist and be unconsumed), resolves identity from the
-    /// user's primary membership, consumes the invitation, and inserts a session
-    /// — all in one transaction.
+    /// invitation (must exist, be unconsumed, and be within its TTL), resolves
+    /// identity from the membership the invitation was minted for, consumes the
+    /// invitation, and inserts a session — all in one transaction.
     pub async fn login(&self, invitation_token: &str) -> Result<LoginResult, AuthLoginError> {
         let now = now_micros();
         let expires_at = now + SESSION_TTL_MICROS;
@@ -66,32 +67,66 @@ impl AuthSessionStore {
                 move |conn| -> Result<(String, String, String, String), AuthLoginError> {
                     let tx = conn.transaction()?;
 
-                    let user_id: Option<String> = tx
+                    // Issue #6 review: read the token's bound organization +
+                    // mint time. `organization_id` is nullable only for legacy
+                    // (pre-V027) tokens.
+                    let invite: Option<(String, Option<String>, i64)> = tx
                         .query_row(
-                            "SELECT user_id FROM user_invitation_tokens \
+                            "SELECT user_id, organization_id, created_at \
+                             FROM user_invitation_tokens \
                              WHERE token_hash = ?1 AND consumed_at IS NULL",
                             [&invite_hash],
-                            |r| r.get(0),
-                        )
-                        .optional()?;
-                    let user_id = user_id.ok_or(AuthLoginError::InvalidInvitation)?;
-
-                    // Resolve the primary membership of an ACTIVE user in an
-                    // ACTIVE org — a deactivated user or suspended/archived org
-                    // cannot exchange an invitation.
-                    let membership: Option<(String, String, String)> = tx
-                        .query_row(
-                            "SELECT m.tenant_id, m.organization_id, m.role \
-                             FROM organization_memberships m \
-                             JOIN users u ON u.id = m.user_id AND u.status = 'active' \
-                             JOIN organizations o \
-                               ON o.id = m.organization_id AND o.status = 'active' \
-                             WHERE m.user_id = ?1 \
-                             ORDER BY m.is_primary DESC, m.created_at ASC LIMIT 1",
-                            [&user_id],
                             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                         )
                         .optional()?;
+                    let (user_id, invite_org_id, created_at) =
+                        invite.ok_or(AuthLoginError::InvalidInvitation)?;
+
+                    // Enforce the 7-day invitation TTL. Previously unchecked on
+                    // this (live) path — an unconsumed token never expired. An
+                    // expired token reports as `InvalidInvitation` (same as
+                    // unknown/used) so the boundary leaks no expiry oracle.
+                    if now.saturating_sub(created_at) > LOGIN_TOKEN_TTL_MICROS {
+                        return Err(AuthLoginError::InvalidInvitation);
+                    }
+
+                    // Resolve the membership the invitation was minted for — of
+                    // an ACTIVE user in an ACTIVE org. A deactivated user or
+                    // suspended/archived org cannot exchange an invitation.
+                    //
+                    // Issue #6 review: bind to the token's `organization_id` so a
+                    // user with multiple memberships gets a session for the org
+                    // the invite was issued for, NOT whichever happens to be
+                    // primary. Legacy (NULL-org) tokens fall back to primary
+                    // resolution; they are single-use and short-TTL, so they
+                    // expire rather than need a backfill.
+                    let membership: Option<(String, String, String)> = match &invite_org_id {
+                        Some(org_id) => tx
+                            .query_row(
+                                "SELECT m.tenant_id, m.organization_id, m.role \
+                                 FROM organization_memberships m \
+                                 JOIN users u ON u.id = m.user_id AND u.status = 'active' \
+                                 JOIN organizations o \
+                                   ON o.id = m.organization_id AND o.status = 'active' \
+                                 WHERE m.user_id = ?1 AND m.organization_id = ?2",
+                                rusqlite::params![&user_id, org_id],
+                                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                            )
+                            .optional()?,
+                        None => tx
+                            .query_row(
+                                "SELECT m.tenant_id, m.organization_id, m.role \
+                                 FROM organization_memberships m \
+                                 JOIN users u ON u.id = m.user_id AND u.status = 'active' \
+                                 JOIN organizations o \
+                                   ON o.id = m.organization_id AND o.status = 'active' \
+                                 WHERE m.user_id = ?1 \
+                                 ORDER BY m.is_primary DESC, m.created_at ASC LIMIT 1",
+                                [&user_id],
+                                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                            )
+                            .optional()?,
+                    };
                     let (tenant_id, organization_id, role_db) =
                         membership.ok_or(AuthLoginError::NoMembership)?;
 
@@ -314,8 +349,71 @@ mod tests {
             .unwrap();
             conn.execute(
                 "INSERT INTO user_invitation_tokens (token_hash, user_id, created_at, consumed_at) \
-                 VALUES (?1, ?2, 1, NULL)",
-                rusqlite::params![ih, uid],
+                 VALUES (?1, ?2, ?3, NULL)",
+                rusqlite::params![ih, uid, now_micros()],
+            )
+            .unwrap();
+        })
+        .await;
+    }
+
+    /// Seed a user with two active memberships across distinct tenants —
+    /// primary `o1`/`t1`/admin and secondary `o2`/`t2`/viewer — plus a third
+    /// org `o3`/`t3` the user is NOT a member of, and an invitation token bound
+    /// to `bound_org`. (`organizations.tenant_id` is UNIQUE, so distinct orgs
+    /// are distinct tenants — which is exactly why resolving the *token's* org
+    /// rather than the primary membership matters: a stale primary would mint a
+    /// cross-tenant session.) Used to prove login binds to the invitation's org.
+    async fn seed_multi_membership_invite(
+        pool: &DbPool,
+        user_id: &str,
+        invite_token: &str,
+        bound_org: &str,
+    ) {
+        let invite_hash = sha256_hex(invite_token.as_bytes());
+        let (uid, ih, org) = (user_id.to_string(), invite_hash, bound_org.to_string());
+        pool.with_conn(move |conn| {
+            for (oid, tenant, slug) in [
+                ("o1", "t1", "o1-slug"),
+                ("o2", "t2", "o2-slug"),
+                ("o3", "t3", "o3-slug"),
+            ] {
+                conn.execute(
+                    "INSERT OR IGNORE INTO organizations \
+                     (id, tenant_id, slug, display_name, status, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, 'Org', 'active', 1, 1)",
+                    rusqlite::params![oid, tenant, slug],
+                )
+                .unwrap();
+            }
+            conn.execute(
+                "INSERT INTO users (id, tenant_id, email, display_name, status, created_at, updated_at) \
+                 VALUES (?1, 't1', ?2, 'Dev', 'active', 1, 1)",
+                rusqlite::params![uid, format!("{uid}@example.test")],
+            )
+            .unwrap();
+            // Primary membership: o1 / t1 / admin.
+            conn.execute(
+                "INSERT INTO organization_memberships \
+                 (id, tenant_id, organization_id, user_id, role, is_primary, created_at, updated_at) \
+                 VALUES (?1, 't1', 'o1', ?2, 'admin', 1, 1, 1)",
+                rusqlite::params![format!("m1-{uid}"), uid],
+            )
+            .unwrap();
+            // Secondary membership: o2 / t2 / viewer. (No membership in o3.)
+            conn.execute(
+                "INSERT INTO organization_memberships \
+                 (id, tenant_id, organization_id, user_id, role, is_primary, created_at, updated_at) \
+                 VALUES (?1, 't2', 'o2', ?2, 'viewer', 0, 2, 2)",
+                rusqlite::params![format!("m2-{uid}"), uid],
+            )
+            .unwrap();
+            // Invitation token bound to the chosen org.
+            conn.execute(
+                "INSERT INTO user_invitation_tokens \
+                 (token_hash, user_id, organization_id, created_at, consumed_at) \
+                 VALUES (?1, ?2, ?3, ?4, NULL)",
+                rusqlite::params![ih, uid, org, now_micros()],
             )
             .unwrap();
         })
@@ -359,6 +457,60 @@ mod tests {
         let store = AuthSessionStore::new(pool);
         assert!(matches!(
             store.login("nope").await,
+            Err(AuthLoginError::InvalidInvitation)
+        ));
+    }
+
+    #[tokio::test]
+    async fn login_binds_session_to_invitation_org_not_primary() {
+        // Issue #6 review: token bound to o2 (viewer); the user's PRIMARY
+        // membership is o1 (admin). The session must be scoped to o2/viewer,
+        // not the primary o1/admin.
+        let pool = open(":memory:").await.unwrap();
+        seed_multi_membership_invite(&pool, "u1", "invite-o2", "o2").await;
+        let store = AuthSessionStore::new(pool);
+
+        let result = store.login("invite-o2").await.expect("login ok");
+        assert_eq!(result.context.organization_id, "o2");
+        assert_eq!(result.context.tenant_id, "t2");
+        assert_eq!(result.context.org_role, Role::Viewer);
+
+        let verified = store.verify(&result.token).await.expect("verify ok");
+        assert_eq!(verified.organization_id, "o2");
+        assert_eq!(verified.tenant_id, "t2");
+        assert_eq!(verified.org_role, Role::Viewer);
+    }
+
+    #[tokio::test]
+    async fn login_to_org_with_no_membership_is_rejected() {
+        // A token bound to an org the user is NOT a member of must fail closed
+        // rather than silently fall back to another membership.
+        let pool = open(":memory:").await.unwrap();
+        seed_multi_membership_invite(&pool, "u1", "invite-o3", "o3").await;
+        let store = AuthSessionStore::new(pool);
+        assert!(matches!(
+            store.login("invite-o3").await,
+            Err(AuthLoginError::NoMembership)
+        ));
+    }
+
+    #[tokio::test]
+    async fn expired_invitation_is_rejected() {
+        // Issue #6 review: the live login path now enforces the 7-day TTL.
+        let pool = open(":memory:").await.unwrap();
+        seed_user_with_invite(&pool, "u1", "invite-old", "user").await;
+        pool.with_conn(|conn| {
+            let stale = now_micros() - LOGIN_TOKEN_TTL_MICROS - 1;
+            conn.execute(
+                "UPDATE user_invitation_tokens SET created_at = ?1 WHERE user_id = 'u1'",
+                [stale],
+            )
+            .unwrap();
+        })
+        .await;
+        let store = AuthSessionStore::new(pool);
+        assert!(matches!(
+            store.login("invite-old").await,
             Err(AuthLoginError::InvalidInvitation)
         ));
     }
