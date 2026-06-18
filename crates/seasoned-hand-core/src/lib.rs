@@ -50,6 +50,6 @@ mod tests {
 
     #[test]
     fn version_matches_package_version() {
-        assert_eq!(version(), "0.1.0");
+        assert_eq!(version(), "0.6.0");
     }
 }

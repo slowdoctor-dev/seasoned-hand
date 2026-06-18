@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.6.0] — 2026-06-18
+
+Phase 6 release: **open-source release + Dioxus frontend migration**. The Next.js
+app was removed in favor of a unified-Rust Dioxus UI (ADR-016); the control plane
+self-hosts the wasm bundle; one-command `docker compose up -d` brings up the full
+stack; CI/CD auto-releases on a version tag. Plus the #22/#23 security + hardening
+buckets, the invitation-token org-binding + TTL fix, a sealed performance track,
+and doc reconciliation for the public release.
+
 ### Added
 - **Self-host the UI from the control plane** (issue #33, deferred from #5). When
   `SH_UI_DIST` points at a built Dioxus bundle, the Axum server serves it as the
@@ -249,10 +260,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dev keys in `.env.example`; refreshed the ADR index (`specs/01-architecture/
   decisions/README.md`) to list ADR-011 through ADR-015.
 
-### Pending decisions
-- Default cloud sandbox provider
-- Telemetry opt-in approach
-- Phase 6 scope finalization (open-source release polish + marketplace)
+### Open decisions (reconciled for release — BASELINE §8)
+- **Default cloud sandbox provider** — deferred post-v1 (v1 is local-Docker-only).
+- **Telemetry opt-in** — deferred post-v1 (v1 collects no telemetry).
+- **Community channel** (Discord vs GitHub Discussions) — deferred post-v1
+  (issues-only for now).
 
 ---
 

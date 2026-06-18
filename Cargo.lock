@@ -2133,7 +2133,7 @@ checksum = "490dcfcbfef26be6800d11870ff2df8774fa6e86d047e3e8c8a76b25655e41ca"
 
 [[package]]
 name = "seasoned-hand-cli"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2155,7 +2155,7 @@ dependencies = [
 
 [[package]]
 name = "seasoned-hand-core"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "async-imap",
  "async-trait",
@@ -2195,7 +2195,7 @@ dependencies = [
 
 [[package]]
 name = "seasoned-hand-dto"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2203,7 +2203,7 @@ dependencies = [
 
 [[package]]
 name = "seasoned-hand-server"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "axum",

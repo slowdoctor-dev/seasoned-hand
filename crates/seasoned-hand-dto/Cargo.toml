@@ -6,7 +6,7 @@
 # compiles for both the host and `wasm32-unknown-unknown`.
 [package]
 name = "seasoned-hand-dto"
-version = "0.1.0"
+version = "0.6.0"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
