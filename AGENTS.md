@@ -180,13 +180,16 @@ This mirrors how Seasoned Hand itself works (recursive principle).
 
 ## 13. Current state
 
-- **Phase**: 6 in progress (open-source release; the Dioxus cutover, ADR-016, is
-  done — the Next.js frontend was removed in #5)
+- **Phase**: 6 complete — **v1 shipped as `v0.6.0` (2026-06-18)**. Open-source
+  release + Dioxus cutover (ADR-016) done (Next.js removed in #5); one-command
+  Docker deploy + CI/CD auto-release (GitHub Release + GHCR image) live; the
+  performance track is sealed and the #22/#23 hardening buckets are closed.
 - **Branch**: main
-- **Next milestone**: open-source release surface — documentation polish,
-  contributor onboarding flow, marketplace-style artifact exchange decisions, the
-  deferred UI follow-ups (#33: compiled Tailwind v4 + serve the dx bundle), and the
-  carry-forward dogfood-driven retunes for FTS5 weights (DEBT #76 successor) and
+- **Next (Beyond v1)**: non-blocking follow-ups — demo media; running
+  `just test-docker-host` on a Docker host to exercise the `#[ignore]`d sandbox
+  suites; the post-v1 deferrals (default cloud sandbox provider, telemetry
+  opt-in, community channel — BASELINE §8); marketplace-style artifact exchange;
+  and the dogfood-driven retunes for FTS5 weights (DEBT #76 successor) and
   curator adaptive policies (DEBT #92 / #94 successors).
 
 Check status: `just status` (or `git log --oneline` + `CHANGELOG.md`)
