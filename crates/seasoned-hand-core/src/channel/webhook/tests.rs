@@ -170,22 +170,29 @@ async fn webhook_delivery_rejects_private_ip() {
 }
 
 /// `webhook_delivery_allows_private_ip_with_allowlist` — operator
-/// can opt out per CIDR. With `10.0.0.0/8` allow-listed the SSRF
-/// guard passes; the HTTP attempt then fails with `Http(_)` because
-/// nothing is actually listening on 10.0.0.1, but the test only cares
-/// that the rejection variant is NOT the SSRF terminal 400.
+/// can opt out per CIDR. With TEST-NET-1 (`192.0.2.0/24`, treated as
+/// non-public by the guard) allow-listed the SSRF guard passes; the
+/// HTTP attempt then fails at the transport layer because 192.0.2.1
+/// is reserved and never routable, but the test only cares that the
+/// rejection variant is NOT the SSRF terminal 400. (A private-range
+/// address like 10.0.0.1 can have a real listener in containerized
+/// CI — the gateway — which answered the POST and flaked this test.)
 #[tokio::test]
 async fn webhook_delivery_allows_private_ip_with_allowlist() {
-    let allowlist: Vec<IpNet> = parse_allowlist("10.0.0.0/8").unwrap();
+    let allowlist: Vec<IpNet> = parse_allowlist("192.0.2.0/24").unwrap();
+    // `.no_proxy()`: with an HTTP(S)_PROXY env set (e.g. sandboxed CI), reqwest
+    // would route the attempt through the proxy and surface its 403 as
+    // `RemoteRejected` — this test needs the direct-connect transport failure.
     let http = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_millis(150))
         .timeout(std::time::Duration::from_millis(500))
+        .no_proxy()
         .build()
         .unwrap();
     let chan = WebhookChannel::new(Arc::new("t".into()), http, allowlist);
     let target = DeliveryTarget {
         channel: CHANNEL_NAME.into(),
-        target_ref: "url:http://10.0.0.1/admin".into(),
+        target_ref: "url:http://192.0.2.1/admin".into(),
         metadata: json!({}),
     };
     let err = chan
