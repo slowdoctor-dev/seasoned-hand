@@ -34,6 +34,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pinned by the integration suite.
 
 ### Fixed
+- **Chat composer reloaded the page on every Send.** The composer was a
+  `<form onsubmit>` relying on `prevent_default()`, which does not suppress the
+  native submission in the built wasm app (dioxus 0.6.3 web) — every task
+  delegation navigated to `/?`, rebooting the app and dropping the socket and
+  the freshly-acked session, making delegation unusable in production builds.
+  The composer now submits via the button's `onclick` / the input's Enter
+  `onkeydown` with no `<form>` element. Found by the issue #3 headless-Chromium
+  smoke (WS frame trace showed the ack + subscribe land, then a native GET
+  form navigation reload the page).
+- **Track B/C workspace fetches used the in-container path.** Event payloads
+  carry `/workspace/...` paths, but the workspace proxy resolves sub-paths
+  against the workspace root — the DOM-text/screenshot fetches now strip the
+  mount prefix (the removed React strip had the same latent mismatch).
+- **Decisions tab read `source`/`reason` from the wrong payload level** (top
+  level instead of the `data` nesting the WS envelope actually uses), so every
+  decision rendered as "unknown" with an empty reason.
 - **Self-hosted UI shipped unstyled — tailwind.css missing from the dx bundle.**
   The stylesheet was linked via Dioxus.toml `[web.resource] style`, which only
   injects the `<link>`: `dx serve` resolved it from the crate dir, but

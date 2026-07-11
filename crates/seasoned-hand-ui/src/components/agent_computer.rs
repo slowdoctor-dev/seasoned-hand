@@ -482,18 +482,19 @@ fn DecisionsTab() -> Element {
                         .rev()
                         .filter(|e| sid.as_ref() == Some(&e.session_id) && is_decision(e))
                         .map(|e| {
-                            let source = e
-                                .payload
-                                .get("source")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown")
-                                .to_string();
-                            let reason = e
-                                .payload
-                                .get("reason")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
+                            // Misc payloads nest the emitter's fields under `data`
+                            // (ws build_payload); fall back to the top level for
+                            // older flattened shapes.
+                            let field = |name: &str| {
+                                e.payload
+                                    .get("data")
+                                    .and_then(|d| d.get(name))
+                                    .or_else(|| e.payload.get(name))
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from)
+                            };
+                            let source = field("source").unwrap_or_else(|| "unknown".into());
+                            let reason = field("reason").unwrap_or_default();
                             let id = e.id.clone();
                             rsx! {
                                 li { key: "{id}", class: "border-b border-neutral-900 py-1",

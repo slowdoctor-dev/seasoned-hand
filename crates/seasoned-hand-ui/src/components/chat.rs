@@ -197,8 +197,12 @@ pub fn Chat() -> Element {
     let send_sock = sock.clone();
     let submit_mode = mode.clone();
     let submit_sid = sid.clone();
-    let on_submit = move |evt: FormEvent| {
-        evt.prevent_default();
+    // Issue #3 smoke finding: this was a `form { onsubmit }` and relied on
+    // `evt.prevent_default()` — which does NOT suppress the native submission
+    // in the built wasm app (dioxus 0.6.3 web), so every Send reloaded the
+    // page to `/?`, dropping the socket and the freshly-acked session. No
+    // <form>: the button clicks and the input's Enter key call this instead.
+    let on_submit = use_callback(move |(): ()| {
         if submitting() {
             return;
         }
@@ -233,7 +237,7 @@ pub fn Chat() -> Element {
             gloo_timers::future::TimeoutFuture::new(8_000).await;
             submitting.set(false);
         });
-    };
+    });
 
     let placeholder = match mode {
         InputMode::UserResponse(_) => "Answer the agent…",
@@ -285,18 +289,24 @@ pub fn Chat() -> Element {
                     }
                 }
             }
-            form { class: "flex gap-2 border-t border-neutral-800 p-2", onsubmit: on_submit,
+            div { class: "flex gap-2 border-t border-neutral-800 p-2",
                 input {
                     class: "flex-1 rounded bg-neutral-900 px-2 py-1 outline-none disabled:opacity-50",
                     value: "{input}",
                     placeholder,
                     disabled,
                     oninput: move |e| input.set(e.value()),
+                    onkeydown: move |e| {
+                        if e.key() == Key::Enter {
+                            on_submit(());
+                        }
+                    },
                 }
                 button {
-                    r#type: "submit",
+                    r#type: "button",
                     class: "rounded bg-blue-600 px-3 py-1 disabled:opacity-50",
                     disabled,
+                    onclick: move |_| on_submit(()),
                     "Send"
                 }
             }

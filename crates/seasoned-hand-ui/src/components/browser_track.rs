@@ -127,8 +127,18 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
+/// Event payloads carry in-container paths (`/workspace/.tracks/x.png`), but
+/// the workspace proxy resolves sub-paths against the workspace ROOT (the host
+/// dir bind-mounted at `/workspace`) — strip the mount prefix or the proxy
+/// would look for a literal `workspace/` subdirectory.
+fn workspace_rel(path: &str) -> &str {
+    path.strip_prefix("/workspace/")
+        .or_else(|| path.strip_prefix("/workspace"))
+        .unwrap_or(path)
+}
+
 async fn fetch_data_url(session_id: &str, path: &str) -> Option<String> {
-    let bytes = api::read_workspace_file_bytes(session_id, path)
+    let bytes = api::read_workspace_file_bytes(session_id, workspace_rel(path))
         .await
         .ok()?;
     Some(format!("data:image/png;base64,{}", base64_encode(&bytes)))
@@ -178,7 +188,9 @@ pub fn DomTextPane(session_id: String) -> Element {
                 }
                 Some("file_ref") => {
                     let path = dom_ref.get("path").and_then(|v| v.as_str())?;
-                    api::read_workspace_file(&session_id, path).await.ok()
+                    api::read_workspace_file(&session_id, workspace_rel(path))
+                        .await
+                        .ok()
                 }
                 _ => None,
             }
