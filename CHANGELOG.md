@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pinned by the integration suite.
 
 ### Fixed
+- **Briefing cards never became confirmable.** The Dioxus port read `task_id`
+  off the `briefing` event, but the Initializer only emits the pairing on the
+  `briefing_pending` sibling (story 2.23) — so every real briefing card stuck
+  at "Waiting for task id…" and the confirm / edit / cancel gate was unusable
+  from the UI. The chat panel now joins `briefing_call_id -> task_id` from the
+  session's `briefing_pending` events (React `briefingIndex` parity); the same
+  join powers the superseded-detection. Verified live: delegate -> real
+  briefing card renders Confirm/Edit/Cancel -> Confirm sends
+  `briefing_confirm` -> server acks ok and the card resolves.
 - **Chat composer reloaded the page on every Send.** The composer was a
   `<form onsubmit>` relying on `prevent_default()`, which does not suppress the
   native submission in the built wasm app (dioxus 0.6.3 web) — every task

@@ -10,21 +10,28 @@ use super::briefing_card::BriefingCard;
 use super::{selection, socket};
 use dioxus::prelude::*;
 use seasoned_hand_dto::{CommandPayload, ServerEvent};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+/// Return this Misc event's `kind_tag` (briefing / briefing_pending / …).
+fn misc_tag(ev: &ServerEvent) -> Option<&str> {
+    if ev.payload.get("kind").and_then(|v| v.as_str()) != Some("Misc") {
+        return None;
+    }
+    ev.payload.get("kind_tag").and_then(|v| v.as_str())
+}
 
 /// Peek at a ServerEvent and, if it is a `Misc{kind_tag:"briefing"}`, return the
 /// `(call_id, task_id, brief)` so the chat scroller renders a [`BriefingCard`].
 /// Wire shape: `{kind:"Misc", kind_tag:"briefing", data:{briefing_call_id,
-/// task_id, brief}}`.
+/// brief}}` — note the Initializer's briefing event does NOT carry `task_id`;
+/// it lives only on the `briefing_pending` sibling event (story 2.23), so
+/// callers resolve it via [`briefing_task_index`]. (The direct `task_id` read
+/// stays as a fallback for payloads that do inline it.)
 fn extract_briefing(ev: &ServerEvent) -> Option<(String, Option<String>, serde_json::Value)> {
-    let p = &ev.payload;
-    if p.get("kind").and_then(|v| v.as_str()) != Some("Misc") {
+    if misc_tag(ev) != Some("briefing") {
         return None;
     }
-    if p.get("kind_tag").and_then(|v| v.as_str()) != Some("briefing") {
-        return None;
-    }
-    let data = p.get("data")?;
+    let data = ev.payload.get("data")?;
     let call_id = data
         .get("briefing_call_id")
         .and_then(|v| v.as_str())?
@@ -38,6 +45,29 @@ fn extract_briefing(ev: &ServerEvent) -> Option<(String, Option<String>, serde_j
         .cloned()
         .unwrap_or(serde_json::Value::Null);
     Some((call_id, task_id, brief))
+}
+
+/// `briefing_call_id -> task_id`, joined from the session's `briefing_pending`
+/// events — the only place the Initializer emits the pairing (story 2.23
+/// parity with the React `briefingIndex`). Without this the BriefingCard never
+/// learns its task and the confirm / edit / cancel actions stay disabled.
+fn briefing_task_index(events: &[ServerEvent], session_id: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for ev in events {
+        if ev.session_id != session_id || misc_tag(ev) != Some("briefing_pending") {
+            continue;
+        }
+        let Some(data) = ev.payload.get("data") else {
+            continue;
+        };
+        if let (Some(call_id), Some(task_id)) = (
+            data.get("briefing_call_id").and_then(|v| v.as_str()),
+            data.get("task_id").and_then(|v| v.as_str()),
+        ) {
+            map.insert(call_id.to_string(), task_id.to_string());
+        }
+    }
+    map
 }
 
 /// Resolution state of a briefing card (issue #3: the full taxonomy beyond the
@@ -63,12 +93,19 @@ fn briefing_resolutions(
     events: &[ServerEvent],
     session_id: &str,
     locally_resolved: &HashSet<String>,
+    task_by_call: &HashMap<String, String>,
 ) -> std::collections::HashMap<String, BriefingResolution> {
-    // Briefings in stream order: (call_id, task_id).
+    // Briefings in stream order: (call_id, task_id) — task resolved via the
+    // briefing_pending join, falling back to an inlined task_id.
     let briefings: Vec<(String, Option<String>)> = events
         .iter()
         .filter(|e| e.session_id == session_id)
-        .filter_map(|e| extract_briefing(e).map(|(cid, tid, _)| (cid, tid)))
+        .filter_map(|e| {
+            extract_briefing(e).map(|(cid, tid, _)| {
+                let tid = tid.or_else(|| task_by_call.get(&cid).cloned());
+                (cid, tid)
+            })
+        })
         .collect();
     let auto_confirmed: HashSet<String> = events
         .iter()
@@ -257,9 +294,13 @@ pub fn Chat() -> Element {
                     if filtered.is_empty() {
                         rsx! { div { class: "text-neutral-600", "No activity yet. Delegate a task below." } }
                     } else {
+                        let task_by_call = sid
+                            .as_ref()
+                            .map(|s| briefing_task_index(&filtered, s))
+                            .unwrap_or_default();
                         let resolutions = sid
                             .as_ref()
-                            .map(|s| briefing_resolutions(&filtered, s, &resolved()))
+                            .map(|s| briefing_resolutions(&filtered, s, &resolved(), &task_by_call))
                             .unwrap_or_default();
                         rsx! {
                             for e in filtered {
@@ -268,7 +309,7 @@ pub fn Chat() -> Element {
                                         key: "{e.id}",
                                         brief,
                                         call_id: call_id.clone(),
-                                        task_id,
+                                        task_id: task_id.or_else(|| task_by_call.get(&call_id).cloned()),
                                         status_label: match resolutions.get(&call_id) {
                                             Some(BriefingResolution::Resolved) => Some("Resolved".to_string()),
                                             Some(BriefingResolution::AutoConfirmed) =>
