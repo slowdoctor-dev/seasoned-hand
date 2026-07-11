@@ -9,7 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- **Browser-track visualizers in the Dioxus UI** (issue #3, story 6.4
+  remainder): the AgentComputer Browser tab now shows the Track B DOM-text pane
+  and the Track C screenshot strip (100-thumbnail live cap, "load older"
+  backfill from `/workspace/.tracks/`, skip markers, click-to-open lightbox)
+  under the noVNC view. Screenshots fetch through the auth-gated workspace
+  proxy with the bearer token and render as `data:` URLs. Verifier verdict rows
+  now expand to **evidence chips** (O(1) lookup via a per-session event index,
+  React `eventIndex` parity) plus the optional `suggested_plan_update`.
+  Briefing cards gained the full **resolution taxonomy** — superseded /
+  auto-confirmed derived from the event stream alongside the local resolved
+  flag. Interop mounts are now **reactive** (Monaco swaps models in place;
+  xterm/noVNC dispose + re-attach on url change) with `__disposeInterop`
+  teardown on unmount.
+
+### Changed
+- **`server/lib.rs` decomposition completed** (issue #43): `AppState` + its
+  builders moved to `state.rs`; the tenant guards + the shared fail-closed
+  `SESSION_TENANT_PREDICATE` moved (byte-identical) into `guards.rs`; the ~30
+  HTTP handlers split into per-domain `routes/` modules (admin, auth, channels,
+  events, intake, org, projects, sessions, verifications). `lib.rs` keeps
+  `app()` as the wiring spine (4.1k → ~0.8k lines). Pure code moves; behavior
+  pinned by the integration suite.
+
+### Fixed
+- **Webhook SSRF allow-list test made hermetic**: the test targeted `10.0.0.1`
+  expecting nothing to listen there — in containerized CI that's the gateway
+  (an egress proxy answering 403), which flaked the expected transport error.
+  It now targets reserved TEST-NET-1 (`192.0.2.1`) with a `.no_proxy()` client;
+  assertion semantics unchanged.
 
 ## [0.6.0] — 2026-06-18
 
