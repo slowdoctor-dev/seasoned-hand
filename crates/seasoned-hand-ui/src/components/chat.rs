@@ -40,6 +40,73 @@ fn extract_briefing(ev: &ServerEvent) -> Option<(String, Option<String>, serde_j
     Some((call_id, task_id, brief))
 }
 
+/// Resolution state of a briefing card (issue #3: the full taxonomy beyond the
+/// local resolved flag). Derived from the event stream so it survives reloads.
+#[derive(Clone, PartialEq)]
+enum BriefingResolution {
+    /// Awaiting the user's confirm / edit / cancel.
+    Pending,
+    /// The user confirmed / edited / cancelled in this client.
+    Resolved,
+    /// The Initializer's confirm gate timed out and auto-confirmed
+    /// (`Misc{kind:"briefing_auto_confirmed"}`).
+    AutoConfirmed,
+    /// A newer briefing for the same task replaced this one (an edit round-trip
+    /// re-emits the brief with a fresh call_id).
+    Superseded,
+}
+
+/// Derive each briefing call_id's resolution from the session's events plus the
+/// locally-resolved set. Later briefings for the same task supersede earlier
+/// ones; `briefing_auto_confirmed` events mark their `briefing_call_id`.
+fn briefing_resolutions(
+    events: &[ServerEvent],
+    session_id: &str,
+    locally_resolved: &HashSet<String>,
+) -> std::collections::HashMap<String, BriefingResolution> {
+    // Briefings in stream order: (call_id, task_id).
+    let briefings: Vec<(String, Option<String>)> = events
+        .iter()
+        .filter(|e| e.session_id == session_id)
+        .filter_map(|e| extract_briefing(e).map(|(cid, tid, _)| (cid, tid)))
+        .collect();
+    let auto_confirmed: HashSet<String> = events
+        .iter()
+        .filter(|e| e.session_id == session_id)
+        .filter(|e| {
+            e.payload.get("kind").and_then(|v| v.as_str()) == Some("Misc")
+                && e.payload.get("kind_tag").and_then(|v| v.as_str())
+                    == Some("briefing_auto_confirmed")
+        })
+        .filter_map(|e| {
+            e.payload
+                .get("data")
+                .and_then(|d| d.get("briefing_call_id"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
+        .collect();
+
+    let mut out = std::collections::HashMap::new();
+    for (i, (call_id, task_id)) in briefings.iter().enumerate() {
+        let superseded = task_id.is_some()
+            && briefings[i + 1..]
+                .iter()
+                .any(|(_, later_tid)| later_tid == task_id);
+        let res = if superseded {
+            BriefingResolution::Superseded
+        } else if auto_confirmed.contains(call_id) {
+            BriefingResolution::AutoConfirmed
+        } else if locally_resolved.contains(call_id) {
+            BriefingResolution::Resolved
+        } else {
+            BriefingResolution::Pending
+        };
+        out.insert(call_id.clone(), res);
+    }
+    out
+}
+
 /// How the chat input behaves, derived from the session's events (issue #20; ports
 /// `deriveInputMode` from the legacy `chat-state.ts`).
 #[derive(Clone, PartialEq)]
@@ -186,6 +253,10 @@ pub fn Chat() -> Element {
                     if filtered.is_empty() {
                         rsx! { div { class: "text-neutral-600", "No activity yet. Delegate a task below." } }
                     } else {
+                        let resolutions = sid
+                            .as_ref()
+                            .map(|s| briefing_resolutions(&filtered, s, &resolved()))
+                            .unwrap_or_default();
                         rsx! {
                             for e in filtered {
                                 if let Some((call_id, task_id, brief)) = extract_briefing(&e) {
@@ -194,7 +265,14 @@ pub fn Chat() -> Element {
                                         brief,
                                         call_id: call_id.clone(),
                                         task_id,
-                                        resolved: resolved().contains(&call_id),
+                                        status_label: match resolutions.get(&call_id) {
+                                            Some(BriefingResolution::Resolved) => Some("Resolved".to_string()),
+                                            Some(BriefingResolution::AutoConfirmed) =>
+                                                Some("Auto-confirmed (response window elapsed)".to_string()),
+                                            Some(BriefingResolution::Superseded) =>
+                                                Some("Superseded by a newer briefing".to_string()),
+                                            _ => None,
+                                        },
                                         on_resolve: move |cid: String| {
                                             resolved.write().insert(cid);
                                         },

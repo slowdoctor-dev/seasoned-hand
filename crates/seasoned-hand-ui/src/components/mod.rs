@@ -6,7 +6,9 @@ use dioxus::prelude::*;
 
 mod agent_computer;
 mod briefing_card;
+mod browser_track;
 mod chat;
+mod evidence_chip;
 mod login;
 mod project_list;
 mod task_list;

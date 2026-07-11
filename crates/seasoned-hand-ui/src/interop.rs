@@ -3,15 +3,16 @@
 //! (browser takeover). This is the load-bearing risk ADR-016 flagged — proving
 //! these survive in Dioxus via interop is the gate for the full migration.
 //!
-//! Approach: each wrapper renders a stable mount `<div id>` and, on mount, calls
-//! a small `window.__mount*` shim (defined in `index.html`, which loads the JS
-//! libs from a CDN/vendor bundle) through `document::eval`. The Rust side never
+//! Approach: each wrapper renders a stable mount `<div id>` and calls a small
+//! `window.__mount*` shim (defined in `index.html`, which loads the JS libs
+//! from a CDN/vendor bundle) through `document::eval`. The Rust side never
 //! reimplements the libraries — it owns the lifecycle and passes data in.
 //!
-//! Foundation scope: the wrappers mount once and pass initial data. Reactive
-//! updates (re-pushing terminal output, swapping editor models) and teardown are
-//! Phase 6 follow-ups; the shims are intentionally no-ops if the lib is absent,
-//! so the panel renders cleanly even before the vendor bundle is wired.
+//! Lifecycle (issue #3 / issue #2): mounts are **reactive** — the effects
+//! re-run when props change (`use_reactive`), and the shims are idempotent per
+//! mount id (Monaco swaps the model value/language in place; xterm/noVNC
+//! dispose the previous instance before re-attaching). `use_drop` calls
+//! `window.__disposeInterop(id)` so tab switches don't leak instances.
 
 use dioxus::prelude::*;
 use std::cell::Cell;
@@ -45,58 +46,86 @@ fn js_string(s: &str) -> String {
     }
 }
 
-/// Read-only Monaco editor mount.
+/// Dispose the JS-side instance bound to `id` (editor / terminal+socket / RFB).
+fn dispose_interop(id: &str) {
+    let script = format!(
+        "if (window.__disposeInterop) {{ window.__disposeInterop({}); }}",
+        js_string(id)
+    );
+    let _ = document::eval(&script);
+}
+
+/// Read-only Monaco editor mount. Reactive: a changed `value`/`language`
+/// re-invokes the shim, which swaps the live editor's model in place (no
+/// re-mount, preserving scroll/layout).
 #[component]
 pub fn MonacoEditor(value: String, language: String) -> Element {
     let id = use_hook(|| next_dom_id("monaco"));
     {
         let id = id.clone();
-        use_effect(move || {
-            let script = format!(
-                "if (window.__mountMonaco) {{ window.__mountMonaco({}, {}, {}); }}",
-                js_string(&id),
-                js_string(&value),
-                js_string(&language)
-            );
-            let _ = document::eval(&script);
-        });
+        use_effect(use_reactive(
+            (&value, &language),
+            move |(value, language)| {
+                let script = format!(
+                    "if (window.__mountMonaco) {{ window.__mountMonaco({}, {}, {}); }}",
+                    js_string(&id),
+                    js_string(&value),
+                    js_string(&language)
+                );
+                let _ = document::eval(&script);
+            },
+        ));
+    }
+    {
+        let id = id.clone();
+        use_drop(move || dispose_interop(&id));
     }
     rsx! { div { id: "{id}", class: "h-full w-full" } }
 }
 
 /// xterm.js terminal mount. `ws_url` is the ttyd/terminal socket the shim
-/// attaches the terminal to.
+/// attaches the terminal to. Reactive: a changed `ws_url` disposes the previous
+/// terminal + socket and re-attaches.
 #[component]
 pub fn XtermTerminal(ws_url: String) -> Element {
     let id = use_hook(|| next_dom_id("xterm"));
     {
         let id = id.clone();
-        use_effect(move || {
+        use_effect(use_reactive((&ws_url,), move |(ws_url,)| {
             let script = format!(
                 "if (window.__mountXterm) {{ window.__mountXterm({}, {}); }}",
                 js_string(&id),
                 js_string(&ws_url)
             );
             let _ = document::eval(&script);
-        });
+        }));
+    }
+    {
+        let id = id.clone();
+        use_drop(move || dispose_interop(&id));
     }
     rsx! { div { id: "{id}", class: "h-full w-full" } }
 }
 
-/// noVNC browser-takeover mount.
+/// noVNC browser-takeover mount. Reactive: a changed `novnc_url` disconnects
+/// the previous RFB and reconnects.
 #[component]
 pub fn NoVnc(novnc_url: String) -> Element {
     let id = use_hook(|| next_dom_id("novnc"));
     {
         let id = id.clone();
-        use_effect(move || {
+        use_effect(use_reactive((&novnc_url,), move |(novnc_url,)| {
             let script = format!(
                 "if (window.__mountNoVnc) {{ window.__mountNoVnc({}, {}); }}",
                 js_string(&id),
                 js_string(&novnc_url)
             );
             let _ = document::eval(&script);
-        });
+        }));
+    }
+    {
+        let id = id.clone();
+        use_drop(move || dispose_interop(&id));
     }
     rsx! { div { id: "{id}", class: "h-full w-full" } }
 }

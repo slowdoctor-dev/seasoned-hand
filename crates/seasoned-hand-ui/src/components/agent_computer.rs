@@ -1,15 +1,17 @@
 //! AgentComputer panel (replaces `agent-computer.tsx` + its tab set). Hosts the
-//! JS-interop surfaces (browser/terminal/editor), a recursive workspace file
-//! tree, deliverables/verifier/decisions, and a raw event log.
-//!
-//! Remaining (issue #3): browser-track visualizers (screenshot strip, dom-text,
-//! evidence chips, lightbox), which want real observation events from a live task.
+//! JS-interop surfaces (browser/terminal/editor), the browser-track visualizers
+//! (issue #3: DOM-text pane, screenshot strip + lightbox, evidence chips), a
+//! recursive workspace file tree, deliverables/verifier/decisions, and a raw
+//! event log.
 
+use super::browser_track::BrowserTab;
+use super::evidence_chip::EvidenceChip;
 use super::{selection, socket};
 use crate::api;
-use crate::interop::{MonacoEditor, NoVnc, XtermTerminal};
+use crate::interop::{MonacoEditor, XtermTerminal};
 use dioxus::prelude::*;
-use seasoned_hand_dto::{ServerEvent, WorkspaceListing};
+use seasoned_hand_dto::{ServerEvent, Verification, WorkspaceListing};
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -103,9 +105,11 @@ pub fn AgentComputer() -> Element {
             }
             div { class: "min-h-0 flex-1 overflow-hidden",
                 match tab() {
-                    Tab::Browser => match &sandbox {
-                        Some(s) => rsx! { NoVnc { novnc_url: s.novnc_url.clone() } },
-                        None => rsx! { Placeholder { label: "No sandbox / browser for this session" } },
+                    Tab::Browser => match (&sandbox, session()) {
+                        (Some(s), Some(sid)) => rsx! {
+                            BrowserTab { session_id: sid, novnc_url: s.novnc_url.clone() }
+                        },
+                        _ => rsx! { Placeholder { label: "No sandbox / browser for this session" } },
                     },
                     Tab::Terminal => match &sandbox {
                         Some(s) => rsx! { XtermTerminal { ws_url: s.ttyd_url.clone() } },
@@ -113,10 +117,9 @@ pub fn AgentComputer() -> Element {
                     },
                     Tab::Editor => match open_file() {
                         Some(f) => rsx! {
-                            // key on path so switching files re-mounts the editor
-                            // (the interop wrapper initializes on mount).
+                            // Reactive interop (issue #3): switching files swaps the live
+                            // editor's model in place — no key-forced re-mount.
                             MonacoEditor {
-                                key: "{f.path}",
                                 value: f.content.clone(),
                                 language: language_for_path(&f.path).to_string(),
                             }
@@ -318,14 +321,35 @@ fn FileNode(session_id: String, path: String, name: String, is_dir: bool, depth:
     }
 }
 
+/// Per-session event index for the evidence chips' O(1) lookup (issue #3;
+/// parity with the React `HomeShell`'s `eventIndex`). Keyed by numeric event
+/// id over the currently loaded WS window.
+fn build_event_index(events: &[ServerEvent], session_id: &str) -> HashMap<i64, ServerEvent> {
+    let mut map = HashMap::new();
+    for ev in events {
+        if ev.session_id != session_id {
+            continue;
+        }
+        if let Ok(id) = ev.id.parse::<i64>() {
+            map.insert(id, ev.clone());
+        }
+    }
+    map
+}
+
 #[component]
 fn VerifierTab() -> Element {
     let session = selection().session_id;
+    let events = socket().events;
     let verifications = use_resource(move || async move {
         match session() {
             Some(sid) => api::list_verifications(&sid, 50).await.ok(),
             None => None,
         }
+    });
+    let event_index = use_memo(move || match session() {
+        Some(sid) => build_event_index(&events(), &sid),
+        None => HashMap::new(),
     });
 
     rsx! {
@@ -333,23 +357,8 @@ fn VerifierTab() -> Element {
             match &*verifications.read_unchecked() {
                 Some(Some(resp)) if !resp.rows.is_empty() => {
                     let items = resp.rows.iter().map(|v| {
-                        let pass = v.verdict == seasoned_hand_dto::Verdict::Pass;
-                        let (badge, badge_cls) = if pass {
-                            ("PASS", "rounded bg-green-700 px-1")
-                        } else {
-                            ("FAIL", "rounded bg-red-700 px-1")
-                        };
-                        let kind = v.trigger_kind.clone();
-                        let reason = v.reason.clone();
-                        let id = v.id.clone();
                         rsx! {
-                            li { key: "{id}", class: "border-b border-neutral-900 py-1",
-                                div { class: "flex items-center gap-2",
-                                    span { class: "{badge_cls}", "{badge}" }
-                                    span { class: "text-neutral-400", "{kind}" }
-                                }
-                                div { class: "mt-0.5 whitespace-pre-wrap break-words text-neutral-300", "{reason}" }
-                            }
+                            VerdictRow { key: "{v.id}", verdict: v.clone(), event_index }
                         }
                     }).collect::<Vec<_>>();
                     rsx! { ul { class: "space-y-1", {items.into_iter()} } }
@@ -357,6 +366,74 @@ fn VerifierTab() -> Element {
                 Some(Some(_)) => rsx! { div { class: "text-neutral-600", "No verifications yet" } },
                 Some(None) => rsx! { div { class: "text-neutral-600", "Select a session to see verifications" } },
                 None => rsx! { div { class: "text-neutral-500", "Loading…" } },
+            }
+        }
+    }
+}
+
+/// One verdict row: badge + reason, expanding to evidence chips (resolved via
+/// the per-session event index) and the optional suggested plan update.
+#[component]
+fn VerdictRow(verdict: Verification, event_index: Memo<HashMap<i64, ServerEvent>>) -> Element {
+    let mut expanded = use_signal(|| false);
+    let pass = verdict.verdict == seasoned_hand_dto::Verdict::Pass;
+    let (badge, badge_cls) = if pass {
+        ("PASS", "rounded bg-green-700 px-1")
+    } else {
+        ("FAIL", "rounded bg-red-700 px-1")
+    };
+    let kind = verdict.trigger_kind.clone();
+    let model = verdict.model_id.clone();
+    let reason = verdict.reason.clone();
+    let chevron = if expanded() { "▾" } else { "▸" };
+    let plan_update = verdict
+        .suggested_plan_update
+        .as_ref()
+        .map(|v| serde_json::to_string_pretty(v).unwrap_or_default());
+
+    rsx! {
+        li { class: "border-b border-neutral-900 py-1",
+            button {
+                class: "flex w-full items-start gap-2 text-left hover:bg-neutral-900",
+                onclick: move |_| {
+                    let now = expanded();
+                    expanded.set(!now);
+                },
+                span { class: "{badge_cls}", "{badge}" }
+                div { class: "flex-1",
+                    div { class: "whitespace-pre-wrap break-words text-neutral-300", "{reason}" }
+                    div { class: "mt-0.5 text-neutral-500", "{kind} · {model}" }
+                }
+                span { class: "text-neutral-500", "{chevron}" }
+            }
+            if expanded() {
+                div { class: "mt-1 space-y-2 rounded bg-neutral-900 p-2",
+                    if !verdict.evidence_event_ids.is_empty() {
+                        div {
+                            div { class: "mb-1 text-neutral-500", "Evidence:" }
+                            div { class: "flex flex-wrap gap-1",
+                                for id in verdict.evidence_event_ids.iter() {
+                                    EvidenceChip {
+                                        key: "{id}",
+                                        event_id: *id,
+                                        event: event_index().get(id).cloned(),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(plan) = plan_update.as_ref() {
+                        div {
+                            div { class: "mb-1 text-neutral-500", "Suggested plan update:" }
+                            pre { class: "max-h-40 overflow-auto rounded bg-neutral-950 p-2 text-[10px]",
+                                "{plan}"
+                            }
+                        }
+                    }
+                    if verdict.evidence_event_ids.is_empty() && plan_update.is_none() {
+                        div { class: "text-neutral-600", "No evidence attached" }
+                    }
+                }
             }
         }
     }

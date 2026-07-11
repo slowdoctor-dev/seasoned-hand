@@ -23,16 +23,62 @@
       present so the UI still renders if a CDN load fails.
     -->
     <script>
-      // Monaco — read-only editor (AMD loader configured above).
+      // Per-mount-id instance registry (issue #3 reactive updates + issue #2
+      // clean unmount): re-mount calls update the live instance instead of
+      // stacking a new one, and __disposeInterop tears down on Rust drop.
+      window.__shInterop = { monaco: {}, xterm: {}, novnc: {} };
+
+      window.__disposeInterop = function (id) {
+        var reg = window.__shInterop;
+        var m = reg.monaco[id];
+        if (m) {
+          try { m.dispose(); } catch (e) { /* already gone */ }
+          delete reg.monaco[id];
+        }
+        var x = reg.xterm[id];
+        if (x) {
+          try { if (x.sock) x.sock.close(); } catch (e) { /* already closed */ }
+          try { x.term.dispose(); } catch (e) { /* already gone */ }
+          delete reg.xterm[id];
+        }
+        var v = reg.novnc[id];
+        if (v) {
+          try { v.disconnect(); } catch (e) { /* already gone */ }
+          delete reg.novnc[id];
+        }
+      };
+
+      // Monaco — read-only editor (AMD loader configured above). Idempotent
+      // per id: a second call swaps the model value/language in place instead
+      // of recreating the editor, so the Rust side can push reactive updates.
       window.__mountMonaco = function (id, value, language) {
         var el = document.getElementById(id);
         if (!el || !window.require) return;
+        var existing = window.__shInterop.monaco[id];
+        if (existing && window.monaco) {
+          var model = existing.getModel();
+          if (model) {
+            model.setValue(value || "");
+            window.monaco.editor.setModelLanguage(model, language || "plaintext");
+            return;
+          }
+        }
         window.require.config({
           paths: { vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs" },
         });
         window.require(["vs/editor/editor.main"], function () {
+          // A reactive update can race the initial AMD load; re-check.
+          var live = window.__shInterop.monaco[id];
+          if (live) {
+            var model = live.getModel();
+            if (model) {
+              model.setValue(value || "");
+              window.monaco.editor.setModelLanguage(model, language || "plaintext");
+              return;
+            }
+          }
           el.innerHTML = "";
-          window.monaco.editor.create(el, {
+          window.__shInterop.monaco[id] = window.monaco.editor.create(el, {
             value: value || "",
             language: language || "plaintext",
             readOnly: true,
@@ -44,14 +90,18 @@
       };
 
       // xterm.js — terminal, optionally attached to a ttyd-style socket.
+      // Re-mounting the same id (new ws_url) disposes the previous terminal +
+      // socket before attaching fresh.
       window.__mountXterm = function (id, wsUrl) {
         var el = document.getElementById(id);
         if (!el || !window.Terminal) return;
+        window.__disposeInterop(id);
         el.innerHTML = "";
         var term = new window.Terminal({
           convertEol: true,
           theme: { background: "#0a0a0a" },
         });
+        var entry = { term: term, sock: null };
         if (window.FitAddon) {
           var fit = new window.FitAddon.FitAddon();
           term.loadAddon(fit);
@@ -64,21 +114,25 @@
           try {
             var sock = new WebSocket(wsUrl);
             term.loadAddon(new window.AttachAddon.AttachAddon(sock));
+            entry.sock = sock;
           } catch (e) {
             /* leave the terminal rendered without an attach */
           }
         }
+        window.__shInterop.xterm[id] = entry;
       };
 
       // noVNC — browser takeover (RFB loaded as an ES module on demand).
+      // Re-mounting the same id (new url) disconnects the previous RFB first.
       window.__mountNoVnc = function (id, url) {
         var el = document.getElementById(id);
         if (!el || !url) return;
         import("https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/lib/rfb.js")
           .then(function (mod) {
+            window.__disposeInterop(id);
             el.innerHTML = "";
             var RFB = mod.default;
-            new RFB(el, url);
+            window.__shInterop.novnc[id] = new RFB(el, url);
           })
           .catch(function () {
             /* CDN/module load failed; panel stays empty (no crash) */

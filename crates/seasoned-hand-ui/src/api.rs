@@ -147,6 +147,27 @@ pub async fn read_workspace_file(session_id: &str, path: &str) -> ApiResult<Stri
         .map_err(|e| format!("GET {path} text -> {e}"))
 }
 
+/// Read a workspace file's contents as raw bytes (issue #3: Track C
+/// screenshots — the workspace proxy is auth-gated, so a plain `<img src>` URL
+/// can't carry the bearer token; callers fetch bytes and build a `data:` URL).
+pub async fn read_workspace_file_bytes(session_id: &str, path: &str) -> ApiResult<Vec<u8>> {
+    let tail = encode_path(path.trim_start_matches('/'));
+    let url = format!(
+        "{}/v1/workspace/{}/{}",
+        api_base(),
+        urlencode(session_id),
+        tail
+    );
+    let resp = with_auth(Request::get(&url))
+        .send()
+        .await
+        .map_err(|e| format!("GET {path} -> {e}"))?;
+    check_status(&resp, &format!("GET {path}"))?;
+    resp.binary()
+        .await
+        .map_err(|e| format!("GET {path} bytes -> {e}"))
+}
+
 /// Percent-encode each path segment but keep `/` separators.
 fn encode_path(path: &str) -> String {
     path.split('/').map(urlencode).collect::<Vec<_>>().join("/")

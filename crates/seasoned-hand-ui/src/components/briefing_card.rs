@@ -4,8 +4,10 @@
 //!
 //! Actions: Confirm / Edit / Cancel. **Edit** opens a JSON textarea of the brief
 //! and emits `briefing_confirm{action:"edit", edits}` (the server re-emits a new
-//! briefing). The full resolution taxonomy (superseded / auto-confirmed) is a
-//! follow-up; this tracks a local "resolved" flag via the parent.
+//! briefing). Resolution taxonomy (issue #3): the parent derives a
+//! `status_label` per card from the event stream — locally resolved,
+//! auto-confirmed (`briefing_auto_confirmed`), or superseded by a newer
+//! briefing for the same task — and a labelled card renders read-only.
 
 use super::socket;
 use dioxus::prelude::*;
@@ -16,7 +18,7 @@ pub fn BriefingCard(
     brief: serde_json::Value,
     call_id: String,
     task_id: Option<String>,
-    resolved: bool,
+    status_label: Option<String>,
     on_resolve: EventHandler<String>,
 ) -> Element {
     let sock = socket();
@@ -105,8 +107,8 @@ pub fn BriefingCard(
                 }
             }
 
-            if resolved {
-                div { class: "text-xs text-neutral-500", "Resolved" }
+            if let Some(label) = status_label.as_ref() {
+                div { class: "text-xs text-neutral-500", "{label}" }
             } else if !task_known {
                 div { class: "text-xs text-amber-500", "Waiting for task id…" }
             } else if editing() {
