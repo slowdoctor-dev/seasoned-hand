@@ -10,8 +10,15 @@ pub fn ProjectList() -> Element {
     let sel = selection();
     let mut active_project = sel.active_project;
     let mut active_task = sel.active_task;
+    let session = sel.session_id;
 
-    let projects = use_resource(|| async move { api::list_projects(50).await });
+    // Also depends on the shared session id: a task_create ack assigns a new
+    // session, and the intake router may have minted a project (Inbox) for it —
+    // without the refetch the rail stays stale until a manual reload.
+    let projects = use_resource(move || async move {
+        let _refetch_on_new_session = session();
+        api::list_projects(50).await
+    });
 
     rsx! {
         div { class: "border-b border-neutral-800 p-2",

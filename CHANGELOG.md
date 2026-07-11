@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Demo media (issue #60):** a ~30s UI-tour recording (GIF + mp4 in
+  `docs/assets/`, embedded in the README) — delegate a task, confirm the
+  Initializer's briefing card, then tour the Verifier (verdicts + evidence
+  chips), Decisions, Deliverables, and Events tabs against a live control
+  plane with demo data.
+- **Left rail refreshes after delegation:** the Projects / Tasks lists now
+  re-fetch when a `task_create` ack assigns a new session, so the
+  intake-minted Inbox project and task appear without a manual reload.
 - **Browser-track visualizers in the Dioxus UI** (issue #3, story 6.4
   remainder): the AgentComputer Browser tab now shows the Track B DOM-text pane
   and the Track C screenshot strip (100-thumbnail live cap, "load older"

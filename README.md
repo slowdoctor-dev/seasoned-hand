@@ -19,6 +19,15 @@ A digital employee, not a chatbot.
 
 It's a hand that gets seasoned by the work you give it.
 
+## Demo — UI tour
+
+![Seasoned Hand UI tour: delegate a task, confirm the briefing, browse verifier verdicts / decisions / deliverables](docs/assets/ui-tour.gif)
+
+*Delegating a task in the operator console: the Initializer's briefing card
+(confirm / edit / cancel), then the AgentComputer's Verifier (verdicts +
+evidence chips), Decisions, Deliverables, and Events tabs. Recorded against a
+live control plane with demo data ([mp4](docs/assets/ui-tour.mp4)).*
+
 ## Status
 
 **v1 shipped — `v0.6.0` (2026-06-18). All six phases complete.** Foundation

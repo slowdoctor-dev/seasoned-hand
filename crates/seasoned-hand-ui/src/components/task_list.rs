@@ -24,8 +24,13 @@ pub fn TaskList() -> Element {
     let sel = selection();
     let active_project = sel.active_project;
     let mut active_task = sel.active_task;
+    let session = sel.session_id;
 
+    // Refetches when the active project changes AND when a task_create ack
+    // assigns a new session (the freshly-minted task should appear without a
+    // manual reload).
     let tasks = use_resource(move || async move {
+        let _refetch_on_new_session = session();
         match active_project() {
             Some(pid) => api::list_tasks(&pid, 50).await,
             None => Ok(Vec::new()),
