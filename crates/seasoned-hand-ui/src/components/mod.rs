@@ -48,7 +48,7 @@ pub fn App() -> Element {
         }
     });
 
-    match auth::AUTH() {
+    let body = match auth::AUTH() {
         AuthState::Loading => rsx! {
             div { class: "flex h-screen w-screen items-center justify-center bg-neutral-950 text-neutral-400 text-sm",
                 "Authenticating…"
@@ -61,6 +61,18 @@ pub fn App() -> Element {
         // WebSocket and dropping its subscription state so a re-login gets a fresh
         // socket under the new identity rather than reusing the old upgrade context.
         AuthState::Authed => rsx! { AuthedApp {} },
+    };
+
+    rsx! {
+        // The stylesheet must go through `asset!` so `dx build` fingerprints and
+        // COPIES it into the bundle. The previous `[web.resource] style` entry in
+        // Dioxus.toml only injected the <link>: `dx serve` resolved it from the
+        // crate dir, but the production bundle shipped without the file — the
+        // SPA fallback answered `/assets/tailwind.css` with index.html and the
+        // self-hosted UI rendered completely unstyled (found by the issue #3
+        // browser smoke; the story-6.2 live-session gate had never run).
+        document::Stylesheet { href: asset!("/assets/tailwind.css") }
+        {body}
     }
 }
 

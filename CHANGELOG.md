@@ -34,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pinned by the integration suite.
 
 ### Fixed
+- **Self-hosted UI shipped unstyled — tailwind.css missing from the dx bundle.**
+  The stylesheet was linked via Dioxus.toml `[web.resource] style`, which only
+  injects the `<link>`: `dx serve` resolved it from the crate dir, but
+  `dx build` never copied the file into the bundle, so the `SH_UI_DIST`
+  self-hosted UI's `/assets/tailwind.css` fell through to the SPA fallback
+  (index.html as text/html) and every page rendered completely unstyled —
+  including the v0.6.0 Docker image. The App now links the stylesheet with
+  `asset!("/assets/tailwind.css")`, which fingerprints and copies it into the
+  bundle. Found by the issue #3 browser smoke run (the story-6.2 live-session
+  gate had never been exercised).
 - **Webhook SSRF allow-list test made hermetic**: the test targeted `10.0.0.1`
   expecting nothing to listen there — in containerized CI that's the gateway
   (an egress proxy answering 403), which flaked the expected transport error.

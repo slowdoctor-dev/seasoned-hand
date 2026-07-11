@@ -9,8 +9,12 @@ title = "Seasoned Hand"
 reload_html = true
 watch_path = ["src", "index.html", "input.css"]
 
+# The Tailwind stylesheet is linked via `asset!("/assets/tailwind.css")` in
+# `components/mod.rs` (App) — NOT listed here. A `[web.resource] style` entry
+# only injects the <link>; `dx build` does not copy the file into the bundle,
+# which shipped the self-hosted UI unstyled (issue #3 smoke finding).
 [web.resource]
-style = ["assets/tailwind.css"]
+style = []
 script = []
 
 # dioxus-cli 0.6.x requires the `dev`-only resource subtable to be present even
