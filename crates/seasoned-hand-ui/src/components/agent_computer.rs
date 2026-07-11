@@ -341,7 +341,23 @@ fn build_event_index(events: &[ServerEvent], session_id: &str) -> HashMap<i64, S
 fn VerifierTab() -> Element {
     let session = selection().session_id;
     let events = socket().events;
+    // React parity: every new verifier_verdict Misc event for this session bumps
+    // this count, which the resource reads — so the list re-fetches from the
+    // canonical HTTP endpoint instead of reconciling client-side state.
+    let verdict_count = use_memo(move || match session() {
+        Some(sid) => events()
+            .iter()
+            .filter(|e| {
+                e.session_id == sid
+                    && e.kind() == Some("Misc")
+                    && e.payload.get("kind_tag").and_then(|v| v.as_str())
+                        == Some("verifier_verdict")
+            })
+            .count(),
+        None => 0,
+    });
     let verifications = use_resource(move || async move {
+        let _refresh_on_new_verdict = verdict_count();
         match session() {
             Some(sid) => api::list_verifications(&sid, 50).await.ok(),
             None => None,
