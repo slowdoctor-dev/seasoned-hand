@@ -144,6 +144,31 @@ fn from_yaml_reads_file() {
 }
 
 #[test]
+fn checked_in_example_presets_parse() {
+    // Keep the repo's example slot configs loadable — they are the documented
+    // "copy to config/slots.yaml and go" path.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for name in ["config/slots.example.yaml", "config/slots.cn.example.yaml"] {
+        let r = SlotRouter::from_yaml(root.join(name))
+            .unwrap_or_else(|e| panic!("{name} failed to load: {e}"));
+        for slot in SlotName::ALL.iter().copied() {
+            let resolved = r.resolve(slot);
+            assert!(!resolved.model.is_empty(), "{name}: {slot:?} has no model");
+            assert!(
+                !resolved.base_url.is_empty(),
+                "{name}: {slot:?} has no base_url"
+            );
+        }
+    }
+    // The cn preset must keep verifier ≠ main (story 1.8 startup gate).
+    let cn = SlotRouter::from_yaml(root.join("config/slots.cn.example.yaml")).unwrap();
+    assert_ne!(
+        cn.resolve(SlotName::Verifier).model,
+        cn.resolve(SlotName::Main).model
+    );
+}
+
+#[test]
 fn default_for_bifrost_resolves_all_slots() {
     let r = SlotRouter::default_for_bifrost();
     for slot in SlotName::ALL {

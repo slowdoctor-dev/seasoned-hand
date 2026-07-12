@@ -1,0 +1,115 @@
+# 12-slot preset — low-cost Chinese-model lineup (July 2026).
+#
+# Copy to config/slots.yaml (or point SLOTS_CONFIG_PATH at it), fill the
+# three API keys below into .env, and the router is fully wired — no other
+# edits needed. Slots talk to each provider's OpenAI-compatible endpoint
+# directly, so Bifrost is optional with this preset (keep it if you want
+# gateway-level fallback/logging; then point base_url at Bifrost and add
+# matching aliases in bifrost/config.json).
+#
+# Keys this preset expects in the environment:
+#   DEEPSEEK_API_KEY   https://platform.deepseek.com
+#   MOONSHOT_API_KEY   https://platform.moonshot.ai
+#   DASHSCOPE_API_KEY  https://modelstudio.console.alibabacloud.com (intl)
+#
+# Rationale (cost figures = per 1M tokens, official endpoints, 2026-07):
+#   main       deepseek-v4-pro   $0.435 in / $0.87 out; cache-hit input
+#                                $0.003625 — the agent loop's repeated
+#                                context makes ~90% of input cache-hits.
+#   verifier   qwen3.6-plus      independent vendor from main (ADR-007
+#                                conservative learning wants an unrelated
+#                                second opinion; the ensure-verifier gate
+#                                also requires verifier ≠ main).
+#   vision /   qwen3.6-plus      the only multimodal flagship in the
+#   screenshot                   lineup; handles Track C screenshots.
+#   reasoning  kimi-k2.6         strongest agentic/tool-calling model of
+#                                the three (τ²-Bench 95.9%), reserved for
+#                                the hard-reasoning escalation slot.
+#   aux (web_extract, compression, session_title, session_search,
+#   classifier)
+#              deepseek-v4-flash $0.14 in / $0.28 out — high-volume,
+#                                low-stakes slots.
+#   embedding  bge-m3 via local Ollama (free, offline). Alternative:
+#              DashScope text-embedding-v4 (uncomment below).
+#
+# NOTE: DeepSeek's legacy ids (deepseek-chat / deepseek-reasoner) are
+# deprecated 2026-07-24; this preset uses the current deepseek-v4-* ids.
+
+slots:
+  main:
+    provider: deepseek
+    model: deepseek-v4-pro
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+
+  # Planner shares main's model: the plan tool runs inside the main loop's
+  # context, so a same-model planner keeps cache-hits high.
+  planner:
+    provider: auto
+
+  verifier:
+    provider: alibaba
+    model: qwen3.6-plus
+    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+    api_key_env: DASHSCOPE_API_KEY
+
+  vision:
+    provider: alibaba
+    model: qwen3.6-plus
+    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+    api_key_env: DASHSCOPE_API_KEY
+
+  screenshot:
+    provider: alibaba
+    model: qwen3.6-plus
+    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+    api_key_env: DASHSCOPE_API_KEY
+
+  web_extract:
+    provider: deepseek
+    model: deepseek-v4-flash
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+
+  compression:
+    provider: deepseek
+    model: deepseek-v4-flash
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+
+  session_title:
+    provider: deepseek
+    model: deepseek-v4-flash
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+
+  session_search:
+    provider: deepseek
+    model: deepseek-v4-flash
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+
+  classifier:
+    provider: deepseek
+    model: deepseek-v4-flash
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+
+  # Local embeddings via Ollama's OpenAI-compatible endpoint:
+  #   ollama pull bge-m3
+  embedding:
+    provider: ollama
+    model: bge-m3
+    base_url: http://localhost:11434/v1
+  # Cloud alternative (comment the block above, uncomment this one):
+  # embedding:
+  #   provider: alibaba
+  #   model: text-embedding-v4
+  #   base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+  #   api_key_env: DASHSCOPE_API_KEY
+
+  reasoning:
+    provider: moonshot
+    model: kimi-k2.6
+    base_url: https://api.moonshot.ai/v1
+    api_key_env: MOONSHOT_API_KEY

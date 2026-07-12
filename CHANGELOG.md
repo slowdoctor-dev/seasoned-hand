@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Low-cost Chinese-model routing preset** (`config/slots.cn.example.yaml`):
+  a ready-to-use 12-slot mapping — DeepSeek V4 Pro (main/planner),
+  Qwen3.6-Plus (verifier + vision/screenshot, keeping the verifier-≠-main
+  gate on an independent vendor), Kimi K2.6 (reasoning), DeepSeek V4 Flash
+  (high-volume auxiliary slots), and local bge-m3 via Ollama (embedding,
+  with a DashScope cloud alternative inline). `.env.example` gained the
+  matching `DEEPSEEK_API_KEY` / `MOONSHOT_API_KEY` / `DASHSCOPE_API_KEY`
+  entries, and a router regression test now keeps both checked-in example
+  presets loadable.
 - **Demo media (issue #60):** a ~30s UI-tour recording (GIF + mp4 in
   `docs/assets/`, embedded in the README) — delegate a task, confirm the
   Initializer's briefing card, then tour the Verifier (verdicts + evidence
